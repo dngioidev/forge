@@ -104,16 +104,17 @@ Migration order (parity proven on real cms work before retiring each superpowers
 
 ```jsonc
 "roster": {
-  "investigator":   { "backend": "agy",   "fallback": "claude:haiku" },
-  "librarian":      { "backend": "agy",   "fallback": "claude:haiku" },
-  "second-opinion": { "backend": "codex", "optional": true },
+  "investigator":   { "backend": "agy:gemini-flash",  "fallback": "claude:haiku" },
+  "librarian":      { "backend": "agy:gemini-flash",  "fallback": "claude:haiku" },
+  "second-opinion": { "backend": "codex:gpt-5",       "optional": true },
   "implementer":    { "backend": "claude:sonnet" }
   // "security" pinned to claude — config ignored by design
 }
 ```
 
+- Backend id format is uniform: **`<runtime>:<model>`** (`claude:sonnet`, `agy:gemini-pro`, `agy:gemini-flash`, `codex:gpt-5`, …). Model part optional — bare runtime (`agy`) means the adapter's declared default model. `fallback` uses the same format.
 - `claude:*` — native subagent; role card compiled to `agents/*.md`.
-- CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, implementing one contract: `run(roleCard, taskBrief) → report(markdown, structured findings)`. Generalizes the existing agy-consult pattern.
+- CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, implementing one contract: `run(roleCard, taskBrief, model) → report(markdown, structured findings)`. Adapter owns the mapping from model id to CLI flag (e.g. `agy --model gemini-flash`) and declares its default model plus the model ids it accepts; unknown model id → treated like missing CLI (fallback + `backend-fallback` journal event). Generalizes the existing agy-consult pattern.
 - Rules:
   - Claude Code always orchestrates; CLIs only fill roles.
   - Token-heavy read roles are the intended swap targets (investigator, librarian, big review consults).
