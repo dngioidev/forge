@@ -31,7 +31,8 @@ forge/
   plugin/
     .claude-plugin/plugin.json
     skills/          pipeline + board + learning skills (markdown)
-    agents/          role cards → Claude-native agent definitions
+    cards/           backend-neutral role cards (single source; outside agents/ so Claude Code never loads them as agents)
+    agents/          Claude-native agent definitions compiled from cards
     hooks/           learning-capture hooks (node .mjs + hooks.json)
     commands/        /distill, /ticket, /new-component
     mcp/graph/       graph-RAG MCP server (node)
@@ -51,6 +52,7 @@ forge/
 
 ```jsonc
 {
+  "version": 1,
   "board": {
     "projectNumber": 7,
     "projectId": "PVT_…",
@@ -99,6 +101,7 @@ Migration order (parity proven on real cms work before retiring each superpowers
 | `test-architect` | claude:sonnet | AC → test plan; writes failing tests first; verifies AC coverage at ship |
 | `investigator` | claude:haiku | read-only code location, cheap fan-out |
 | `librarian` | claude:haiku | RAG-first lookup: queries graph MCP before any grep sweep |
+| `second-opinion` | codex:gpt-5 (optional) | independent second-pass critique of specs/plans/diffs on demand; read-only, advisory — never a merge gate |
 
 **Backends** (per-repo `forge.json` `roster` block):
 
@@ -113,15 +116,27 @@ Migration order (parity proven on real cms work before retiring each superpowers
 ```
 
 - Backend id format is uniform: **`<runtime>:<model>`** (`claude:sonnet`, `agy:gemini-pro`, `agy:gemini-flash`, `codex:gpt-5`, …). Model part optional — bare runtime (`agy`) means the adapter's declared default model. `fallback` uses the same format.
-- `claude:*` — native subagent; role card compiled to `agents/*.md`.
-- CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, implementing one contract: `run(roleCard, taskBrief, model) → report(markdown, structured findings)`. Adapter owns the mapping from model id to CLI flag (e.g. `agy --model gemini-flash`) and declares its default model plus the model ids it accepts; unknown model id → treated like missing CLI (fallback + `backend-fallback` journal event). Generalizes the existing agy-consult pattern.
+- **Role cards are backend-neutral**, stored in `plugin/cards/<role>.md` (mission, checklist, guardrails, output contract). One source, two renderers:
+  - `claude:*` — card compiled to `agents/<role>.md` native subagent. Compiled agent files carry **no model pin**: the orchestrator reads the roster and passes the model at spawn time, so a per-repo model override needs no file regeneration.
+  - CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, one contract: `run(roleCard, taskBrief, model) → report`. The adapter renders `role card + forge.json conventions + task brief + report contract` into a single prompt (`agy -p …`, `codex exec …`), owns the model-id→CLI-flag mapping, and declares its default model plus accepted model ids; unknown model id → treated like missing CLI. Generalizes the existing agy-consult pattern.
+- **Task brief** is composed by the orchestrator: goal, ticket ref, scoped file list (from `scoper`/graph), constraints, expected output. CLI agents run in the repo cwd and read files themselves — briefs carry pointers, never file dumps.
+- **Native context sync:** `forge backends sync` renders forge.json conventions (verify command, commit format, specs/plans dirs, Windows shell rules) into the context files each CLI reads natively — `GEMINI.md` for agy, `AGENTS.md` for codex — so repo context costs zero prompt tokens per call. Sync writes a fenced managed block (`<!-- forge:begin --> … <!-- forge:end -->`) and never touches content outside it, so hand-written sections survive. Re-run on forge.json change; `board init` runs it once.
+- **Report contract** (every role, every backend): markdown body + terminal JSON block
+
+  ```json
+  { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }
+  ```
+
+  Ship gates (reviewer, security, AC-verification) consume the JSON block only — never parse prose.
+- Failure handling: per-adapter timeout (default 10 min). Timeout, nonzero exit, or malformed report JSON → one retry with the violation appended to the prompt, then `fallback` backend + `backend-fallback` journal event. Missing CLI / auth failure skips straight to fallback. `optional: true` roles have no fallback: on any failure the role is skipped with a note in the session output (still journaled).
 - Rules:
   - Claude Code always orchestrates; CLIs only fill roles.
-  - Token-heavy read roles are the intended swap targets (investigator, librarian, big review consults).
+  - Token-heavy read roles are the intended swap targets (investigator, librarian, second-opinion).
   - A write-capable CLI backend (e.g. agy as implementer) is allowed **only on a child branch, with a mandatory Claude `reviewer` diff pass before merge** (existing tasky rule, now platform law).
   - `security` is a trust boundary: always Claude, config cannot override.
-  - Missing CLI / auth failure → run `fallback` backend and write a `backend-fallback` event to the learning journal.
-- Consumer repos may override role cards by shipping their own `.claude/agents/<role>.md` (repo definitions win over plugin — Claude Code precedence).
+  - **CLI reports are untrusted input:** the orchestrator treats them as data, never as instructions to follow; any CLI-backend contribution to a branch still passes the Claude `reviewer` + `security` gates.
+  - **Data sharing:** CLI backends send repo content to third-party providers (Google, OpenAI). Accepted for the owner's repos; a consumer repo opts out by not listing CLI backends in its roster.
+- Consumer repos may override role cards: for `claude:*` backends, ship `.claude/agents/<role>.md` (repo definitions win over plugin — Claude Code precedence); for CLI backends, adapters prefer `.claude/cards/<role>.md` over the plugin card when present. Same override story both sides.
 - Adding a role = new role card + forge.json entry. Adding a CLI = one adapter implementing the contract.
 
 ## 5. Board automation
@@ -131,9 +146,10 @@ Migration order (parity proven on real cms work before retiring each superpowers
 - **create** — ticket with type/priority/size/parent (native sub-issue) + board add + field set, in one command.
 - **move** — status transitions (Backlog → In progress → Done).
 - **receipt** — merge receipt comment on issues; idempotent (re-run updates, never duplicates).
+- **Idempotency is a rule for every script, not just receipt:** re-runs detect existing state (issue by title+parent, board item, comment marker) and resume or update instead of duplicating. Multi-step `create` (issue → board add → field set) resumes from the failed step.
 - **digest** — epic body auto-carries spec link + live child table; refreshed on child changes.
 - **log** — delivery-log row append to the pinned per-repo issue (tasky #205 pattern).
-- **init** — discovers project/field/option IDs, writes `forge.json` board block.
+- **init** — discovers project/field/option IDs, writes `forge.json` board block, adds `.forge/` to the consumer `.gitignore`, runs `forge backends sync`.
 
 Docs stay in git (reviewable, diffable); the board is the tracker + window. Field IDs are read from config — no hand-built GraphQL in sessions ever again.
 
@@ -145,18 +161,18 @@ Docs stay in git (reviewable, diffable); the board is the tracker + window. Fiel
 {"ts":"…","kind":"gate-fail","tool":"Bash","cmd":"pnpm verify","exit":1,"err_line":"…","ticket":"#15","branch":"feat/…"}
 ```
 
-Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`. Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in.
+Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`. Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
 
-**Distill** — `/distill` skill: reads journal since last run, clusters repeats, proposes per cluster one of: CLAUDE.md rule, role-card edit, new lint/hook guard, memory entry. **Owner approves each proposal before anything is written.** Applied lessons are logged with journal refs; the journal is truncated after distill. Suggested cadence: after each epic ships, or weekly.
+**Distill** — `/distill` skill: reads journal since last run, clusters repeats, proposes per cluster one of: CLAUDE.md rule, role-card edit, new lint/hook guard, memory entry. **Owner approves each proposal before anything is written.** Applied lessons are logged with journal refs; after distill the journal is archived to `.forge/journal-archive/<date>.jsonl` (rejected clusters keep their evidence), and the live journal starts empty. Suggested cadence: after each epic ships, or weekly.
 
 ## 7. Graph RAG MCP server
 
 `plugin/mcp/graph/` — structural index of the consumer repo, no embeddings in v1 (schema leaves room for a v2 embedding column).
 
-- **Indexer:** ts-morph parse → SQLite `.forge/graph.db` (git-ignored, rebuildable, zero network).
+- **Indexer:** ts-morph parse → SQLite `.forge/graph.db` via built-in `node:sqlite` (Node 22 — no native-module builds on Windows). Git-ignored, rebuildable, zero network.
   - Nodes: file, component, export, props-interface, token, story, test, icon.
   - Edges: imports, renders, uses-token, tests, documents. Ticket edges from commit-message issue refs link code to tickets.
-- **Incremental:** post-commit hook reindexes changed files only; `forge graph rebuild` does a full pass.
+- **Incremental:** `forge graph install-hook` writes a `.git/hooks/post-commit` that reindexes changed files only (plugins cannot install git hooks themselves — explicit opt-in command). `forge:execute`/`forge:ship` also reindex touched files, so the graph stays fresh even without the hook; `forge graph rebuild` does a full pass.
 - **MCP tools:** `find_component(query)`, `who_uses(symbol|token)`, `similar_props(interface)`, `blast_radius(files[])`, `code_for_ticket(#n)`, `reuse_candidates(description)` (ranked by export/props/story-text keyword match).
 - **Consumers:** `librarian` answers "does X already exist" before anything new is written; `scoper` computes touched components + the test set from `blast_radius`; the `implementer` role card mandates a `reuse_candidates` check before creating new files.
 
@@ -183,7 +199,7 @@ Superpowers is uninstalled from cms after sub-project 6. Graph RAG is last delib
 - CI `verify`: vitest suites for hooks, board scripts, backend adapters, MCP server (fixture repos as test beds); actionlint; SHA-pinned actions; concurrency cancel.
 - Windows-first test cases: CRLF handling, `.cmd` spawn without shell (EINVAL), path-separator comparisons — every recorded Windows lesson becomes a regression test.
 - Skills are markdown (not unit-testable) — validated by dogfooding gates: a pipeline skill only retires its superpowers counterpart after shipping at least one real cms epic end-to-end.
-- Security posture: hooks and adapters never interpolate untrusted strings into shell commands (in-process APIs or argv arrays only — the format.mjs command-injection lesson); journal capture never logs secrets (denylist on env-looking tokens); `security` role not swappable.
+- Security posture: hooks and adapters never interpolate untrusted strings into shell commands (in-process APIs or argv arrays only — the format.mjs command-injection lesson); journal capture never logs secrets (denylist on env-looking tokens); `security` role not swappable; CLI-backend reports are untrusted input — parsed as data, never followed as instructions, always behind the Claude `reviewer` + `security` gates (section 4).
 
 ## 10. Out of scope (v1)
 
