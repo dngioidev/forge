@@ -1,9 +1,9 @@
 # forge — AI-driven development platform — Design Spec
 
-**Date:** 2026-07-15 (v3.2 — owner-review amendments, round 3)
+**Date:** 2026-07-15 (v3.3 — owner-review amendments, round 4: SDLC gap review)
 **Repo:** dngioidev/forge (new)
 **Testbed:** dngioidev/cms (design system), later tasky-ai and future repos
-**Goal:** A portable Claude Code plugin that runs the entire AI development workflow: pipeline skills (idea → tickets → spec → plan → execute → ship), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, a human escalation protocol, an error-learning loop, a structural graph-RAG index for code retrieval and reuse, a DevOps layer (Docker + Terraform, production-deployable from day one), and a mission-control console (local daemon + cloud + device app) for monitoring and driving the fleet.
+**Goal:** A portable Claude Code plugin that runs the entire AI development workflow: pipeline skills (idea → tickets → spec → plan → execute → ship → release), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, a human escalation protocol, an error-learning loop, a structural graph-RAG index for code retrieval and reuse, a DevOps layer (Docker + Terraform, production-deployable from day one), and a mission-control console (local daemon + cloud + device app) for monitoring and driving the fleet.
 
 ## 1. Purpose & context
 
@@ -30,6 +30,8 @@
 | Docs knowledge base (v3.1) | `docs/` KB with route index (`docs/README.md`), ADR-style `decisions/`, `guides/` runbooks; `forge:ship` maintains the index |
 | Scope boundaries (v3.1) | No separate v1/v2 versioning — deferred items live on the rollout backlog (section 12); section 14 keeps only permanent non-goals |
 | DevOps layer (v3.2) | Deployability is a standing gate: Docker + Terraform reference stack, `devops` role (pinned), deploy scaffold at `forge init`, deploy-readiness gate in ship, apply always human-approved |
+| Environments (v3.3) | Branch-driven configurable chain: main is CI-only and never deploys; staging deploys on demand via the `staging` branch; production promotes staging's exact image digest; chain length is per-repo config |
+| Post-merge SDLC (v3.3) | Three new skills — `forge:release` (semver/changelog/tag/publish), `forge:hotfix` (expedited path + rollback + incident capture), `forge:maintain` (dependency cadence, cms #70 lesson) — plus data lifecycle, observability minimum, `features.e2e`, digest flow metrics |
 
 ## 2. Repo & plugin anatomy
 
@@ -60,7 +62,7 @@ forge/
 ```
 
 - Consumer repos install via `claude plugin marketplace add dngioidev/forge` (in-session: `/plugin marketplace add`) + plugin install, then `forge init` (section 6).
-- **Command surface:** every `forge <verb>` in this spec (`init`, `doctor`, `backends sync`, `graph install-hook`, `graph rebuild`) is a plugin slash command `/forge:<verb>` wrapping a script in `plugin/scripts/` — no installed binary, no npm bin. Stack-specific helpers (e.g. a `/new-component` command) are not part of the portable plugin; consumer repos add them via the normal override mechanism.
+- **Command surface:** every `forge <verb>` in this spec (`init`, `doctor`, `backends sync`, `deploy-init`, `graph install-hook`, `graph rebuild`) is a plugin slash command `/forge:<verb>` wrapping a script in `plugin/scripts/` — no installed binary, no npm bin. Stack-specific helpers (e.g. a `/new-component` command) are not part of the portable plugin; consumer repos add them via the normal override mechanism.
 - **Per-repo config `.claude/forge.json`** (committed in each consumer repo) keeps the plugin generic:
 
 ```jsonc
@@ -82,7 +84,7 @@ forge/
     "plansDir": "docs/plans",
     "shell": "windows"            // renders the plugin's Windows shell-rule template into synced context files
   },
-  "features": { "graph": true, "designReview": true, "deploy": true },   // stack-specific pieces are flags
+  "features": { "graph": true, "designReview": true, "deploy": true, "e2e": false },   // stack-specific pieces are flags
   "deploy": { /* section 10 */ },
   "team": { /* section 3 */ },
   "roster": { /* section 5 */ }
@@ -125,17 +127,20 @@ forge/
 
 ## 4. Pipeline skills
 
-Seven skills. Flow: **ideate → triage → brainstorm → plan → execute → ship**, with `board` called by all of them. Each skill is a markdown checklist + process graph, same discipline as superpowers but tuned: ticket-first, role-routed gates (section 3), Windows shell rules, caveman-terse receipts. All skills honor the escalation protocol (section 7).
+Ten skills. Main flow: **ideate → triage → brainstorm → plan → execute → ship → release**, with `board` called by all of them; `hotfix` and `maintain` run outside the main flow. Each skill is a markdown checklist + process graph, same discipline as superpowers but tuned: ticket-first, role-routed gates (section 3), Windows shell rules, caveman-terse receipts. All skills honor the escalation protocol (section 7).
 
 1. **`forge:ideate`** — raw idea / feature area → feature brainstorm → decomposed feature list → epic + child tickets with acceptance criteria, type, size, priority, dependencies, board placement, assignee (per team policy). Builds the ticket tree so work starts ticket-first. (Whole feature areas; single items go straight to triage.)
 2. **`forge:triage`** — one incoming bug/idea → correctly-typed ticket with AC + board placement.
 3. **`forge:brainstorm`** — ticketed feature → design spec in the consumer's specs dir; decomposition-first for multi-system asks; spec self-review; spec-approval gate (routed per team policy).
-4. **`forge:plan`** — spec → task-by-task plan in the consumer's plans dir. Every task carries: ticket ref, files, complete code, **test-plan section** (cases, edge matrix, AC mapping — drafted by `test-architect`), verify command, done-criteria.
+4. **`forge:plan`** — spec → task-by-task plan in the consumer's plans dir. Every task carries: ticket ref, files, complete code, **test-plan section** (cases, edge matrix, AC mapping, plus E2E critical-path cases when `features.e2e` is on — drafted by `test-architect`), verify command, done-criteria.
 5. **`forge:execute`** — plan → branch. Order per task: `scoper` narrows blast radius (which components/files/tests) → `test-architect` writes failing tests → `implementer` makes them pass → per-task review (`reviewer`; `design-reviewer` added for UI tasks when `features.designReview` is on — off drops that role entirely). Whole-branch final review + fix waves at the end. Ledger `.forge/progress.md` (git-ignored, survives compaction).
 6. **`forge:ship`** — branch → PR: commits→issues map, honest verification checklist, **AC-verification gate** (machine evidence: test-runner JSON output mapped to ACs — section 13), **plan-drift check** (actual touched files vs plan + blast radius; deviation escalates), **security gate** (`security` reviewer pass on the branch), **deploy-readiness gate** (image builds + healthcheck boots, `terraform plan` clean when `infra/` changed — section 10, when `features.deploy` is on), **CI-green check** before the PR is marked ready. After merge (by a `maintainer`): receipt comments, board Done moves, delivery-log row, epic digest refresh, docs route-index update when the branch touched `docs/` (section 2).
-7. **`forge:board`** — shared ticket-operations skill wrapping `scripts/board/*` (section 6); the other six call it instead of raw GraphQL.
+7. **`forge:release`** — merged main → named release: semver bump from conventional commits, changelog, git tag, GitHub Release, user-facing docs refresh. **Release names artifacts, it never builds them:** for images it retags the staging-verified digest with the semver tag (build-once — section 10), so the release name and the bytes running in production are identical; for packages (npm) it publishes from the tagged commit. The bridge between "merged" and "a deployable artifact with a name."
+8. **`forge:hotfix`** — expedited production-incident path: security gate + verify stay, planning ritual compressed to a one-paragraph scope note, mandatory follow-up postmortem ticket; the incident lands in the journal as an `incident` event so `/distill` learns from production failures. **Only the process ritual is compressed — the deploy path is not:** a hotfix still traverses the environment chain (staging smoke included; it's minutes, not hours). Includes the rollback runbook (redeploy the previous image digest, one command).
+9. **`forge:maintain`** — dependency cadence (the cms #70 lesson as platform law): patch/minor updates batched + auto-verified + merged; majors bundled into one coordinated upgrade ticket, never merged individually; CVE advisories triaged with a response SLA. Runs on demand or as a scheduled routine.
+10. **`forge:board`** — shared ticket-operations skill wrapping `scripts/board/*` (section 6); the other nine call it instead of raw GraphQL.
 
-Migration order (parity proven on real cms work before retiring each superpowers counterpart): ship → plan+execute → brainstorm. `ideate`, `triage`, `board` have no counterpart and land whenever ready.
+Migration order (parity proven on real cms work before retiring each superpowers counterpart): ship → plan+execute → brainstorm. `ideate`, `triage`, `board`, `release`, `hotfix`, `maintain` have no counterpart and land whenever ready.
 
 ## 5. Agent roster & pluggable backends
 
@@ -173,7 +178,7 @@ Migration order (parity proven on real cms work before retiring each superpowers
   - `claude:*` — card compiled to `agents/<role>.md` native subagent. Compiled agent files carry **no model pin**: the orchestrator reads the roster and passes the model at spawn time, so a per-repo model override needs no file regeneration. Read-only roles compile with read-only tool allowlists.
   - CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, one contract: `run(roleCard, taskBrief, model) → report`. The adapter renders `role card + forge.json conventions + task brief + report contract` into a single prompt (`agy -p …`, `codex exec …`), owns the model-id→CLI-flag mapping, and declares its default model plus accepted model ids; unknown model id → treated like missing CLI. Adapters pass CLI-native sandbox/read-only flags where the CLI supports them. Generalizes the existing agy-consult pattern.
 - **Task brief** is composed by the orchestrator: goal, ticket ref, scoped file list (from `scoper`/graph), constraints, expected output. CLI agents run in the repo cwd and read files themselves — briefs carry pointers, never file dumps.
-- **Native context sync:** `forge backends sync` renders forge.json conventions (verify command, commit format, specs/plans dirs, plus the plugin's static shell-rule template selected by `conventions.shell`) into the context files each CLI reads natively — `GEMINI.md` for agy, `AGENTS.md` for codex — so repo context costs zero prompt tokens per call. Sync writes a fenced managed block (`<!-- forge:begin --> … <!-- forge:end -->`) and never touches content outside it, so hand-written sections survive. Managed blocks are rendered **only from forge.json content and static plugin templates**, never from fetched or external text. Sync also writes CLI-native ignore files (`.geminiignore`, codex equivalent) excluding `.env*`, `*.pem`, key material, and `.forge/` (section 13). Re-run on forge.json change; `forge init` runs it once.
+- **Native context sync:** `forge backends sync` renders forge.json conventions (verify command, commit format, specs/plans dirs, plus the plugin's static shell-rule template selected by `conventions.shell`) into the context files each CLI reads natively — `GEMINI.md` for agy, `AGENTS.md` for codex — so repo context costs zero prompt tokens per call. Sync writes a fenced managed block (`<!-- forge:begin --> … <!-- forge:end -->`) and never touches content outside it, so hand-written sections survive. Managed blocks are rendered **only from forge.json content and static plugin templates**, never from fetched or external text. Sync also writes CLI-native ignore files (`.geminiignore`, codex equivalent) excluding `.env*`, `*.pem`, key material, `*.tfstate`, `.terraform/`, and `.forge/` (section 13). Re-run on forge.json change; `forge init` runs it once.
 - **Report contract** (every role, every backend): markdown body + terminal JSON block
 
   ```json
@@ -201,12 +206,12 @@ Migration order (parity proven on real cms work before retiring each superpowers
 - **move** — status transitions across the forge standard set: **Backlog → Ready → In progress → In review → Blocked/Needs decision → Done**. Solo, some columns stay thin; team, they're load-bearing. `init` creates missing options on fresh projects and maps whatever exists on adopted ones; skills degrade gracefully to the mapped subset.
 - **receipt** — merge receipt comment on issues; idempotent (re-run updates, never duplicates).
 - **Idempotency is a rule for every script, not just receipt:** re-runs detect existing state (issue by title+parent, board item, comment marker) and resume or update instead of duplicating. Multi-step `create` (issue → board add → field set) resumes from the failed step.
-- **digest** — epic body auto-carries spec link + live child table + per-member workload (team) + **open escalations first**; refreshed on child changes.
+- **digest** — epic body auto-carries spec link + live child table + per-member workload (team) + **open escalations first**; refreshed on child changes. Also carries **flow metrics** computed from data the board + journal already hold — cycle time per ticket, Size estimate vs actual, gate-failure rate, backend cost per shipped ticket — the platform's own evidence that it's paying off.
 - **log** — delivery-log row append to the pinned per-repo issue (tasky #205 pattern).
 - **init** — full bootstrap, idempotent (adopt-or-create): checks gh auth + Node ≥22.13 → creates the GitHub Project + status/priority/size/type fields with standard options if absent, discovers IDs if present (optional iteration/area fields are discovered and mapped when present; init offers to create `area` when `assignment: "by-area"`) → creates the delivery-log issue if missing → writes `forge.json` (board + team skeleton) → adds `.forge/` to the consumer `.gitignore` → installs the consumer CI template (below) if `.github/workflows/` lacks a verify workflow → runs `forge backends sync`. Works on a fresh repo and a mature one. **Spike required (SP1):** verify ProjectsV2 GraphQL can add options to the built-in Status single-select on a fresh project; if not, init documents the manual step and falls back to mapping whatever exists (the degrade-gracefully path above). Init and doctor grow with the rollout: the CI-template step lands with SP3, the backends-sync step with SP4.
-- **doctor** — read-only health check: gh auth, project reachable, field/option IDs valid, team block valid (section 3), roster backends' CLIs present, Node ≥22.13, branch protection with required verify check, secret scanning + push protection enabled (warn if not). Run any time; `init` ends by running it.
+- **doctor** — read-only health check: gh auth, project reachable, field/option IDs valid, team block valid (section 3), roster backends' CLIs present, Node ≥22.13, branch protection with required verify check, secret scanning + push protection enabled (warn if not), `guides/onboarding.md` present when the team has >1 member. Run any time; `init` ends by running it.
 
-**Consumer CI template** (`plugin/templates/`): one minimal workflow — the repo's `verify` command on PR and push-to-main, plus gitleaks. `forge:ship` checks CI is green before marking a PR ready. Branch protection (require the verify check) is the hard backstop agents cannot bypass — `init` offers to set it, `doctor` warns when absent.
+**Consumer CI template** (`plugin/templates/`): one minimal workflow — the repo's `verify` command on PR and push-to-main, plus gitleaks and a dependency license scan. `forge:ship` checks CI is green before marking a PR ready. Branch protection (require the verify check) is the hard backstop agents cannot bypass — `init` offers to set it, `doctor` warns when absent.
 
 Docs stay in git (reviewable, diffable); the board is the tracker + window. Field IDs are read from config — no hand-built GraphQL in sessions ever again.
 
@@ -234,7 +239,7 @@ Scheduled gates (spec approval, distill approval, merge) are not enough — the 
 {"ts":"…","kind":"gate-fail","tool":"Bash","cmd":"pnpm verify","exit":1,"err_line":"…","ticket":"#15","branch":"feat/…"}
 ```
 
-Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`, `escalation`. Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
+Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`, `escalation`, `incident` (production failures, appended by `forge:hotfix` — the most valuable lessons `/distill` sees). Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
 
 **Distill** — `/distill` skill: reads journal since last run, clusters repeats, proposes per cluster one of: CLAUDE.md rule, role-card edit, new lint/hook guard, memory entry. **A `maintainer` approves each proposal before anything is written** — and applied lessons land as a PR, so in a team they get reviewed like any other change. Applied lessons are logged with journal refs; after distill the journal is archived to `.forge/journal-archive/<date>.jsonl` (rejected clusters keep their evidence), and the live journal starts empty. Suggested cadence: after each epic ships, or weekly.
 
@@ -260,14 +265,29 @@ Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-find
 "deploy": {
   "docker":      { "file": "Dockerfile", "compose": "docker-compose.yml", "healthcheck": "/healthz" },
   "terraform":   { "dir": "infra/", "stateBackend": "gcs" },
-  "environments": ["dev", "prod"]
+  "environments": [
+    { "name": "staging",    "branch": "staging", "deploy": "on-push" },  // merge main → staging when a live check is needed
+    { "name": "production", "deploy": "promote" }                        // promotes staging's exact artifact, human-gated
+  ],
+  "previews": false,        // optional: ephemeral env per PR (reviewers judge a running app)
+  "migrations": null        // repos with a DB set e.g. { "tool": "…", "dir": "migrations/" }
 }
 ```
 
-- **Scaffolding at project start:** `forge init` (fresh repo) offers the deploy scaffold from `plugin/templates/deploy/<stack>/` — multi-stage Dockerfile (non-root user, base image pinned by digest), `.dockerignore`, compose file for local run, and a Terraform skeleton (remote state with locking, `dev`/`prod` environments, provider pinned). Adopted repos get the same via `/forge:deploy-init`. Stack templates start with what the owner's repos need (node/static); adding a stack = adding a template directory.
+**Environments — configurable chain, staging-first, branch-driven:**
+- **Local is environment zero:** the compose file gives every repo a free local run; when local build + CI checks suffice, the cloud chain can be as short as `["production"]`.
+- **main is CI-only — it never deploys.** Merging to main runs verify/tests/validation, nothing else. Deploys are driven by **environment branches**: when a live check is needed, merge main into the `staging` branch — that push (and only that) builds the image (tagged with the commit SHA) and deploys staging. On-demand staging keeps deploy + CI cost near zero between live checks.
+- **Environment branches are protected — merging into one is a human act.** Agents never push or merge to environment branches; that merge *is* the deploy authorization. The deploy workflow updates the running service's image (an app-level rollout, not a `terraform apply` — infra changes stay separately gated).
+- **Staging is prod-shaped:** same Terraform modules, same secret-manager pattern, smaller sizing. It exists because with cloud infra there is often no meaningful dev env — IAM bindings, DNS, and service wiring can only be verified live.
+- **Promotion, not rebuild:** the production workflow deploys the registry image already recorded for that commit SHA (built by the staging workflow) — never a fresh build. `forge:release` retags that digest with the semver name (section 4), and production runs only release-named digests. Post-deploy **smoke tests** (healthcheck + critical-path probes) run against staging after deploy and against production after promote.
+- **The chain is per-repo config:** static site → `["production"]`; real app → staging + production. Every environment maps to an environment branch; in a single-environment chain, production gets its own branch and its workflow builds (no prior build exists) — the human-merge gate and smoke tests still apply. `previews: true` adds per-PR ephemeral envs (backlog — section 12). Same philosophy as the team block.
+
+- **Scaffolding at project start:** `forge init` (fresh repo) offers the deploy scaffold from `plugin/templates/deploy/<stack>/` — multi-stage Dockerfile (non-root user, base image pinned by digest), `.dockerignore`, compose file for local run, a Terraform skeleton (remote state with locking, one directory per configured environment, provider pinned), and the environment-branch deploy workflows. Adopted repos get the same via `/forge:deploy-init`. Stack templates start with what the owner's repos need (node/static); adding a stack = adding a template directory.
 - **`devops` agent role** (section 5): owns Dockerfile/compose/Terraform changes, keeps CI deploy jobs green, reviews infra diffs for cost and blast radius, and runs `terraform plan`. Pinned `claude:*` — infra and CI are attack surface, same trust boundary as `security`.
-- **Deploy-readiness gate in `forge:ship`** (when `features.deploy` is on): the consumer CI template gains a job that builds the image and boots it against the healthcheck; `terraform validate` + `plan` (dry-run) must pass when `infra/` changed. A branch that breaks the image or the plan doesn't ship — that's what "always ready to deploy" means mechanically.
-- **Apply is never automatic:** `terraform apply` and any production deploy are escalation-gated — `team.policy.approvals.deploy` (default `maintainer`) must approve via the decision flow (section 7). The pipeline prepares deployments; humans pull the trigger.
+- **Deploy-readiness gate in `forge:ship`** (when `features.deploy` is on): the consumer CI template gains a job that builds the image and boots it against the healthcheck; `terraform validate` + `plan` (dry-run) must pass when `infra/` changed. **Path-filtered for cost:** the image job runs only when Dockerfile/lockfile/source change, the plan job only when `infra/` changes. A branch that breaks the image or the plan doesn't ship — that's what "always ready to deploy" means mechanically.
+- **Apply is never automatic:** `terraform apply` and promotion to production are escalation-gated — `team.policy.approvals.deploy` (default `maintainer`) must approve via the decision flow (section 7). The pipeline prepares deployments; humans pull the trigger.
+- **Data lifecycle** (repos with a database, via `deploy.migrations`): migrations are forward-only with a tested rollback story; CI runs them against a disposable instance before merge; staging runs them before production does; backup/restore is owned by the Terraform layer per environment. Declared now so the discipline exists before the first schema change, not after the first bad one.
+- **Minimal production observability** (scaffold-wired): an uptime check against each environment's healthcheck and a log-based error alert, so an incident pages the `deploy` approver instead of waiting for a user report. Full APM/dashboards live on the backlog (section 12).
 - **Secrets & state:** runtime secrets live in the cloud secret manager (referenced by Terraform, never in the repo or image); Terraform state is remote with locking and is treated as secret-bearing (never committed, never sent to CLI backends — covered by the ignore-file sync, section 13).
 
 ## 11. Platform console (forge-console)
@@ -314,23 +334,28 @@ Each sub-project = its own spec → plan → epic in the forge repo, executed wi
 | 2 | Board automation: `forge:board` + scripts (statuses, assignees, digest, log) | M | manual GraphQL |
 | 3 | `forge:ship` + `forge:triage` + escalation protocol (GitHub-native) + journal format & append helper + destructive-command denylist hook + consumer CI template | M | ship-and-document ritual |
 | 4 | Agent roster + backend adapters (role cards, swap allowlist, agy adapter, fallback logic, pre-send scan, ignore-file sync) | M | generic subagents |
-| 4b | Deploy layer: `devops` role card, deploy/<stack> templates, `/forge:deploy-init`, deploy-readiness gate + CI image-build job | M | hand-rolled Dockerfiles/infra |
-| 5 | `forge:plan` + `forge:execute` (scoper + test-architect gates, plan-drift check, dependency-existence guard wired) | L | writing-plans + subagent-driven-development |
+| 4b | Deploy layer: `devops` role card, deploy/<stack> templates, `/forge:deploy-init`, environment-branch workflows, deploy-readiness gate + CI image-build job, smoke tests, observability minimum | M | hand-rolled Dockerfiles/infra |
+| 4c | `forge:release`: semver + changelog + tag + GitHub Release + artifact publish | S | manual releases |
+| 5 | `forge:plan` + `forge:execute` (scoper + test-architect gates, plan-drift check, dependency-existence guard, `features.e2e` test layer wired) | L | writing-plans + subagent-driven-development |
 | 6 | `forge:ideate` + `forge:brainstorm` | M | brainstorming |
-| 7 | Learning loop: capture hooks + `/distill` (journal format itself lands in SP3) | M | — |
+| 7 | Learning loop: capture hooks + `/distill` (journal format itself lands in SP3) + digest flow metrics | M | — |
 | 8 | Graph RAG MCP (`librarian` goes live; `scoper` upgrades from import-scan to graph) | L | — |
 | 9a | Console: daemon + escalation inbox + monitoring basics (then graduates to `forge-console` repo) | L | GitHub-Mobile-only escalation UX |
 | 9b | Console control plane: remote triggers, work queue, kill switch, multi-machine admin | L | — |
+| 10 | `forge:hotfix` + rollback runbook + incident journal capture | S | — |
+| 11 | `forge:maintain`: dependency cadence + CVE triage (pull earlier as a scheduled routine if Dependabot pain returns) | S | hand-triaged Dependabot PRs |
 
 **Staged gates:** `forge:ship` (SP3) launches with degraded gates — generic subagents run the security/reviewer passes and the AC gate maps tests to ticket ACs directly — and upgrades in place as later sub-projects land: role cards + report contract + cite-or-drop (SP4), deploy-readiness gate (SP4b), plan-based AC mapping + plan-drift check (SP5). SP3's deliverable is the ritual and the gate *slots*, not their final occupants.
 
-Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late deliberately: its payoff grows with codebase size, and by then cms has real components to index. The console (9a/9b) consumes sub-project 3's escalation protocol and 7's journal, so it comes last; 9b is specced and executed in the `forge-console` repo after 9a's graduation.
+Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late deliberately: its payoff grows with codebase size, and by then cms has real components to index. The console (9a/9b) consumes sub-project 3's escalation protocol and 7's journal, so it comes after the pipeline skills land; 9b is specced and executed in the `forge-console` repo after 9a's graduation.
 
 **Backlog (on the roadmap, unscheduled — each becomes a numbered sub-project when picked up):**
 - Embeddings / semantic search on the graph (schema keeps an embedding column slot — section 9).
 - Non-TypeScript language indexers, added by demand per stack (until then `features.graph: false` gives the import-scan/grep fallback).
 - Team coordination automation (auto-assignment balancing, review-load distribution, calendars) — the team *model* ships in sub-project 1; this is the automation on top.
 - Console web dashboard (Cloud Run) — the shipped console is daemon + device app.
+- Full production APM (metrics dashboards, tracing) — the shipped minimum is uptime + error alerting (section 10).
+- Per-PR preview environments (`previews: true`, section 10) — ephemeral env per PR so reviewers judge a running app.
 
 ## 13. Quality, trust & safety
 
@@ -349,11 +374,11 @@ Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late delib
 
 **Anti-secret-leak:**
 - Adapter **pre-send scan** (pattern + entropy) of every composed prompt before it reaches an external CLI; refuse on hit.
-- `backends sync` writes CLI-native ignore files (`.geminiignore`, codex equivalent): `.env*`, `*.pem`, key material, `.forge/`.
+- `backends sync` writes CLI-native ignore files (`.geminiignore`, codex equivalent): `.env*`, `*.pem`, key material, `*.tfstate`, `.terraform/`, `.forge/`.
 - Journal capture never logs secrets (denylist on env-looking tokens).
 - GitHub **secret scanning + push protection** enabled per repo (`init` sets, `doctor` warns); gitleaks runs in the consumer CI template.
 - Outbound console notifications are metadata-only (section 11) — repo content never transits third-party push.
-- Terraform state is secret-bearing: remote with locking, never committed, excluded from CLI-backend ignore files (section 10).
+- Terraform state is secret-bearing: remote with locking, never committed, kept away from CLI backends via the ignore-file sync above (section 10).
 
 **Anti-injection:**
 - **All external text is data:** GitHub issue bodies, PR comments, CLI-backend reports, web content — quoted/fenced as data in skills, never followed as instructions. Board scripts pass content via GraphQL variables/argv only; hooks and adapters never interpolate untrusted strings into shell commands (in-process APIs or argv arrays only — the format.mjs command-injection lesson).
@@ -365,8 +390,8 @@ Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late delib
 **Blast-radius control (rogue or confused agents):**
 - Read-only roles run with read-only tool allowlists (native subagents) or CLI sandbox/read-only flags (adapters).
 - Destructive-command denylist in hooks (force push, hard reset, recursive delete, history rewrite) → escalation, not execution.
-- Branch protection means no agent path reaches main without a human merge.
-- `terraform apply` and production deploys are escalation-gated behind `team.policy.approvals.deploy` (section 10) — no agent ever applies infra or deploys on its own.
+- Branch protection means no agent path reaches main — or any environment branch — without a human merge.
+- `terraform apply` and promotion to production are escalation-gated behind `team.policy.approvals.deploy`, and every deploy requires a human-performed environment-branch merge (section 10) — no agent ever applies infra or deploys on its own.
 - Every backend call journaled (role, backend id, prompt hash); every console command audit-logged.
 - `security` and all gate roles pinned to Claude (section 5); CLI reports untrusted, always behind Claude `reviewer` + `security` gates.
 
