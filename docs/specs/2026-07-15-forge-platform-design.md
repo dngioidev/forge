@@ -1,6 +1,6 @@
 # forge — AI-driven development platform — Design Spec
 
-**Date:** 2026-07-15 (v3 — owner-review amendments)
+**Date:** 2026-07-15 (v3.1 — owner-review amendments, round 2)
 **Repo:** dngioidev/forge (new)
 **Testbed:** dngioidev/cms (design system), later tasky-ai and future repos
 **Goal:** A portable Claude Code plugin that runs the entire AI development workflow: pipeline skills (idea → tickets → spec → plan → execute → ship), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, a human escalation protocol, an error-learning loop, a structural graph-RAG index for code retrieval and reuse, and a mission-control console (local daemon + cloud + device app) for monitoring and driving the fleet.
@@ -27,6 +27,8 @@
 | Escalation (v3) | Formal halt-and-ask protocol; v1 transport = GitHub-native (Blocked status + decision comment); console app upgrades transport later |
 | Console (v3) | Mission-control app (local daemon + Firebase/GCP + device app) as sub-projects 9a/9b; graduates to its own repo |
 | CI runners (v3) | GitHub-hosted; no self-hosted CI runner — the console daemon is the local runner for *agent* work, not CI |
+| Docs knowledge base (v3.1) | `docs/` KB with route index (`docs/README.md`), ADR-style `decisions/`, `guides/` runbooks; `forge:ship` maintains the index |
+| Scope boundaries (v3.1) | Out-of-scope split into v2 roadmap vs permanent non-goals to match the v3 scope widening |
 
 ## 2. Repo & plugin anatomy
 
@@ -47,8 +49,11 @@ forge/
       lib/           shared node utilities (Windows-safe spawn, path, CRLF)
     templates/       consumer CI workflow (verify + gitleaks)
   docs/
-    specs/           forge's own design docs (this file)
-    plans/           forge's own implementation plans
+    README.md        route index: one line per doc, grouped by kind — the single entry point for project knowledge
+    specs/           design specs (this file)
+    plans/           implementation plans
+    decisions/       ADR-style records (short, numbered): owner decisions that outlive the spec that spawned them
+    guides/          runbooks & how-tos: install, init, backends, console ops, troubleshooting
   package.json       Node >=22.13, vitest suites for hooks/scripts/mcp
   .github/workflows/ verify CI (vitest, actionlint, SHA-pinned actions)
 ```
@@ -84,6 +89,7 @@ forge/
 
 - `forge init` bootstraps or adopts the board and writes this file (section 6).
 - Principles: plain Node + gh CLI only; no external services in the plugin itself; no API keys beyond existing gh/CLI auth; Windows-first (CRLF, `.cmd` spawn EINVAL, path-separator lessons become test cases in forge CI).
+- **Docs knowledge base:** project knowledge lives in `docs/`, in git — no wiki. `docs/README.md` is the **route index**: one line per doc (title, link, one-phrase hook), grouped by kind, so anything is findable in one hop. Maintaining it is not optional: `forge:ship`'s checklist updates the index whenever a merged branch adds or renames a doc, and `forge doctor` warns on docs missing from the index. Decisions that outlive a single spec (e.g. this spec's decisions log) get promoted to short numbered ADRs in `docs/decisions/`; `guides/` holds operational runbooks. The same taxonomy is the convention for consumer repos: `specsDir`/`plansDir` siblings plus a route index at their parent's `README.md`, maintained by the same ship step.
 
 ## 3. Team model & human roles
 
@@ -123,7 +129,7 @@ Seven skills. Flow: **ideate → triage → brainstorm → plan → execute → 
 3. **`forge:brainstorm`** — ticketed feature → design spec in the consumer's specs dir; decomposition-first for multi-system asks; spec self-review; spec-approval gate (routed per team policy).
 4. **`forge:plan`** — spec → task-by-task plan in the consumer's plans dir. Every task carries: ticket ref, files, complete code, **test-plan section** (cases, edge matrix, AC mapping — drafted by `test-architect`), verify command, done-criteria.
 5. **`forge:execute`** — plan → branch. Order per task: `scoper` narrows blast radius (which components/files/tests) → `test-architect` writes failing tests → `implementer` makes them pass → per-task review (`reviewer`; `design-reviewer` added for UI tasks when `features.designReview` is on — off drops that role entirely). Whole-branch final review + fix waves at the end. Ledger `.forge/progress.md` (git-ignored, survives compaction).
-6. **`forge:ship`** — branch → PR: commits→issues map, honest verification checklist, **AC-verification gate** (machine evidence: test-runner JSON output mapped to ACs — section 12), **plan-drift check** (actual touched files vs plan + blast radius; deviation escalates), **security gate** (`security` reviewer pass on the branch), **CI-green check** before the PR is marked ready. After merge (by a `maintainer`): receipt comments, board Done moves, delivery-log row, epic digest refresh.
+6. **`forge:ship`** — branch → PR: commits→issues map, honest verification checklist, **AC-verification gate** (machine evidence: test-runner JSON output mapped to ACs — section 12), **plan-drift check** (actual touched files vs plan + blast radius; deviation escalates), **security gate** (`security` reviewer pass on the branch), **CI-green check** before the PR is marked ready. After merge (by a `maintainer`): receipt comments, board Done moves, delivery-log row, epic digest refresh, docs route-index update when the branch touched `docs/` (section 2).
 7. **`forge:board`** — shared ticket-operations skill wrapping `scripts/board/*` (section 6); the other six call it instead of raw GraphQL.
 
 Migration order (parity proven on real cms work before retiring each superpowers counterpart): ship → plan+execute → brainstorm. `ideate`, `triage`, `board` have no counterpart and land whenever ready.
@@ -330,10 +336,17 @@ Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late delib
 - Every backend call journaled (role, backend id, prompt hash); every console command audit-logged.
 - `security` and all gate roles pinned to Claude (section 5); CLI reports untrusted, always behind Claude `reviewer` + `security` gates.
 
-## 13. Out of scope (v1)
+## 13. Scope boundaries
 
-- Embeddings / semantic search (v2 of graph RAG).
-- Non-TypeScript language indexers (`features.graph: false` → permanent import-scan/grep fallback).
-- Team **coordination automation** (auto-assignment balancing, review-load distribution, calendars). The team *model* — roles, routing, areas, changeable membership — **is** v1 (section 3); no v1 design decision may assume solo-only.
+v1 scope, for the record, includes what earlier drafts deferred: the team model (section 3), the escalation protocol (section 7), the platform console (section 10, sub-projects 9a/9b), and the docs knowledge base (section 2).
+
+**Deferred to v2 (planned, design space reserved):**
+- Embeddings / semantic search — graph RAG v2; the SQLite schema keeps an embedding column slot.
+- Non-TypeScript language indexers — added by demand per stack; until then `features.graph: false` gives the import-scan/grep fallback.
+- Team **coordination automation** (auto-assignment balancing, review-load distribution, calendars) — the team *model* is v1; the automation on top is not.
+- Console web dashboard (Cloud Run) — v1 console is daemon + device app only.
+
+**Permanent non-goals:**
 - Replacing Claude Code as orchestrator.
-- Self-hosted CI runners — GitHub-hosted CI is sufficient at current scale; the console daemon covers local *agent* compute (section 10). Revisit only if Actions minutes cap out.
+- Self-hosted CI runners — the console daemon covers local *agent* compute (section 10); CI stays GitHub-hosted. Revisit only if Actions minutes cap out.
+- A wiki or any knowledge store outside git — `docs/` + route index is the single source (section 2).
