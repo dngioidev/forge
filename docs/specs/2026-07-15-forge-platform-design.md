@@ -1,18 +1,18 @@
 # forge — AI-driven development platform — Design Spec
 
-**Date:** 2026-07-15
+**Date:** 2026-07-15 (v3 — owner-review amendments)
 **Repo:** dngioidev/forge (new)
 **Testbed:** dngioidev/cms (design system), later tasky-ai and future repos
-**Goal:** A portable Claude Code plugin that runs the owner's entire AI development workflow: pipeline skills (idea → tickets → spec → plan → execute → ship), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, an error-learning loop, and a structural graph-RAG index for code retrieval and reuse.
+**Goal:** A portable Claude Code plugin that runs the entire AI development workflow: pipeline skills (idea → tickets → spec → plan → execute → ship), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, a human escalation protocol, an error-learning loop, a structural graph-RAG index for code retrieval and reuse, and a mission-control console (local daemon + cloud + device app) for monitoring and driving the fleet.
 
 ## 1. Purpose & context
 
-- Owner: solo developer running repos end-to-end with Claude Code.
+- Owner: solo developer today; the platform is team-ready by design (section 3) — team structure lives behind config and can change mid-project.
 - Today: the superpowers plugin provides process orchestration (brainstorm → plan → subagent-driven-development → ship); board work is hand-driven GraphQL; subagents are generic; nothing learns from errors; no code-reuse retrieval.
 - Decision (owner, 2026-07-15): build an **own pipeline** — forge replaces superpowers **incrementally, skill by skill**, proving parity on real cms work before each superpowers counterpart is retired. Superpowers is uninstalled from consumer repos once forge's pipeline skills reach parity.
 - Claude Code is always the orchestrator. Other CLIs (agy/Gemini, codex, …) may fill individual agent roles to save tokens, never orchestrate.
 
-### Decisions log (owner-approved during brainstorm, 2026-07-15)
+### Decisions log (owner-approved, 2026-07-15)
 
 | Decision | Choice |
 | --- | --- |
@@ -22,6 +22,11 @@
 | Graph RAG | Structural graph (ts-morph → SQLite → MCP), no embeddings in v1 |
 | Learning | Auto-capture kind-tagged failures + gated `/distill` (human approves every lesson) |
 | Board | Docs-as-code stays in git; board = tracker + auto-published digests |
+| Backend swap scope (v3) | Non-Claude backends only for read roles (investigator, librarian, second-opinion) + implementer under the child-branch rule; every gate role pinned to Claude, enforced in code |
+| Team model (v3) | Human roles/areas behind `forge.json` `team` block; solo = one member holding all roles; structure changeable mid-project by config edit |
+| Escalation (v3) | Formal halt-and-ask protocol; v1 transport = GitHub-native (Blocked status + decision comment); console app upgrades transport later |
+| Console (v3) | Mission-control app (local daemon + Firebase/GCP + device app) as sub-projects 9a/9b; graduates to its own repo |
+| CI runners (v3) | GitHub-hosted; no self-hosted CI runner — the console daemon is the local runner for *agent* work, not CI |
 
 ## 2. Repo & plugin anatomy
 
@@ -33,21 +38,23 @@ forge/
     skills/          pipeline + board + learning skills (markdown)
     cards/           backend-neutral role cards (single source; outside agents/ so Claude Code never loads them as agents)
     agents/          Claude-native agent definitions compiled from cards
-    hooks/           learning-capture hooks (node .mjs + hooks.json)
-    commands/        /distill, /ticket, /new-component
+    hooks/           learning-capture + safety hooks (node .mjs + hooks.json)
+    commands/        /distill, /ticket (quick triage), /forge:<verb> wrappers (below)
     mcp/graph/       graph-RAG MCP server (node)
     scripts/
       board/         gh GraphQL helpers (create/move/receipt/digest/log)
       backends/      CLI adapters (agy, codex, …) implementing run/report contract
       lib/           shared node utilities (Windows-safe spawn, path, CRLF)
+    templates/       consumer CI workflow (verify + gitleaks)
   docs/
     specs/           forge's own design docs (this file)
     plans/           forge's own implementation plans
-  package.json       Node 22, vitest suites for hooks/scripts/mcp
+  package.json       Node >=22.13, vitest suites for hooks/scripts/mcp
   .github/workflows/ verify CI (vitest, actionlint, SHA-pinned actions)
 ```
 
-- Consumer repos install via `claude marketplace add dngioidev/forge` + plugin install.
+- Consumer repos install via `claude plugin marketplace add dngioidev/forge` (in-session: `/plugin marketplace add`) + plugin install, then `forge init` (section 6).
+- **Command surface:** every `forge <verb>` in this spec (`init`, `doctor`, `backends sync`, `graph install-hook`, `graph rebuild`) is a plugin slash command `/forge:<verb>` wrapping a script in `plugin/scripts/` — no installed binary, no npm bin. Stack-specific helpers (e.g. a `/new-component` command) are not part of the portable plugin; consumer repos add them via the normal override mechanism.
 - **Per-repo config `.claude/forge.json`** (committed in each consumer repo) keeps the plugin generic:
 
 ```jsonc
@@ -56,52 +63,88 @@ forge/
   "board": {
     "projectNumber": 7,
     "projectId": "PVT_…",
-    "fields": { "status": { "id": "…", "options": { "backlog": "…", "inProgress": "…", "done": "…" } },
-                 "priority": { "…": "…" }, "size": { "…": "…" }, "type": { "…": "…" } },
+    "fields": { "status": { "id": "…", "options": { "backlog": "…", "ready": "…", "inProgress": "…",
+                                                     "inReview": "…", "blocked": "…", "done": "…" } },
+                 "priority": { "…": "…" }, "size": { "…": "…" }, "type": { "…": "…" },
+                 "iteration": { "…": "…" }, "area": { "…": "…" } },   // iteration/area optional
     "deliveryLogIssue": 205
   },
   "conventions": {
     "verify": "pnpm verify",
     "commitFormat": "conventional+issue-ref",
-    "specsDir": "docs/superpowers/specs",
-    "plansDir": "docs/superpowers/plans"
+    "specsDir": "docs/specs",     // cms currently maps these to docs/superpowers/* during migration
+    "plansDir": "docs/plans",
+    "shell": "windows"            // renders the plugin's Windows shell-rule template into synced context files
   },
-  "roster": { /* section 4 */ }
+  "features": { "graph": true, "designReview": true },   // stack-specific pieces are flags
+  "team": { /* section 3 */ },
+  "roster": { /* section 5 */ }
 }
 ```
 
-- `forge board init` discovers project/field IDs via gh GraphQL and writes the board block.
-- Principles: plain Node + gh CLI only; no external services; no API keys beyond existing gh/CLI auth; Windows-first (CRLF, `.cmd` spawn EINVAL, path-separator lessons become test cases in forge CI).
+- `forge init` bootstraps or adopts the board and writes this file (section 6).
+- Principles: plain Node + gh CLI only; no external services in the plugin itself; no API keys beyond existing gh/CLI auth; Windows-first (CRLF, `.cmd` spawn EINVAL, path-separator lessons become test cases in forge CI).
 
-## 3. Pipeline skills
+## 3. Team model & human roles
 
-Seven skills. Flow: **ideate → triage → brainstorm → plan → execute → ship**, with `board` called by all of them. Each skill is a markdown checklist + process graph, same discipline as superpowers but tuned: solo dev, ticket-first, owner's gate map, Windows shell rules, caveman-terse receipts.
+**Human roles are config, not code.** Skills read the `team` block fresh every run — changing the team is a config edit (PR'd, versioned, auditable). No other part of the platform references usernames.
 
-1. **`forge:ideate`** — raw idea / feature area → feature brainstorm → decomposed feature list → epic + child tickets with acceptance criteria, type, size, priority, dependencies, board placement. Builds the ticket tree so work starts ticket-first. (Whole feature areas; single items go straight to triage.)
+```jsonc
+"team": {
+  "members": [
+    { "github": "dngioidev", "roles": ["maintainer", "security-approver"], "areas": ["*"] },
+    { "github": "alice",     "roles": ["developer", "reviewer"],           "areas": ["frontend/*"] }
+  ],
+  "policy": {
+    "approvals": {
+      "spec":       ["maintainer"],
+      "merge":      ["maintainer"],
+      "distill":    ["maintainer"],
+      "escalation": { "security": ["security-approver"], "default": ["maintainer"] }
+    },
+    "assignment": "manual"   // or "by-area"
+  }
+}
+```
+
+- **Built-in human roles** (custom allowed): `maintainer`, `developer`, `reviewer`, `security-approver`. A member holds any combination. Human roles are distinct from *agent* roles (section 5).
+- **Solo is the degenerate case**: one member holding all roles — no mode flag; skills derive it. When approver == requester, gates collapse to self-approval, so the solo flow stays as fast as today.
+- **Gates route by role, not by name**: spec approval goes to whoever holds `maintainer` at that moment; security escalations route to `security-approver`. Membership changes re-route every gate automatically.
+- **Work separation via `areas`** (path globs, later graph-aware): `ideate` assigns tickets by area when `assignment: "by-area"`; `scoper` flags cross-area blast radius so the affected area's owner is looped in before review, not surprised at it.
+- **Board follows**: assignees set from members; digests gain a per-member workload section (invisible when solo).
+- **`forge doctor` validation**: every member is a real repo collaborator; ≥1 `maintainer` exists; every approval policy resolves to ≥1 current member (catches "we removed the only security-approver").
+
+## 4. Pipeline skills
+
+Seven skills. Flow: **ideate → triage → brainstorm → plan → execute → ship**, with `board` called by all of them. Each skill is a markdown checklist + process graph, same discipline as superpowers but tuned: ticket-first, role-routed gates (section 3), Windows shell rules, caveman-terse receipts. All skills honor the escalation protocol (section 7).
+
+1. **`forge:ideate`** — raw idea / feature area → feature brainstorm → decomposed feature list → epic + child tickets with acceptance criteria, type, size, priority, dependencies, board placement, assignee (per team policy). Builds the ticket tree so work starts ticket-first. (Whole feature areas; single items go straight to triage.)
 2. **`forge:triage`** — one incoming bug/idea → correctly-typed ticket with AC + board placement.
-3. **`forge:brainstorm`** — ticketed feature → design spec in the consumer's specs dir; decomposition-first for multi-system asks; spec self-review; owner approval gate.
+3. **`forge:brainstorm`** — ticketed feature → design spec in the consumer's specs dir; decomposition-first for multi-system asks; spec self-review; spec-approval gate (routed per team policy).
 4. **`forge:plan`** — spec → task-by-task plan in the consumer's plans dir. Every task carries: ticket ref, files, complete code, **test-plan section** (cases, edge matrix, AC mapping — drafted by `test-architect`), verify command, done-criteria.
-5. **`forge:execute`** — plan → branch. Order per task: `scoper` narrows blast radius (which components/files/tests) → `test-architect` writes failing tests → `implementer` makes them pass → per-task review (`reviewer`; `design-reviewer` added for UI tasks). Whole-branch final review + fix waves at the end. Ledger `.forge/progress.md` (git-ignored, survives compaction).
-6. **`forge:ship`** — branch → PR: commits→issues map, honest verification checklist, **AC-verification gate** (`test-architect` confirms every AC has a passing test), **security gate** (`security` reviewer pass on the branch) before PR creation. After owner merges: receipt comments, board Done moves, delivery-log row, epic digest refresh.
-7. **`forge:board`** — shared ticket-operations skill wrapping `scripts/board/*` (section 5); the other six call it instead of raw GraphQL.
+5. **`forge:execute`** — plan → branch. Order per task: `scoper` narrows blast radius (which components/files/tests) → `test-architect` writes failing tests → `implementer` makes them pass → per-task review (`reviewer`; `design-reviewer` added for UI tasks when `features.designReview` is on — off drops that role entirely). Whole-branch final review + fix waves at the end. Ledger `.forge/progress.md` (git-ignored, survives compaction).
+6. **`forge:ship`** — branch → PR: commits→issues map, honest verification checklist, **AC-verification gate** (machine evidence: test-runner JSON output mapped to ACs — section 12), **plan-drift check** (actual touched files vs plan + blast radius; deviation escalates), **security gate** (`security` reviewer pass on the branch), **CI-green check** before the PR is marked ready. After merge (by a `maintainer`): receipt comments, board Done moves, delivery-log row, epic digest refresh.
+7. **`forge:board`** — shared ticket-operations skill wrapping `scripts/board/*` (section 6); the other six call it instead of raw GraphQL.
 
 Migration order (parity proven on real cms work before retiring each superpowers counterpart): ship → plan+execute → brainstorm. `ideate`, `triage`, `board` have no counterpart and land whenever ready.
 
-## 4. Agent roster & pluggable backends
+## 5. Agent roster & pluggable backends
 
 **Role ≠ runtime.** Each role is a **role card** (mission, checklist, output contract, guardrails) rendered onto a configurable **backend**.
 
 | Role | Default backend | Job |
 | --- | --- | --- |
 | `implementer` | claude:sonnet | one plan task, TDD, conventions injected from forge.json |
-| `reviewer` | claude:fable | per-task + whole-branch review, severity-tagged findings |
-| `security` | claude:fable (**pinned, not swappable**) | adversarial pass: injection, secrets, supply chain, hook/CI attack surface; read-only |
-| `design-reviewer` | claude:sonnet | token-only styling, a11y contract, stories present, visual spec match |
-| `scoper` | claude:sonnet | ticket impact analysis: touched components/files, test set to run, blast radius |
-| `test-architect` | claude:sonnet | AC → test plan; writes failing tests first; verifies AC coverage at ship |
+| `reviewer` | claude:fable (**pinned**) | per-task + whole-branch review, severity-tagged findings |
+| `security` | claude:fable (**pinned**) | adversarial pass: injection, secrets, supply chain, hook/CI attack surface; read-only |
+| `design-reviewer` | claude:sonnet (**pinned**) | token-only styling, a11y contract, stories present, visual spec match |
+| `scoper` | claude:sonnet (**pinned**) | ticket impact analysis: touched components/files, test set to run, blast radius |
+| `test-architect` | claude:sonnet (**pinned**) | AC → test plan; writes failing tests first; verifies AC coverage at ship |
 | `investigator` | claude:haiku | read-only code location, cheap fan-out |
 | `librarian` | claude:haiku | RAG-first lookup: queries graph MCP before any grep sweep |
 | `second-opinion` | codex:gpt-5 (optional) | independent second-pass critique of specs/plans/diffs on demand; read-only, advisory — never a merge gate |
+
+**Swap allowlist (enforced in the backend loader, not convention):** only `investigator`, `librarian`, and `second-opinion` accept non-Claude backends; `implementer` may use one only under the child-branch rule below — the loader checks the condition itself (rejects a non-Claude implementer unless the current branch is a non-default work branch), and `forge:ship` refuses to mark the PR ready until the CLI-authored diff has a recorded Claude `reviewer` pass. Every other role — everything that feeds a gate or decision — is pinned `claude:*`; a roster entry attempting to swap a pinned role is **ignored with a warning** (same mechanism as the security pin). Pinned roles may still change *Claude model* via roster (e.g. `reviewer: claude:opus`).
 
 **Backends** (per-repo `forge.json` `roster` block):
 
@@ -111,49 +154,69 @@ Migration order (parity proven on real cms work before retiring each superpowers
   "librarian":      { "backend": "agy:gemini-flash",  "fallback": "claude:haiku" },
   "second-opinion": { "backend": "codex:gpt-5",       "optional": true },
   "implementer":    { "backend": "claude:sonnet" }
-  // "security" pinned to claude — config ignored by design
+  // pinned roles: only claude:<model> accepted; non-claude entries ignored by design
 }
 ```
 
 - Backend id format is uniform: **`<runtime>:<model>`** (`claude:sonnet`, `agy:gemini-pro`, `agy:gemini-flash`, `codex:gpt-5`, …). Model part optional — bare runtime (`agy`) means the adapter's declared default model. `fallback` uses the same format.
-- **Role cards are backend-neutral**, stored in `plugin/cards/<role>.md` (mission, checklist, guardrails, output contract). One source, two renderers:
-  - `claude:*` — card compiled to `agents/<role>.md` native subagent. Compiled agent files carry **no model pin**: the orchestrator reads the roster and passes the model at spawn time, so a per-repo model override needs no file regeneration.
-  - CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, one contract: `run(roleCard, taskBrief, model) → report`. The adapter renders `role card + forge.json conventions + task brief + report contract` into a single prompt (`agy -p …`, `codex exec …`), owns the model-id→CLI-flag mapping, and declares its default model plus accepted model ids; unknown model id → treated like missing CLI. Generalizes the existing agy-consult pattern.
+- **Role cards are backend-neutral**, stored in `plugin/cards/<role>.md` (mission, checklist, guardrails, output contract — every card carries the **honesty clause**: "unknown" is a valid answer; guessed file paths or API names are a card violation). One source, two renderers:
+  - `claude:*` — card compiled to `agents/<role>.md` native subagent. Compiled agent files carry **no model pin**: the orchestrator reads the roster and passes the model at spawn time, so a per-repo model override needs no file regeneration. Read-only roles compile with read-only tool allowlists.
+  - CLI backends (`agy`, `codex`, …) — adapter script per CLI in `scripts/backends/`, one contract: `run(roleCard, taskBrief, model) → report`. The adapter renders `role card + forge.json conventions + task brief + report contract` into a single prompt (`agy -p …`, `codex exec …`), owns the model-id→CLI-flag mapping, and declares its default model plus accepted model ids; unknown model id → treated like missing CLI. Adapters pass CLI-native sandbox/read-only flags where the CLI supports them. Generalizes the existing agy-consult pattern.
 - **Task brief** is composed by the orchestrator: goal, ticket ref, scoped file list (from `scoper`/graph), constraints, expected output. CLI agents run in the repo cwd and read files themselves — briefs carry pointers, never file dumps.
-- **Native context sync:** `forge backends sync` renders forge.json conventions (verify command, commit format, specs/plans dirs, Windows shell rules) into the context files each CLI reads natively — `GEMINI.md` for agy, `AGENTS.md` for codex — so repo context costs zero prompt tokens per call. Sync writes a fenced managed block (`<!-- forge:begin --> … <!-- forge:end -->`) and never touches content outside it, so hand-written sections survive. Re-run on forge.json change; `board init` runs it once.
+- **Native context sync:** `forge backends sync` renders forge.json conventions (verify command, commit format, specs/plans dirs, plus the plugin's static shell-rule template selected by `conventions.shell`) into the context files each CLI reads natively — `GEMINI.md` for agy, `AGENTS.md` for codex — so repo context costs zero prompt tokens per call. Sync writes a fenced managed block (`<!-- forge:begin --> … <!-- forge:end -->`) and never touches content outside it, so hand-written sections survive. Managed blocks are rendered **only from forge.json content and static plugin templates**, never from fetched or external text. Sync also writes CLI-native ignore files (`.geminiignore`, codex equivalent) excluding `.env*`, `*.pem`, key material, and `.forge/` (section 12). Re-run on forge.json change; `forge init` runs it once.
 - **Report contract** (every role, every backend): markdown body + terminal JSON block
 
   ```json
   { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }
   ```
 
-  Ship gates (reviewer, security, AC-verification) consume the JSON block only — never parse prose.
-- Failure handling: per-adapter timeout (default 10 min). Timeout, nonzero exit, or malformed report JSON → one retry with the violation appended to the prompt, then `fallback` backend + `backend-fallback` journal event. Missing CLI / auth failure skips straight to fallback. `optional: true` roles have no fallback: on any failure the role is skipped with a note in the session output (still journaled).
+  Ship gates (reviewer, security, AC-verification) consume the JSON block only — never parse prose. Gate scripts apply **cite-or-drop** (section 12): findings whose `file`/`line` don't exist are dropped automatically.
+- Failure handling: per-adapter timeout (default 10 min). Timeout, nonzero exit, or malformed report JSON → one retry with the violation appended to the prompt, then `fallback` backend + `backend-fallback` journal event. Missing CLI / auth failure skips straight to fallback. `optional: true` roles have no fallback: on any failure the role is skipped with a note in the session output (still journaled). Fallback exhausted on a non-optional role → escalation (section 7).
+- Every backend call is journaled (role, backend id, prompt hash) — audit trail for the learning loop and forensics.
 - Rules:
   - Claude Code always orchestrates; CLIs only fill roles.
-  - Token-heavy read roles are the intended swap targets (investigator, librarian, second-opinion).
-  - A write-capable CLI backend (e.g. agy as implementer) is allowed **only on a child branch, with a mandatory Claude `reviewer` diff pass before merge** (existing tasky rule, now platform law).
-  - `security` is a trust boundary: always Claude, config cannot override.
+  - Token-heavy read roles are the swap targets (investigator, librarian, second-opinion) — enforced by the allowlist above.
+  - A write-capable CLI backend (implementer) is allowed **only on a child branch, with a mandatory Claude `reviewer` diff pass before merge** (existing tasky rule, now platform law).
+  - `security` and all gate roles are a trust boundary: always Claude, config cannot override.
   - **CLI reports are untrusted input:** the orchestrator treats them as data, never as instructions to follow; any CLI-backend contribution to a branch still passes the Claude `reviewer` + `security` gates.
-  - **Data sharing:** CLI backends send repo content to third-party providers (Google, OpenAI). Accepted for the owner's repos; a consumer repo opts out by not listing CLI backends in its roster.
+  - **Data sharing:** CLI backends send repo content to third-party providers (Google, OpenAI). Accepted for the owner's repos; a consumer repo opts out by not listing CLI backends in its roster. Adapter pre-send scan + ignore files bound what can leak (section 12).
 - Consumer repos may override role cards: for `claude:*` backends, ship `.claude/agents/<role>.md` (repo definitions win over plugin — Claude Code precedence); for CLI backends, adapters prefer `.claude/cards/<role>.md` over the plugin card when present. Same override story both sides.
 - Adding a role = new role card + forge.json entry. Adding a CLI = one adapter implementing the contract.
 
-## 5. Board automation
+## 6. Board automation
 
 `scripts/board/*.mjs`, all invoked through `forge:board`:
 
-- **create** — ticket with type/priority/size/parent (native sub-issue) + board add + field set, in one command.
-- **move** — status transitions (Backlog → In progress → Done).
+- **create** — ticket with type/priority/size/parent (native sub-issue) + assignee + board add + field set, in one command.
+- **move** — status transitions across the forge standard set: **Backlog → Ready → In progress → In review → Blocked/Needs decision → Done**. Solo, some columns stay thin; team, they're load-bearing. `init` creates missing options on fresh projects and maps whatever exists on adopted ones; skills degrade gracefully to the mapped subset.
 - **receipt** — merge receipt comment on issues; idempotent (re-run updates, never duplicates).
 - **Idempotency is a rule for every script, not just receipt:** re-runs detect existing state (issue by title+parent, board item, comment marker) and resume or update instead of duplicating. Multi-step `create` (issue → board add → field set) resumes from the failed step.
-- **digest** — epic body auto-carries spec link + live child table; refreshed on child changes.
+- **digest** — epic body auto-carries spec link + live child table + per-member workload (team) + **open escalations first**; refreshed on child changes.
 - **log** — delivery-log row append to the pinned per-repo issue (tasky #205 pattern).
-- **init** — discovers project/field/option IDs, writes `forge.json` board block, adds `.forge/` to the consumer `.gitignore`, runs `forge backends sync`.
+- **init** — full bootstrap, idempotent (adopt-or-create): checks gh auth + Node ≥22.13 → creates the GitHub Project + status/priority/size/type fields with standard options if absent, discovers IDs if present (optional iteration/area fields are discovered and mapped when present; init offers to create `area` when `assignment: "by-area"`) → creates the delivery-log issue if missing → writes `forge.json` (board + team skeleton) → adds `.forge/` to the consumer `.gitignore` → installs the consumer CI template (below) if `.github/workflows/` lacks a verify workflow → runs `forge backends sync`. Works on a fresh repo and a mature one. **Spike required (SP1):** verify ProjectsV2 GraphQL can add options to the built-in Status single-select on a fresh project; if not, init documents the manual step and falls back to mapping whatever exists (the degrade-gracefully path above). Init and doctor grow with the rollout: the CI-template step lands with SP3, the backends-sync step with SP4.
+- **doctor** — read-only health check: gh auth, project reachable, field/option IDs valid, team block valid (section 3), roster backends' CLIs present, Node ≥22.13, branch protection with required verify check, secret scanning + push protection enabled (warn if not). Run any time; `init` ends by running it.
+
+**Consumer CI template** (`plugin/templates/`): one minimal workflow — the repo's `verify` command on PR and push-to-main, plus gitleaks. `forge:ship` checks CI is green before marking a PR ready. Branch protection (require the verify check) is the hard backstop agents cannot bypass — `init` offers to set it, `doctor` warns when absent.
 
 Docs stay in git (reviewable, diffable); the board is the tracker + window. Field IDs are read from config — no hand-built GraphQL in sessions ever again.
 
-## 6. Learning loop
+## 7. Escalation & human decisions
+
+Scheduled gates (spec approval, distill approval, merge) are not enough — the pipeline needs a **halt-and-ask** path for mid-flight surprises. Escalation is platform law: skills never auto-resolve past a trigger.
+
+**Triggers:**
+- `critical`-severity finding from any reviewer/security pass.
+- The same gate failing twice.
+- Plan drift: actual work exceeding the plan's file list + scoper's blast radius.
+- Any destructive or hard-to-reverse action (force push, data deletion, rewriting published history) — including hits on the hook denylist (section 12).
+- Backend fallback exhausted on a non-optional role.
+- Cross-area impact without the area owner's sign-off (team mode).
+
+**Action (always the same sequence):** halt the pipeline → move the ticket to **Blocked/Needs decision** → post a decision comment on the issue (context, options, recommendation) → journal an `escalation` event → stop. Routing follows `team.policy.escalation` (category → role holders), so a security escalation pings the `security-approver`, not everyone.
+
+**v1 transport — GitHub-native, zero infra:** GitHub Mobile already pushes issue comments to the approver's phone; they reply in the comment thread; the session (or the next one) reads the decision and resumes. The comment thread is the permanent audit trail. The console app (section 10) upgrades the transport to tap-to-answer later but **never replaces the GitHub record** — every decision still lands on the issue.
+
+## 8. Learning loop
 
 **Capture** — plugin hooks (PostToolUse + gate failures) append kind-tagged JSONL to `.forge/journal.jsonl` (git-ignored):
 
@@ -161,49 +224,116 @@ Docs stay in git (reviewable, diffable); the board is the tracker + window. Fiel
 {"ts":"…","kind":"gate-fail","tool":"Bash","cmd":"pnpm verify","exit":1,"err_line":"…","ticket":"#15","branch":"feat/…"}
 ```
 
-Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`. Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
+Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`, `escalation`. Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
 
-**Distill** — `/distill` skill: reads journal since last run, clusters repeats, proposes per cluster one of: CLAUDE.md rule, role-card edit, new lint/hook guard, memory entry. **Owner approves each proposal before anything is written.** Applied lessons are logged with journal refs; after distill the journal is archived to `.forge/journal-archive/<date>.jsonl` (rejected clusters keep their evidence), and the live journal starts empty. Suggested cadence: after each epic ships, or weekly.
+**Distill** — `/distill` skill: reads journal since last run, clusters repeats, proposes per cluster one of: CLAUDE.md rule, role-card edit, new lint/hook guard, memory entry. **A `maintainer` approves each proposal before anything is written** — and applied lessons land as a PR, so in a team they get reviewed like any other change. Applied lessons are logged with journal refs; after distill the journal is archived to `.forge/journal-archive/<date>.jsonl` (rejected clusters keep their evidence), and the live journal starts empty. Suggested cadence: after each epic ships, or weekly.
 
-## 7. Graph RAG MCP server
+## 9. Graph RAG MCP server
 
-`plugin/mcp/graph/` — structural index of the consumer repo, no embeddings in v1 (schema leaves room for a v2 embedding column).
+`plugin/mcp/graph/` — structural index of the consumer repo, no embeddings in v1 (schema leaves room for a v2 embedding column). Feature-flagged: `features.graph` — TypeScript repos only; with the flag off, `librarian` falls back to grep-first and `scoper` uses import-scan (that fallback is **permanent** for non-TS repos, not a stopgap).
 
-- **Indexer:** ts-morph parse → SQLite `.forge/graph.db` via built-in `node:sqlite` (Node 22 — no native-module builds on Windows). Git-ignored, rebuildable, zero network.
+- **Indexer:** ts-morph parse → SQLite `.forge/graph.db` via built-in `node:sqlite` (Node ≥22.13, where the module is no longer experimental — no native-module builds on Windows). Git-ignored, rebuildable, zero network.
   - Nodes: file, component, export, props-interface, token, story, test, icon.
   - Edges: imports, renders, uses-token, tests, documents. Ticket edges from commit-message issue refs link code to tickets.
 - **Incremental:** `forge graph install-hook` writes a `.git/hooks/post-commit` that reindexes changed files only (plugins cannot install git hooks themselves — explicit opt-in command). `forge:execute`/`forge:ship` also reindex touched files, so the graph stays fresh even without the hook; `forge graph rebuild` does a full pass.
 - **MCP tools:** `find_component(query)`, `who_uses(symbol|token)`, `similar_props(interface)`, `blast_radius(files[])`, `code_for_ticket(#n)`, `reuse_candidates(description)` (ranked by export/props/story-text keyword match).
+- **Hardening:** parameterized SQL only; MCP tool inputs schema-validated; file-path params canonicalized (no traversal outside the repo root).
 - **Consumers:** `librarian` answers "does X already exist" before anything new is written; `scoper` computes touched components + the test set from `blast_radius`; the `implementer` role card mandates a `reuse_candidates` check before creating new files.
 
-## 8. Rollout
+## 10. Platform console (forge-console)
+
+Mission control for the fleet: monitoring, remote decisions, and remote triggering across repos and machines. Escalation delivery is one feature; the console's real scope is **observe and drive everything the daemon can see**.
+
+```
+Claude Code session ──escalation/telemetry──▶ forge daemon (local, outbound-only)
+                                                  │ writes
+                                                  ▼
+                                        Firestore (queues + state)
+                                                  │ Cloud Function
+                                                  ▼
+                                        FCM push ──▶ device app (per-member, role-scoped)
+                                                  │ tap decision / send command
+                                                  ▼
+                                        Firestore doc ──▶ daemon listener
+                                                  ▼
+                              .forge/decisions/<id>.json ──▶ session resumes
+```
+
+- **Daemon:** one per machine, outbound connections only (Firestore listeners — no open ports, works behind NAT), registers with a machine ID. Multi-machine from day one. "Session resumes" in the diagram means: the daemon relaunches the halted pipeline headlessly (`claude -p --resume <session>`) with the decision file in place — or, without the daemon, the next interactive session reads `.forge/decisions/` and continues (matching section 7's stop-and-wait semantics).
+- **Cloud:** Firebase only (Auth + Firestore + Functions + FCM) — free tier covers solo/small-team volume; Cloud Run enters only if a live web dashboard is wanted later.
+- **The daemon is also the local runner:** remote commands spawn headless `claude -p` sessions on the owner's machine — zero GitHub Actions minutes, zero cloud compute. CI itself stays on GitHub-hosted runners (2,000 free min/month far exceeds current usage; a self-hosted CI runner would couple merges to the machine being on). Machine off ⇒ commands and escalations queue in Firestore; nothing is lost, and the GitHub-native escalation path (section 7) still works regardless.
+
+**Monitor (read-only telemetry):** machine health + heartbeat per machine; live sessions (repo / ticket / branch / phase from the `.forge/progress.md` ledger + journal, elapsed, idle-vs-working); agent activity (active roles, backend in use, fallback events); cost & usage (token spend per day / repo / backend / role, budget alerts); pipeline & gate feed (per-ticket stage, gate results, CI status mirror, live journal tail across repos); cross-repo board digest with escalations first.
+
+**Control (allowlisted command verbs):** escalation + approvals inbox (structured decisions, spec approvals, distill lessons — tap-to-answer, routed per `team.policy`); remote triggers (start ticket #N, `/distill`, rerun verify, graph rebuild); work queue ("run these 3 tickets overnight", sequential per machine); session control (pause / resume / kill a session or single agent); **global kill switch** (stop every agent on every machine); runner admin (register/deregister machines, daemon logs, remote daemon restart).
+
+**Guardrails (design invariants, enforced daemon-side):**
+- The console can **never** push code, merge, or edit files — those live in GitHub behind branch protection. Command verbs are an allowlist; unknown verbs are rejected by the daemon, not merely hidden in the UI.
+- **Metadata only in the cloud:** ticket refs, phase names, counts, costs, option labels. Code, diffs, and prompts never enter Firestore/FCM; the app deep-links to GitHub for context.
+- Firebase Auth per team member; visibility and command rights scoped by their `team` roles; every command audit-logged in Firestore.
+
+The console graduates to its own repo (`forge-console`) after sub-project 9a — a device app + cloud project has a different lifecycle than a plugin.
+
+## 11. Rollout
 
 Each sub-project = its own spec → plan → epic in the forge repo, executed with the current pipeline (superpowers until forge replaces it), dogfooded on live cms component work (Epics 3–6) before the next starts.
 
 | # | Sub-project | Size | Replaces |
 | --- | --- | --- | --- |
-| 1 | Plugin skeleton: marketplace, plugin.json, cms install, `forge.json` schema + `board init` | S | — |
-| 2 | Board automation: `forge:board` + scripts | M | manual GraphQL |
-| 3 | `forge:ship` + `forge:triage` | M | ship-and-document ritual |
-| 4 | Agent roster + backend adapters (role cards, agy adapter, fallback logic) | M | generic subagents |
-| 5 | `forge:plan` + `forge:execute` (scoper + test-architect gates wired) | L | writing-plans + subagent-driven-development |
+| 1 | Plugin skeleton: marketplace, plugin.json, cms install, `forge.json` schema (board/team/features/roster) + `forge init` + `forge doctor` | S | — |
+| 2 | Board automation: `forge:board` + scripts (statuses, assignees, digest, log) | M | manual GraphQL |
+| 3 | `forge:ship` + `forge:triage` + escalation protocol (GitHub-native) + journal format & append helper + destructive-command denylist hook + consumer CI template | M | ship-and-document ritual |
+| 4 | Agent roster + backend adapters (role cards, swap allowlist, agy adapter, fallback logic, pre-send scan, ignore-file sync) | M | generic subagents |
+| 5 | `forge:plan` + `forge:execute` (scoper + test-architect gates, plan-drift check, dependency-existence guard wired) | L | writing-plans + subagent-driven-development |
 | 6 | `forge:ideate` + `forge:brainstorm` | M | brainstorming |
-| 7 | Learning loop: capture hooks + `/distill` | M | — |
+| 7 | Learning loop: capture hooks + `/distill` (journal format itself lands in SP3) | M | — |
 | 8 | Graph RAG MCP (`librarian` goes live; `scoper` upgrades from import-scan to graph) | L | — |
+| 9a | Console: daemon + escalation inbox + monitoring basics (then graduates to `forge-console` repo) | L | GitHub-Mobile-only escalation UX |
+| 9b | Console control plane: remote triggers, work queue, kill switch, multi-machine admin | L | — |
 
-Superpowers is uninstalled from cms after sub-project 6. Graph RAG is last deliberately: its payoff grows with codebase size, and by then cms has real components to index.
+**Staged gates:** `forge:ship` (SP3) launches with degraded gates — generic subagents run the security/reviewer passes and the AC gate maps tests to ticket ACs directly — and upgrades in place as later sub-projects land: role cards + report contract + cite-or-drop (SP4), plan-based AC mapping + plan-drift check (SP5). SP3's deliverable is the ritual and the gate *slots*, not their final occupants.
 
-## 9. Quality & testing
+Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late deliberately: its payoff grows with codebase size, and by then cms has real components to index. The console (9a/9b) consumes sub-project 3's escalation protocol and 7's journal, so it comes last; 9b is specced and executed in the `forge-console` repo after 9a's graduation.
 
+## 12. Quality, trust & safety
+
+**Quality:**
 - forge repo: own GitHub project board, conventional commits + issue refs, feature-branch + PR flow — the platform obeys the workflow it enforces.
 - CI `verify`: vitest suites for hooks, board scripts, backend adapters, MCP server (fixture repos as test beds); actionlint; SHA-pinned actions; concurrency cancel.
 - Windows-first test cases: CRLF handling, `.cmd` spawn without shell (EINVAL), path-separator comparisons — every recorded Windows lesson becomes a regression test.
 - Skills are markdown (not unit-testable) — validated by dogfooding gates: a pipeline skill only retires its superpowers counterpart after shipping at least one real cms epic end-to-end.
-- Security posture: hooks and adapters never interpolate untrusted strings into shell commands (in-process APIs or argv arrays only — the format.mjs command-injection lesson); journal capture never logs secrets (denylist on env-looking tokens); `security` role not swappable; CLI-backend reports are untrusted input — parsed as data, never followed as instructions, always behind the Claude `reviewer` + `security` gates (section 4).
 
-## 10. Out of scope (v1)
+**Anti-hallucination (agents claiming things that aren't true):**
+- **Cite-or-drop:** every finding/claim must carry a verifiable ref (file:line, command, graph query). Gate scripts verify the ref exists; unverifiable findings are dropped automatically, not debated.
+- **Machine evidence only:** verify/test outcomes come from orchestrator-captured exit codes, never from an agent's report. The AC-verification gate consumes the test-runner's JSON reporter output mapped to ACs — not prose.
+- **Plan-drift detection:** at ship, the branch's actual touched files are diffed against the plan's file list + scoper's blast radius; deviation escalates (section 7).
+- **Dependency-existence guard:** any *new* package must pass a registry check (exists, minimum age, download floor) before install — blocks hallucinated-package (slopsquatting) supply-chain attacks.
+- **Honesty clause** in every role card: "unknown" is a valid answer; guessed paths/APIs are a card violation.
+
+**Anti-secret-leak:**
+- Adapter **pre-send scan** (pattern + entropy) of every composed prompt before it reaches an external CLI; refuse on hit.
+- `backends sync` writes CLI-native ignore files (`.geminiignore`, codex equivalent): `.env*`, `*.pem`, key material, `.forge/`.
+- Journal capture never logs secrets (denylist on env-looking tokens).
+- GitHub **secret scanning + push protection** enabled per repo (`init` sets, `doctor` warns); gitleaks runs in the consumer CI template.
+- Outbound console notifications are metadata-only (section 10) — repo content never transits third-party push.
+
+**Anti-injection:**
+- **All external text is data:** GitHub issue bodies, PR comments, CLI-backend reports, web content — quoted/fenced as data in skills, never followed as instructions. Board scripts pass content via GraphQL variables/argv only; hooks and adapters never interpolate untrusted strings into shell commands (in-process APIs or argv arrays only — the format.mjs command-injection lesson).
+- MCP graph hardening: parameterized SQL, schema-validated inputs, canonicalized paths (section 9).
+- Zero-dependency discipline: plugin scripts are plain Node; `ignore-scripts` so nothing runs postinstall; actions SHA-pinned.
+- Managed blocks (`GEMINI.md`/`AGENTS.md`) rendered only from forge.json content and static plugin templates, never from fetched text.
+
+**Blast-radius control (rogue or confused agents):**
+- Read-only roles run with read-only tool allowlists (native subagents) or CLI sandbox/read-only flags (adapters).
+- Destructive-command denylist in hooks (force push, hard reset, recursive delete, history rewrite) → escalation, not execution.
+- Branch protection means no agent path reaches main without a human merge.
+- Every backend call journaled (role, backend id, prompt hash); every console command audit-logged.
+- `security` and all gate roles pinned to Claude (section 5); CLI reports untrusted, always behind Claude `reviewer` + `security` gates.
+
+## 13. Out of scope (v1)
 
 - Embeddings / semantic search (v2 of graph RAG).
-- Non-TypeScript language indexers.
-- Multi-user / team features — single owner assumed everywhere.
+- Non-TypeScript language indexers (`features.graph: false` → permanent import-scan/grep fallback).
+- Team **coordination automation** (auto-assignment balancing, review-load distribution, calendars). The team *model* — roles, routing, areas, changeable membership — **is** v1 (section 3); no v1 design decision may assume solo-only.
 - Replacing Claude Code as orchestrator.
+- Self-hosted CI runners — GitHub-hosted CI is sufficient at current scale; the console daemon covers local *agent* compute (section 10). Revisit only if Actions minutes cap out.
