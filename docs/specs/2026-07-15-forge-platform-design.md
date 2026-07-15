@@ -1,6 +1,6 @@
 # forge — AI-driven development platform — Design Spec
 
-**Date:** 2026-07-15 (v3.4 — owner-review amendments, round 5: git conventions)
+**Date:** 2026-07-15 (v3.5 — owner-review amendments, round 6: lifecycle dry-run + automation ladder)
 **Repo:** dngioidev/forge (new)
 **Testbed:** dngioidev/cms (design system), later tasky-ai and future repos
 **Goal:** A portable Claude Code plugin that runs the entire AI development workflow: pipeline skills (idea → tickets → spec → plan → execute → ship → release), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, a human escalation protocol, an error-learning loop, a structural graph-RAG index for code retrieval and reuse, a DevOps layer (Docker + Terraform, production-deployable from day one), and a mission-control console (local daemon + cloud + device app) for monitoring and driving the fleet.
@@ -33,6 +33,8 @@
 | Environments (v3.3) | Branch-driven configurable chain: main is CI-only and never deploys; staging deploys on demand via the `staging` branch; production promotes staging's exact image digest; chain length is per-repo config |
 | Post-merge SDLC (v3.3) | Three new skills — `forge:release` (semver/changelog/tag/publish), `forge:hotfix` (expedited path + rollback + incident capture), `forge:maintain` (dependency cadence, cms #70 lesson) — plus data lifecycle, observability minimum, `features.e2e`, digest flow metrics |
 | Git conventions (v3.4) | Branch naming `<type>/<issue#>-<slug>`, cut-from-main-only, squash-merge with conventional PR title, fast-forward-only environment branches, immutable release-only semver tags, generated release description; ship lints, doctor audits |
+| Decision mechanics (v3.5) | One mechanism for every human decision: scheduled gates and escalations both use the decision-comment flow; plan gate auto by default, config can require sign-off |
+| Automation ladder (v3.5) | L0→L3 maturity ladder as config progression; `policy.autoApprove` risk tiers (default off, journaled, digest-sampled); production promote / apply / distill / security stay human at every level |
 
 ## 2. Repo & plugin anatomy
 
@@ -54,6 +56,7 @@ forge/
     templates/       consumer CI workflow (verify + gitleaks); deploy/<stack>/ scaffolds (Dockerfile, compose, terraform)
   docs/
     README.md        route index: one line per doc, grouped by kind — the single entry point for project knowledge
+    product/         vision, roadmap, PRDs — the context forge:ideate brainstorms against
     specs/           design specs (this file)
     plans/           implementation plans
     decisions/       ADR-style records (short, numbered): owner decisions that outlive the spec that spawned them
@@ -121,7 +124,11 @@ forge/
       "deploy":     ["maintainer"],
       "escalation": { "security": ["security-approver"], "default": ["maintainer"] }
     },
-    "assignment": "manual"   // or "by-area"
+    "assignment": "manual",  // or "by-area"
+    "autoApprove": {         // automation ladder L2 (section 12) — absent/false = every gate is human
+      "spec":  { "maxSize": "s", "minPriority": "p2", "excludePaths": ["infra/**", ".github/**", "plugin/hooks/**"] },
+      "merge": { "sameTiers": true }   // auto-merge only PRs that pass every gate AND match the spec tier
+    }
   }
 }
 ```
@@ -132,18 +139,20 @@ forge/
 - **Work separation via `areas`** (path globs, later graph-aware): `ideate` assigns tickets by area when `assignment: "by-area"`; `scoper` flags cross-area blast radius so the affected area's owner is looped in before review, not surprised at it.
 - **Board follows**: assignees set from members; digests gain a per-member workload section (invisible when solo).
 - **`forge doctor` validation**: every member is a real repo collaborator; ≥1 `maintainer` exists; every approval policy resolves to ≥1 current member (catches "we removed the only security-approver").
+- **Risk-tiered auto-approval (`policy.autoApprove`, default off):** a gate may skip its human when the ticket fits the configured tier — size/priority bounds, no cross-area impact, no path in the exclude list (security-sensitive paths never qualify). Every auto-approval is journaled (`auto-approve` kind) and sampled in digests for after-the-fact audit. Production promote, `terraform apply`, `/distill`, and security escalations can never be auto-approved — config in those slots is ignored, same mechanism as the backend pins (section 5).
 
 ## 4. Pipeline skills
 
 Ten skills. Main flow: **ideate → triage → brainstorm → plan → execute → ship → release**, with `board` called by all of them; `hotfix` and `maintain` run outside the main flow. Each skill is a markdown checklist + process graph, same discipline as superpowers but tuned: ticket-first, role-routed gates (section 3), Windows shell rules, caveman-terse receipts. All skills honor the escalation protocol (section 7).
 
-1. **`forge:ideate`** — raw idea / feature area → feature brainstorm → decomposed feature list → epic + child tickets with acceptance criteria, type, size, priority, dependencies, board placement, assignee (per team policy). Builds the ticket tree so work starts ticket-first. (Whole feature areas; single items go straight to triage.)
+1. **`forge:ideate`** — raw idea / feature area → feature brainstorm (grounded in `docs/product/` — vision/roadmap/PRDs — when present) → decomposed feature list → epic + child tickets with acceptance criteria, type, size, priority, dependencies, board placement, assignee (per team policy). Builds the ticket tree so work starts ticket-first. (Whole feature areas; single items go straight to triage.)
 2. **`forge:triage`** — one incoming bug/idea → correctly-typed ticket with AC + board placement.
+   **Dedup rule (ideate + triage):** search open items by title/keywords before creating; on a probable match, link/comment on the existing ticket instead of duplicating — idempotency covers script re-runs, this covers semantic duplicates.
 3. **`forge:brainstorm`** — ticketed feature → design spec in the consumer's specs dir; decomposition-first for multi-system asks; spec self-review; spec-approval gate (routed per team policy).
-4. **`forge:plan`** — spec → task-by-task plan in the consumer's plans dir. Every task carries: ticket ref, files, complete code, **test-plan section** (cases, edge matrix, AC mapping, plus E2E critical-path cases when `features.e2e` is on — drafted by `test-architect`), verify command, done-criteria.
-5. **`forge:execute`** — plan → branch. Order per task: `scoper` narrows blast radius (which components/files/tests) → `test-architect` writes failing tests → `implementer` makes them pass → per-task review (`reviewer`; `design-reviewer` added for UI tasks when `features.designReview` is on — off drops that role entirely). Whole-branch final review + fix waves at the end. Ledger `.forge/progress.md` (git-ignored, survives compaction).
+4. **`forge:plan`** — spec → task-by-task plan in the consumer's plans dir. Every task carries: ticket ref, files, complete code, **test-plan section** (cases, edge matrix, AC mapping, plus E2E critical-path cases when `features.e2e` is on — drafted by `test-architect`), verify command, done-criteria. **The plan gate is auto by default** — execution starts without sign-off; add `plan` to `team.policy.approvals` to require one (decided, not merely undefined).
+5. **`forge:execute`** — plan → branch. Order per task: `scoper` narrows blast radius (which components/files/tests) → `test-architect` writes failing tests → `implementer` makes them pass → per-task review (`reviewer`; `design-reviewer` added for UI tasks when `features.designReview` is on — off drops that role entirely). Whole-branch final review + fix waves at the end. Ledger `.forge/progress.md` (git-ignored, survives compaction). **Resume protocol:** a fresh session picking up mid-execute reads the ledger, then `.forge/decisions/`, verifies branch state against the plan, and continues from the first incomplete task — no human re-briefing required.
 6. **`forge:ship`** — branch → PR: conventions lint (branch name, PR title, commit format — section 2), commits→issues map, honest verification checklist, **AC-verification gate** (machine evidence: test-runner JSON output mapped to ACs — section 13), **plan-drift check** (actual touched files vs plan + blast radius; deviation escalates), **security gate** (`security` reviewer pass on the branch), **deploy-readiness gate** (image builds + healthcheck boots, `terraform plan` clean when `infra/` changed — section 10, when `features.deploy` is on), **CI-green check** before the PR is marked ready. After merge (by a `maintainer`): receipt comments, board Done moves, delivery-log row, epic digest refresh, docs route-index update when the branch touched `docs/` (section 2).
-7. **`forge:release`** — merged main → named release: semver bump from conventional commits, changelog, git tag, GitHub Release, user-facing docs refresh. **Release names artifacts, it never builds them:** for images it retags the staging-verified digest with the semver tag (build-once — section 10), so the release name and the bytes running in production are identical; for packages (npm) it publishes from the tagged commit. The bridge between "merged" and "a deployable artifact with a name."
+7. **`forge:release`** — merged main → named release: semver bump from conventional commits, changelog, git tag, GitHub Release, user-facing docs refresh. **Release names artifacts, it never builds them:** for images it retags the staging-verified digest with the semver tag (build-once — section 10), so the release name and the bytes running in production are identical; for packages (npm) it publishes from the tagged commit. **Timing rule:** in deploy-enabled repos, release runs *after* the staging merge + smoke pass (there must be a verified digest to name); in non-deploy repos (libraries), release runs any time after merge. The bridge between "merged" and "a deployable artifact with a name."
 8. **`forge:hotfix`** — expedited production-incident path: security gate + verify stay, planning ritual compressed to a one-paragraph scope note, mandatory follow-up postmortem ticket; the incident lands in the journal as an `incident` event so `/distill` learns from production failures. **Only the process ritual is compressed — the deploy path is not:** a hotfix still traverses the environment chain (staging smoke included; it's minutes, not hours). Includes the rollback runbook (redeploy the previous image digest, one command).
 9. **`forge:maintain`** — dependency cadence (the cms #70 lesson as platform law): patch/minor updates batched + auto-verified + merged; majors bundled into one coordinated upgrade ticket, never merged individually; CVE advisories triaged with a response SLA. Runs on demand or as a scheduled routine.
 10. **`forge:board`** — shared ticket-operations skill wrapping `scripts/board/*` (section 6); the other nine call it instead of raw GraphQL.
@@ -214,7 +223,7 @@ Migration order (parity proven on real cms work before retiring each superpowers
 - **move** — status transitions across the forge standard set: **Backlog → Ready → In progress → In review → Blocked/Needs decision → Done**. Solo, some columns stay thin; team, they're load-bearing. `init` creates missing options on fresh projects and maps whatever exists on adopted ones; skills degrade gracefully to the mapped subset.
 - **receipt** — merge receipt comment on issues; idempotent (re-run updates, never duplicates).
 - **Idempotency is a rule for every script, not just receipt:** re-runs detect existing state (issue by title+parent, board item, comment marker) and resume or update instead of duplicating. Multi-step `create` (issue → board add → field set) resumes from the failed step.
-- **digest** — epic body auto-carries spec link + live child table + per-member workload (team) + **open escalations first**; refreshed on child changes. Also carries **flow metrics** computed from data the board + journal already hold — cycle time per ticket, Size estimate vs actual, gate-failure rate, backend cost per shipped ticket — the platform's own evidence that it's paying off.
+- **digest** — epic body auto-carries spec link + live child table + per-member workload (team) + **open escalations first**; refreshed on child changes. Also carries **flow metrics** computed from data the board + journal already hold — cycle time per ticket, Size estimate vs actual, gate-failure rate, backend cost per shipped ticket — the platform's own evidence that it's paying off. And a **stalled-items section**: green PRs unmerged, staging deploys unpromoted, decision comments unanswered — each with its age, so nothing halts silently (`doctor` flags the same list).
 - **log** — delivery-log row append to the pinned per-repo issue (tasky #205 pattern).
 - **init** — full bootstrap, idempotent (adopt-or-create): checks gh auth + Node ≥22.13 → creates the GitHub Project + status/priority/size/type fields with standard options if absent, discovers IDs if present (optional iteration/area fields are discovered and mapped when present; init offers to create `area` when `assignment: "by-area"`) → creates the delivery-log issue if missing → writes `forge.json` (board + team skeleton) → adds `.forge/` to the consumer `.gitignore` → installs the consumer CI template (below) if `.github/workflows/` lacks a verify workflow → runs `forge backends sync`. Works on a fresh repo and a mature one. **Spike required (SP1):** verify ProjectsV2 GraphQL can add options to the built-in Status single-select on a fresh project; if not, init documents the manual step and falls back to mapping whatever exists (the degrade-gracefully path above). Init and doctor grow with the rollout: the CI-template step lands with SP3, the backends-sync step with SP4.
 - **doctor** — read-only health check: gh auth, project reachable, field/option IDs valid, team block valid (section 3), roster backends' CLIs present, Node ≥22.13, branch protection with required verify check, secret scanning + push protection enabled (warn if not), `guides/onboarding.md` present when the team has >1 member. Run any time; `init` ends by running it.
@@ -226,6 +235,8 @@ Docs stay in git (reviewable, diffable); the board is the tracker + window. Fiel
 ## 7. Escalation & human decisions
 
 Scheduled gates (spec approval, distill approval, merge) are not enough — the pipeline needs a **halt-and-ask** path for mid-flight surprises. Escalation is platform law: skills never auto-resolve past a trigger.
+
+**One mechanism for every human decision:** scheduled gates and escalations use the *same* decision-comment flow — context, options, recommendation posted on the issue; the reply is the decision; the thread is the audit trail. A spec approval is simply a scheduled decision comment; an escalation is an unscheduled one. One mechanism means one inbox (console 9a), one journal shape, one audit story.
 
 **Triggers:**
 - `critical`-severity finding from any reviewer/security pass.
@@ -247,7 +258,7 @@ Scheduled gates (spec approval, distill approval, merge) are not enough — the 
 {"ts":"…","kind":"gate-fail","tool":"Bash","cmd":"pnpm verify","exit":1,"err_line":"…","ticket":"#15","branch":"feat/…"}
 ```
 
-Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`, `escalation`, `incident` (production failures, appended by `forge:hotfix` — the most valuable lessons `/distill` sees). Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
+Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-finding`, `escalation`, `incident` (production failures, appended by `forge:hotfix` — the most valuable lessons `/distill` sees), `auto-approve` (every gate skipped under `policy.autoApprove`, section 3 — the audit trail automation rides on). Read-only commands (grep/ls/cat/gh view/git log/…) are excluded **at capture time** via an exclusion list — the tasky-ai journal-noise lesson baked in. `review-finding` events are not tool failures, so hooks can't see them: the execute/ship skills append them explicitly from reviewer report JSON.
 
 **Distill** — `/distill` skill: reads journal since last run, clusters repeats, proposes per cluster one of: CLAUDE.md rule, role-card edit, new lint/hook guard, memory entry. **A `maintainer` approves each proposal before anything is written** — and applied lessons land as a PR, so in a team they get reviewed like any other change. Applied lessons are logged with journal refs; after distill the journal is archived to `.forge/journal-archive/<date>.jsonl` (rejected clusters keep their evidence), and the live journal starts empty. Suggested cadence: after each epic ships, or weekly.
 
@@ -357,6 +368,17 @@ Each sub-project = its own spec → plan → epic in the forge repo, executed wi
 
 Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late deliberately: its payoff grows with codebase size, and by then cms has real components to index. The console (9a/9b) consumes sub-project 3's escalation protocol and 7's journal, so it comes after the pipeline skills land; 9b is specced and executed in the `forge-console` repo after 9a's graduation.
 
+**Automation maturity ladder** — "full automation" is a config progression, not a rewrite. Each level is opt-in per repo; the trust boundary holds at every level:
+
+| Level | What changes | Needs |
+| --- | --- | --- |
+| **L0** | Every gate synchronous with a human (the spec default) | SP3 |
+| **L1** | Same gates, tap-to-answer latency — decisions from the phone | Console 9a |
+| **L2** | Risk-tiered auto-approval: qualifying specs + fully-green PRs skip the human, journaled + digest-sampled (`policy.autoApprove`, section 3) | 9a + trusted test suite (`features.e2e` on critical paths before enabling auto-merge) |
+| **L3** | Scheduled autonomous queue: overnight batch runs, morning decision inbox; quota exhaustion pauses (never fails); blocked tickets skipped when remaining work is disjoint | 9b work queue + parallel-execution backlog piece |
+
+**At every level, permanently human:** production promote, `terraform apply`, `/distill`, security-critical escalations. That ceiling is the design's trust boundary — the reason the levels below it are safe — not a bottleneck to engineer away.
+
 **Backlog (on the roadmap, unscheduled — each becomes a numbered sub-project when picked up):**
 - Embeddings / semantic search on the graph (schema keeps an embedding column slot — section 9).
 - Non-TypeScript language indexers, added by demand per stack (until then `features.graph: false` gives the import-scan/grep fallback).
@@ -364,6 +386,8 @@ Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late delib
 - Console web dashboard (Cloud Run) — the shipped console is daemon + device app.
 - Full production APM (metrics dashboards, tracing) — the shipped minimum is uptime + error alerting (section 10).
 - Per-PR preview environments (`previews: true`, section 10) — ephemeral env per PR so reviewers judge a running app.
+- **Parallel ticket execution** (automation L3 dependency): git worktree per ticket, scoper blast-radius **disjointness check** (only tickets with non-overlapping file sets run concurrently — graph-computed), merge queue so squash-merges land serially.
+- **Cloud-session runner fallback**: when no registered machine is online, the work queue falls back to Claude Code cloud sessions instead of stalling.
 
 ## 13. Quality, trust & safety
 
