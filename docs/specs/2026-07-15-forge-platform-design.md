@@ -19,16 +19,16 @@
 | Goal | Portable platform, not cms-only |
 | Home | New repo `dngioidev/forge`, Claude Code plugin marketplace |
 | Pipeline | Own pipeline (approach B), incremental skill-by-skill migration |
-| Graph RAG | Structural graph (ts-morph → SQLite → MCP), no embeddings in v1 |
+| Graph RAG | Structural graph (ts-morph → SQLite → MCP), no embeddings initially (roadmap backlog) |
 | Learning | Auto-capture kind-tagged failures + gated `/distill` (human approves every lesson) |
 | Board | Docs-as-code stays in git; board = tracker + auto-published digests |
 | Backend swap scope (v3) | Non-Claude backends only for read roles (investigator, librarian, second-opinion) + implementer under the child-branch rule; every gate role pinned to Claude, enforced in code |
 | Team model (v3) | Human roles/areas behind `forge.json` `team` block; solo = one member holding all roles; structure changeable mid-project by config edit |
-| Escalation (v3) | Formal halt-and-ask protocol; v1 transport = GitHub-native (Blocked status + decision comment); console app upgrades transport later |
+| Escalation (v3) | Formal halt-and-ask protocol; first transport = GitHub-native (Blocked status + decision comment); console app upgrades transport later |
 | Console (v3) | Mission-control app (local daemon + Firebase/GCP + device app) as sub-projects 9a/9b; graduates to its own repo |
 | CI runners (v3) | GitHub-hosted; no self-hosted CI runner — the console daemon is the local runner for *agent* work, not CI |
 | Docs knowledge base (v3.1) | `docs/` KB with route index (`docs/README.md`), ADR-style `decisions/`, `guides/` runbooks; `forge:ship` maintains the index |
-| Scope boundaries (v3.1) | Out-of-scope split into v2 roadmap vs permanent non-goals to match the v3 scope widening |
+| Scope boundaries (v3.1) | No separate v1/v2 versioning — deferred items live on the rollout backlog (section 11); section 13 keeps only permanent non-goals |
 
 ## 2. Repo & plugin anatomy
 
@@ -220,7 +220,7 @@ Scheduled gates (spec approval, distill approval, merge) are not enough — the 
 
 **Action (always the same sequence):** halt the pipeline → move the ticket to **Blocked/Needs decision** → post a decision comment on the issue (context, options, recommendation) → journal an `escalation` event → stop. Routing follows `team.policy.escalation` (category → role holders), so a security escalation pings the `security-approver`, not everyone.
 
-**v1 transport — GitHub-native, zero infra:** GitHub Mobile already pushes issue comments to the approver's phone; they reply in the comment thread; the session (or the next one) reads the decision and resumes. The comment thread is the permanent audit trail. The console app (section 10) upgrades the transport to tap-to-answer later but **never replaces the GitHub record** — every decision still lands on the issue.
+**First transport — GitHub-native, zero infra:** GitHub Mobile already pushes issue comments to the approver's phone; they reply in the comment thread; the session (or the next one) reads the decision and resumes. The comment thread is the permanent audit trail. The console app (section 10) upgrades the transport to tap-to-answer later but **never replaces the GitHub record** — every decision still lands on the issue.
 
 ## 8. Learning loop
 
@@ -236,7 +236,7 @@ Kinds: `gate-fail`, `blocked-edit`, `cmd-fail`, `backend-fallback`, `review-find
 
 ## 9. Graph RAG MCP server
 
-`plugin/mcp/graph/` — structural index of the consumer repo, no embeddings in v1 (schema leaves room for a v2 embedding column). Feature-flagged: `features.graph` — TypeScript repos only; with the flag off, `librarian` falls back to grep-first and `scoper` uses import-scan (that fallback is **permanent** for non-TS repos, not a stopgap).
+`plugin/mcp/graph/` — structural index of the consumer repo, no embeddings initially (backlog item; the schema keeps an embedding column slot). Feature-flagged: `features.graph` — TypeScript repos only; with the flag off, `librarian` falls back to grep-first and `scoper` uses import-scan (that fallback is **permanent** for non-TS repos, not a stopgap).
 
 - **Indexer:** ts-morph parse → SQLite `.forge/graph.db` via built-in `node:sqlite` (Node ≥22.13, where the module is no longer experimental — no native-module builds on Windows). Git-ignored, rebuildable, zero network.
   - Nodes: file, component, export, props-interface, token, story, test, icon.
@@ -301,6 +301,12 @@ Each sub-project = its own spec → plan → epic in the forge repo, executed wi
 
 Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late deliberately: its payoff grows with codebase size, and by then cms has real components to index. The console (9a/9b) consumes sub-project 3's escalation protocol and 7's journal, so it comes last; 9b is specced and executed in the `forge-console` repo after 9a's graduation.
 
+**Backlog (on the roadmap, unscheduled — each becomes a numbered sub-project when picked up):**
+- Embeddings / semantic search on the graph (schema keeps an embedding column slot — section 9).
+- Non-TypeScript language indexers, added by demand per stack (until then `features.graph: false` gives the import-scan/grep fallback).
+- Team coordination automation (auto-assignment balancing, review-load distribution, calendars) — the team *model* ships in sub-project 1; this is the automation on top.
+- Console web dashboard (Cloud Run) — the shipped console is daemon + device app.
+
 ## 12. Quality, trust & safety
 
 **Quality:**
@@ -336,17 +342,10 @@ Superpowers is uninstalled from cms after sub-project 6. Graph RAG is late delib
 - Every backend call journaled (role, backend id, prompt hash); every console command audit-logged.
 - `security` and all gate roles pinned to Claude (section 5); CLI reports untrusted, always behind Claude `reviewer` + `security` gates.
 
-## 13. Scope boundaries
+## 13. Non-goals
 
-v1 scope, for the record, includes what earlier drafts deferred: the team model (section 3), the escalation protocol (section 7), the platform console (section 10, sub-projects 9a/9b), and the docs knowledge base (section 2).
+Everything planned lives on the rollout roadmap (section 11) — scheduled sub-projects or the backlog. This section is only for what forge will **not** do:
 
-**Deferred to v2 (planned, design space reserved):**
-- Embeddings / semantic search — graph RAG v2; the SQLite schema keeps an embedding column slot.
-- Non-TypeScript language indexers — added by demand per stack; until then `features.graph: false` gives the import-scan/grep fallback.
-- Team **coordination automation** (auto-assignment balancing, review-load distribution, calendars) — the team *model* is v1; the automation on top is not.
-- Console web dashboard (Cloud Run) — v1 console is daemon + device app only.
-
-**Permanent non-goals:**
 - Replacing Claude Code as orchestrator.
 - Self-hosted CI runners — the console daemon covers local *agent* compute (section 10); CI stays GitHub-hosted. Revisit only if Actions minutes cap out.
 - A wiki or any knowledge store outside git — `docs/` + route index is the single source (section 2).
