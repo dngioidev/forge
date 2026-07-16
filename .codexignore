@@ -1,0 +1,9 @@
+.env*
+*.pem
+*.key
+id_rsa*
+*.tfstate
+*.tfstate.*
+.terraform/
+.forge/
+secrets/
