@@ -5,21 +5,41 @@
     "fields": {
       "status": {
         "id": "PVTSSF_lAHOCkJQ784BdZrhzhX7emI",
-        "options": { "backlog": "04db063a", "inProgress": "29224f44", "done": "7d8a60b9" }
+        "options": {
+          "backlog": "04db063a",
+          "inProgress": "29224f44",
+          "done": "7d8a60b9"
+        }
       },
       "priority": {
         "id": "PVTSSF_lAHOCkJQ784BdZrhzhX7esI",
-        "options": { "p0": "66c7f4b7", "p1": "23a624d0", "p2": "d9b45a49" }
+        "options": {
+          "p0": "66c7f4b7",
+          "p1": "23a624d0",
+          "p2": "d9b45a49"
+        }
       },
       "size": {
         "id": "PVTSSF_lAHOCkJQ784BdZrhzhX7esU",
-        "options": { "xs": "d2a09967", "s": "0a97017a", "m": "88715f78", "l": "e0e2c48d", "xl": "ec65bb19" }
+        "options": {
+          "xs": "d2a09967",
+          "s": "0a97017a",
+          "m": "88715f78",
+          "l": "e0e2c48d",
+          "xl": "ec65bb19"
+        }
       },
       "type": {
         "id": "PVTSSF_lAHOCkJQ784BdZrhzhX7euY",
-        "options": { "epic": "cc17fc25", "item": "54a8e89d", "bug": "8b7b608b", "test": "d572a031" }
+        "options": {
+          "epic": "cc17fc25",
+          "item": "54a8e89d",
+          "bug": "8b7b608b",
+          "test": "d572a031"
+        }
       }
-    }
+    },
+    "deliveryLogIssue": 15
   },
   "conventions": {
     "verify": "pnpm verify",
