@@ -1,0 +1,45 @@
+# forge deploy scaffold — production promotes, it does not rebuild (spec §10).
+# The human merge into this branch IS the deploy authorization
+# (team.policy.approvals.deploy). The image deployed is the digest the staging
+# workflow built for this exact commit; it builds only when no prior image
+# exists (single-environment chains).
+name: deploy-production
+
+on:
+  push:
+    branches: [production]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  promote-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Resolve the staging-built image for this commit (build-once law)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if docker pull {{REGISTRY}}/{{APP}}:sha-${{ github.sha }}; then
+            echo "IMAGE={{REGISTRY}}/{{APP}}:sha-${{ github.sha }}" >> "$GITHUB_ENV"
+          else
+            echo "::notice::no staging build for ${{ github.sha }} — single-env chain, building now"
+            docker build -t {{REGISTRY}}/{{APP}}:sha-${{ github.sha }} .
+            docker push {{REGISTRY}}/{{APP}}:sha-${{ github.sha }}
+            echo "IMAGE={{REGISTRY}}/{{APP}}:sha-${{ github.sha }}" >> "$GITHUB_ENV"
+          fi
+      # ── per-cloud deploy insert point ─────────────────────────────────────
+      # Replace with your provider's deploy of "$IMAGE" (see staging workflow
+      # for the Cloud Run reference example).
+      - name: Deploy to production (INSERT your cloud deploy here)
+        run: |
+          echo "::warning::deploy step not wired yet — see the insert point comment in this workflow"
+      - name: Smoke test
+        run: node scripts/forge-smoke.mjs --url "${PRODUCTION_URL}{{HEALTHCHECK}}" --retries 10 --timeout 60000
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}

@@ -1,0 +1,41 @@
+# forge deploy scaffold — staging deploys ON DEMAND via this branch (spec §10).
+# main never deploys. Merge main → staging when a live check is needed; that
+# push (and only that) builds the image and deploys.
+name: deploy-staging
+
+on:
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  build-deploy-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Build image (SHA-tagged — the digest production will promote)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build -t {{REGISTRY}}/{{APP}}:sha-${{ github.sha }} .
+          docker push {{REGISTRY}}/{{APP}}:sha-${{ github.sha }}
+          docker inspect --format='{{index .RepoDigests 0}}' {{REGISTRY}}/{{APP}}:sha-${{ github.sha }}
+      # ── per-cloud deploy insert point ─────────────────────────────────────
+      # Replace this step with your provider's deploy. Cloud Run reference:
+      #   - uses: google-github-actions/auth@<sha>            # workload identity
+      #   - run: gcloud run deploy {{APP}}-staging \
+      #       --image {{REGISTRY}}/{{APP}}:sha-${{ github.sha }} \
+      #       --region <region> --project <project>
+      - name: Deploy to staging (INSERT your cloud deploy here)
+        run: |
+          echo "::warning::deploy step not wired yet — see the insert point comment in this workflow"
+      - name: Smoke test
+        run: node scripts/forge-smoke.mjs --url "${STAGING_URL}{{HEALTHCHECK}}" --retries 10 --timeout 60000
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}

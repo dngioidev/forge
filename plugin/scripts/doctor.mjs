@@ -4,7 +4,7 @@
  * One distinct check per failure class; ✗ = exit 1, ⚠ = advisory.
  */
 import { join, resolve } from 'node:path';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from './lib/exec.mjs';
 import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
@@ -94,6 +94,26 @@ export async function runDoctor(ctx) {
   } catch { /* no workflows dir */ }
   if (hasVerifyWf) results.push(ok('ci-verify', 'verify workflow present'));
   else results.push(warn('ci-verify', 'no verify workflow in .github/workflows', 'run /forge:init (installs the CI template, spec §6)'));
+
+  // deploy layer files (warn-level, only when features.deploy is on)
+  if (cfg.ok && cfg.config.features?.deploy === true) {
+    const d = cfg.config.deploy ?? {};
+    const expected = [
+      d.docker?.file ?? 'Dockerfile',
+      d.docker?.compose ?? 'docker-compose.yml',
+      d.terraform?.dir ?? 'infra/',
+      '.github/workflows/deploy-staging.yml',
+      '.github/workflows/deploy-production.yml',
+      '.github/workflows/deploy-readiness.yml',
+      'scripts/forge-smoke.mjs',
+    ];
+    const missing = [];
+    for (const rel of expected) {
+      try { await stat(join(cwd, rel)); } catch { missing.push(rel); }
+    }
+    if (missing.length === 0) results.push(ok('deploy', 'deploy layer files present'));
+    else results.push(warn('deploy', `features.deploy is on but missing: ${missing.join(', ')}`, 'run /forge:deploy-init'));
+  }
 
   // statusline wired (info-level) — local settings first (that's where init writes it)
   const settingsLocal = await readJson(join(cwd, '.claude', 'settings.local.json')).catch(() => null);
