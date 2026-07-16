@@ -8,10 +8,21 @@ import { spawn } from 'node:child_process';
  * a shell (CVE-2024-27980 fix). We never pass shell:true with interpolated
  * strings; instead cmd scripts are routed through cmd.exe with an argv array.
  */
-export function run(command, args = [], options = {}) {
+export async function run(command, args = [], options = {}) {
+  const first = await spawnOnce(command, args, options);
+  // Windows: bare commands that are .cmd/.bat shims (pnpm, npm, npx…) fail
+  // ENOENT without a shell — retry routed through cmd.exe, still argv-only.
+  if (!first.ok && first.code === -1 && process.platform === 'win32'
+      && /ENOENT/.test(first.stderr) && !/[\\/]/.test(command) && !/\.(exe|cmd|bat)$/i.test(command)) {
+    return spawnOnce(command, args, options, true);
+  }
+  return first;
+}
+
+function spawnOnce(command, args = [], options = {}, viaComSpec = false) {
   let cmd = command;
   let argv = args;
-  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
+  if (process.platform === 'win32' && (viaComSpec || /\.(cmd|bat)$/i.test(command))) {
     cmd = process.env.ComSpec || 'cmd.exe';
     argv = ['/d', '/s', '/c', command, ...args];
   }

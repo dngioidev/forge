@@ -17,7 +17,13 @@ describe('run', () => {
   it('resolves (never throws) for a missing binary', async () => {
     const res = await run('definitely-not-a-real-binary-xyz', []);
     expect(res.ok).toBe(false);
-    expect(res.code).toBe(-1);
+    expect(res.code).not.toBe(0); // -1 direct, or cmd.exe's nonzero on the Windows retry path
+  });
+
+  it('bare .cmd-shim commands resolve cross-platform (the pnpm ENOENT lesson)', async () => {
+    const res = await run('pnpm', ['--version']);
+    expect(res.ok).toBe(true);
+    expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it('the .cmd EINVAL lesson: cmd scripts are routed through cmd.exe on Windows', async function () {
