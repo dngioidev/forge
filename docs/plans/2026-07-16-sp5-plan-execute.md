@@ -16,12 +16,19 @@
 ## Tasks
 
 - **T1 — ledger lib** + tests (parse/init/mark/next; CRLF-safe).
+  **Files:** plugin/scripts/lib/ledger.mjs, tests/lib/ledger.test.mjs
 - **T2 — acgate** + tests (vitest JSON fixture; pass/missing/failing-AC cases; plan-file AC extraction).
+  **Files:** plugin/scripts/gates/acgate.mjs, tests/gates/acgate.test.mjs
 - **T3 — plandrift** + tests (declared+scope+default-allow; deviation naming; injected git exec).
+  **Files:** plugin/scripts/gates/plandrift.mjs, tests/gates/plandrift.test.mjs
 - **T4 — depguard** + tests (new/existing/removed diff; registry existence/age/downloads via injected fetch; npm-only v1).
+  **Files:** plugin/scripts/gates/depguard.mjs, tests/gates/depguard.test.mjs
 - **T5 — testintent** + tests (removed expect-lines in existing files flag; additions pass; new files pass; injected git exec).
+  **Files:** plugin/scripts/gates/testintent.mjs, tests/gates/testintent.test.mjs
 - **T6 — skills**: `forge:plan` (template with machine-parseable sections), `forge:execute` (scoper → test-architect → implementer → reviewer loop, fix waves, ledger + resume, per-task gates), `forge:ship` update (mechanical gate invocations replace the degraded notes).
+  **Files:** plugin/skills/plan/SKILL.md, plugin/skills/execute/SKILL.md, plugin/skills/ship/SKILL.md
 - **T7 — ship**: PR, trail, ritual; gates dogfooded on this very branch where applicable (plandrift vs this plan's own Files lists).
+  **Files:** docs/
 
 ## Out of scope
 
