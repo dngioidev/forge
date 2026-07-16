@@ -14,6 +14,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [SP4 — Roster + backends](plans/2026-07-16-sp4-roster-backends.md) — tasks T1–T9 for epic #4: 11 role cards, compile, loader allowlist, agy adapter + fallback, pre-send scan, backends sync, forge:review.
 - [SP4b — Deploy layer](plans/2026-07-16-sp4b-deploy-layer.md) — tasks T1–T5 for epic #5: node deploy scaffold, env-branch workflows, deploy-readiness gate, smoke script, deploy-init.
 - [SP4c — Release](plans/2026-07-16-sp4c-release.md) — tasks T1–T5 for epic #6: bump derivation, changelog, readiness checklist, tag + GitHub Release, image retag.
+- [SP5 — Plan + execute](plans/2026-07-16-sp5-plan-execute.md) — tasks T1–T7 for epic #7: ledger, AC gate, plan-drift, dep guard, test-intent gate, plan/execute skills.
 
 ## Decisions (ADRs)
 
