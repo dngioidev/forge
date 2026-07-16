@@ -11,6 +11,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [SP1 — Plugin skeleton](plans/2026-07-16-sp1-plugin-skeleton.md) — tasks T1–T8 for epic #1: manifests, lib, init/doctor, status line, Status-options spike.
 - [SP2 — Board automation](plans/2026-07-16-sp2-board-automation.md) — tasks T1–T10 for epic #2: boardctx lib + create/move/comment/receipt/log/digest/status scripts, forge:board skill.
 - [SP3 — Ship + triage + escalation](plans/2026-07-16-sp3-ship-triage-escalation.md) — tasks T1–T9 for epic #3: journal, escalate/resolve, situation, denylist hook, CI template, ship/triage/investigate skills.
+- [SP4 — Roster + backends](plans/2026-07-16-sp4-roster-backends.md) — tasks T1–T9 for epic #4: 11 role cards, compile, loader allowlist, agy adapter + fallback, pre-send scan, backends sync, forge:review.
 
 ## Decisions (ADRs)
 
