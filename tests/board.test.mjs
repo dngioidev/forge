@@ -235,7 +235,7 @@ describe('status (AC-2.6)', () => {
     ]);
     const res = await runStatus(ctx, noop);
     expect(res.ok).toBe(true);
-    expect(res.text).toContain('situation: awaiting-decision (1 blocked)');
+    expect(res.text).toContain('situation: 🚩 awaiting-decision (1 pending decision)');
     expect(res.text).toContain('🚩 blocked: #3 Three');
     expect(res.text).toContain('▶ in progress: #2 Two');
     expect(res.text).toContain('⇡ open PR: #17');

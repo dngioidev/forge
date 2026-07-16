@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
+import { deriveSituation } from '../lib/situation.mjs';
 
 export async function runStatus(ctx, log = console.log) {
   const list = await ctx.listItems();
@@ -28,7 +29,9 @@ export async function runStatus(ctx, log = console.log) {
   const lines = [];
   lines.push(`forge status — ${ctx.owner}/${ctx.repo} · board #${ctx.projectNumber}`);
   const blocked = byKey.get('blocked') ?? [];
-  lines.push(blocked.length ? `situation: awaiting-decision (${blocked.length} blocked)` : (count('inProgress') ? 'situation: building' : 'situation: idle'));
+  const situation = await deriveSituation(ctx.cwd, { blocked: blocked.length, inProgress: count('inProgress') });
+  lines.push(`situation: ${situation.glyph} ${situation.label}${situation.pendingCount ? ` (${situation.pendingCount} pending decision${situation.pendingCount > 1 ? 's' : ''})` : ''}`);
+  for (const d of situation.pending) lines.push(`  🚩 decision pending: #${d.issue} — ${d.reason} (${d.id})`);
   lines.push(`counts: backlog ${count('backlog')} · ready ${count('ready')} · in-progress ${count('inProgress')} · in-review ${count('inReview')} · blocked ${blocked.length} · done ${count('done')}`);
   for (const b of blocked) lines.push(`  🚩 blocked: ${show(b)}`);
   for (const w of byKey.get('inProgress') ?? []) lines.push(`  ▶ in progress: ${show(w)}`);
