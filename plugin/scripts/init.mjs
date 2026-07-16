@@ -3,7 +3,7 @@
  * /forge:init — adopt-or-create bootstrap (spec §6, plan T5).
  * Every step is detect-before-create: re-runs resume/refresh, never duplicate.
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run, makeGh } from './lib/exec.mjs';
@@ -151,6 +151,27 @@ export async function runInit(ctx) {
   if (!gi.split(/\r?\n/).some((l) => l.trim() === '.forge/')) {
     await writeFile(giPath, gi + (gi.endsWith('\n') || gi === '' ? '' : '\n') + '.forge/\n', 'utf8');
     say('.gitignore: added .forge/');
+  }
+
+  // 7b. Consumer CI template (spec §6; lands with SP3): install when missing
+  const wfDir = join(cwd, '.github', 'workflows');
+  let hasVerify = false;
+  try {
+    for (const f of await readdir(wfDir)) {
+      if (/\.ya?ml$/.test(f) && /^name:\s*verify\b/m.test(await readFile(join(wfDir, f), 'utf8'))) { hasVerify = true; break; }
+    }
+  } catch { /* no workflows dir yet */ }
+  if (!hasVerify) {
+    try {
+      const templatePath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'verify.yml');
+      const verifyCmd = existing.config?.conventions?.verify ?? defaults.conventions?.verify ?? 'pnpm verify';
+      const tpl = (await readFile(templatePath, 'utf8')).replaceAll('{{VERIFY}}', verifyCmd);
+      await mkdir(wfDir, { recursive: true });
+      await writeFile(join(wfDir, 'verify.yml'), tpl, 'utf8');
+      say('ci: installed verify workflow template (.github/workflows/verify.yml)');
+    } catch (err) {
+      say(`ci: template install skipped (${err.message})`);
+    }
   }
 
   // 8. Status line (opt-in via --statusline; the command md asks the user first).

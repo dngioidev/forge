@@ -4,7 +4,7 @@
  * One distinct check per failure class; ✗ = exit 1, ⚠ = advisory.
  */
 import { join, resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from './lib/exec.mjs';
 import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
@@ -83,6 +83,17 @@ export async function runDoctor(ctx) {
   try { gi = await readFile(join(cwd, '.gitignore'), 'utf8'); } catch { /* missing */ }
   if (gi.split(/\r?\n/).some((l) => l.trim() === '.forge/')) results.push(ok('gitignore', '.forge/ ignored'));
   else results.push(fail('gitignore', '.forge/ not in .gitignore', 'run /forge:init (it appends the entry)'));
+
+  // consumer CI verify workflow present (warn-level; init installs the template)
+  let hasVerifyWf = false;
+  try {
+    const wfDir = join(cwd, '.github', 'workflows');
+    for (const f of await readdir(wfDir)) {
+      if (/\.ya?ml$/.test(f) && /^name:\s*verify\b/m.test(await readFile(join(wfDir, f), 'utf8'))) { hasVerifyWf = true; break; }
+    }
+  } catch { /* no workflows dir */ }
+  if (hasVerifyWf) results.push(ok('ci-verify', 'verify workflow present'));
+  else results.push(warn('ci-verify', 'no verify workflow in .github/workflows', 'run /forge:init (installs the CI template, spec §6)'));
 
   // statusline wired (info-level) — local settings first (that's where init writes it)
   const settingsLocal = await readJson(join(cwd, '.claude', 'settings.local.json')).catch(() => null);

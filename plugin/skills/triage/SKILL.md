@@ -1,0 +1,26 @@
+---
+name: triage
+description: One incoming bug/idea → correctly-typed ticket with acceptance criteria and board placement. Use for any new piece of work that isn't already ticketed (single items; whole feature areas go to forge:ideate).
+---
+
+# forge:triage
+
+One incoming item → a well-formed ticket. Ticket-first is law: no work starts without one.
+
+## Steps
+
+1. **Dedup first** (spec §4): search open items — `gh issue list --search "<keywords> in:title"` and check the board — before creating anything. Probable match → comment the new information onto the existing ticket and link it to the requester; do NOT create a duplicate.
+2. **Classify**:
+   - `bug` — something built is wrong. Reproduce or note "unconfirmed" in the body; unknown-cause bugs get a `forge:investigate` pass before sizing.
+   - `item` — new work. `test` — test-only work. `epic` — decomposable (route whole feature areas to `forge:ideate` instead).
+3. **Priority map**: p0 = production broken / security / data loss (consider `forge:hotfix` instead of the normal flow). p1 = current-epic work, real-user pain. p2 = everything that can wait.
+4. **Acceptance criteria**: 2–5 verifiable bullets, each testable — they become AC-IDs at plan time (spec §13). A bug's first AC is always "regression test reproducing the report passes."
+5. **Create** via the board script (never raw GraphQL):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/board/create.mjs" --title "…" --body "…" --type <t> --priority <p> --size <s> --status backlog [--parent <epic#>] [--assignee <login>]
+```
+
+6. Report the ticket link + one-line summary of type/priority/size reasoning.
+
+Vague reports: ask at most one clarifying round; otherwise ticket what is known, mark the gaps in the body, and let investigate fill them.
