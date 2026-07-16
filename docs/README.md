@@ -8,7 +8,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 ## Plans
 
-_(none yet — first plan lands with sub-project 1, plugin skeleton)_
+- [SP1 — Plugin skeleton](plans/2026-07-16-sp1-plugin-skeleton.md) — tasks T1–T8 for epic #1: manifests, lib, init/doctor, status line, Status-options spike.
 
 ## Decisions (ADRs)
 
