@@ -1,6 +1,6 @@
 # forge — AI-driven development platform — Design Spec
 
-**Date:** 2026-07-15 (v3.6 — owner-review amendments, round 7: lanes, design lane, testing architecture, situation model)
+**Date:** 2026-07-15 (v3.7 — owner-review amendments, round 8: ticket trail)
 **Repo:** dngioidev/forge (new)
 **Testbed:** dngioidev/cms (design system), later tasky-ai and future repos
 **Goal:** A portable Claude Code plugin that runs the entire AI development workflow: pipeline skills (idea → tickets → spec → design → plan → execute → ship → release, plus care/knowledge/scale lanes), a specialized agent roster with pluggable CLI backends, GitHub Projects automation, a human escalation protocol, an error-learning loop, a structural graph-RAG index for code retrieval and reuse, a DevOps layer (Docker + Terraform, production-deployable from day one), and a mission-control console (local daemon + cloud + device app) for monitoring and driving the fleet.
@@ -39,6 +39,7 @@
 | Design tooling (v3.6) | Code-first design with real tokens is the default (`design.source: "code"`); Figma is an optional per-repo source via MCP (backlog) — no second source of truth |
 | Situation model (v3.6) | Derived per-repo situation with priority ordering; situation-aware gating (security-response freezes deploys + CLI backends); catch-up card in console, digest, and `status` verb |
 | Testing architecture (v3.6) | Layer matrix, AC-ID gate mechanics, test-intent anti-gaming law, diff coverage (no global %-gates), execution tiers, flaky quarantine, computed release-readiness checklist |
+| Ticket trail (v3.7) | The driving ticket is the work's live feed: trail comments at every lifecycle moment (started/spec/plan/PR/gate-fail/escalation/CI-green/merged), idempotent per phase; unplanned-work rule — silent side-work forbidden |
 
 ## 2. Repo & plugin anatomy
 
@@ -252,6 +253,9 @@ Migration order (parity proven on real cms work before retiring each superpowers
 - **digest** — opens with the catch-up card (section 7); epic body auto-carries spec link + live child table + per-member workload (team) + **open escalations first**; refreshed on child changes. Also carries **flow metrics** computed from data the board + journal already hold — cycle time per ticket, Size estimate vs actual, gate-failure rate, backend cost per shipped ticket — the platform's own evidence that it's paying off. And a **stalled-items section**: green PRs unmerged, staging deploys unpromoted, decision comments unanswered — each with its age, so nothing halts silently (`doctor` flags the same list).
 - **log** — delivery-log row append to the pinned per-repo issue (tasky #205 pattern).
 - **status** — renders the catch-up card (section 7): situation, active tickets by lane, pending decisions with age, recent events, next expected human action.
+- **comment** — posts a **ticket-trail** comment on the driving ticket (idempotent per phase marker: re-runs update the phase's comment instead of stacking duplicates).
+
+**Ticket trail (platform law):** the driving ticket is the work's live feed, not just its tombstone. Skills post a terse trail comment at every lifecycle moment — work started (+ branch name), spec ready (+ link), plan ready (+ link), PR opened (+ link, AC status), gate failed (+ which, why, fix), escalation raised, CI green / PR ready for merge, merged (receipt). A human watching the ticket from GitHub Mobile follows the whole arc without opening the repo. **Unplanned-work rule:** anything discovered mid-flight that isn't in the plan gets a trail comment when it's an in-scope fix (e.g. a broken CI action), or its own ticket via triage when it's out-of-scope — silent side-work is forbidden.
 - **init** — full bootstrap, idempotent (adopt-or-create): checks gh auth + Node ≥22.13 → creates the GitHub Project + status/priority/size/type fields with standard options if absent, discovers IDs if present (optional iteration/area fields are discovered and mapped when present; init offers to create `area` when `assignment: "by-area"`) → creates the delivery-log issue if missing → writes `forge.json` (board + team skeleton) → adds `.forge/` to the consumer `.gitignore` → installs the consumer CI template (below) if `.github/workflows/` lacks a verify workflow → runs `forge backends sync`. Works on a fresh repo and a mature one. **Spike required (SP1):** verify ProjectsV2 GraphQL can add options to the built-in Status single-select on a fresh project; if not, init documents the manual step and falls back to mapping whatever exists (the degrade-gracefully path above). Init and doctor grow with the rollout: the CI-template step lands with SP3, the backends-sync step with SP4.
 - **doctor** — read-only health check: gh auth, project reachable, field/option IDs valid, team block valid (section 3), roster backends' CLIs present, Node ≥22.13, branch protection with required verify check, secret scanning + push protection enabled (warn if not), `guides/onboarding.md` present when the team has >1 member. Run any time; `init` ends by running it.
 
@@ -385,7 +389,7 @@ Each sub-project = its own spec → plan → epic in the forge repo, executed wi
 | # | Sub-project | Size | Replaces |
 | --- | --- | --- | --- |
 | 1 | Plugin skeleton: marketplace, plugin.json, cms install, `forge.json` schema (board/team/features/roster) + `forge init` + `forge doctor` + status line (minimal: ticket/branch; situation-aware at SP3) | S | — |
-| 2 | Board automation: `forge:board` + scripts (statuses, assignees, digest, log) | M | manual GraphQL |
+| 2 | Board automation: `forge:board` + scripts (statuses, assignees, digest, log, ticket-trail `comment`) | M | manual GraphQL |
 | 3 | `forge:ship` + `forge:triage` + `forge:investigate` + escalation protocol (GitHub-native) + situation model & `status` catch-up card + journal format & append helper + destructive-command denylist hook + consumer CI template | M | ship-and-document ritual |
 | 4 | Agent roster + backend adapters (role cards, swap allowlist, agy adapter, fallback logic, pre-send scan, ignore-file sync) + `forge:review` (thin wrapper over the roles) | M | generic subagents |
 | 4b | Deploy layer: `devops` role card, deploy/<stack> templates, `/forge:deploy-init`, environment-branch workflows, deploy-readiness gate + CI image-build job, smoke tests, observability minimum | M | hand-rolled Dockerfiles/infra |
