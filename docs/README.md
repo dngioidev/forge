@@ -12,7 +12,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 ## Decisions (ADRs)
 
-_(none yet — promoted from spec decision logs as they stabilize)_
+- [ADR-0001 — Status field options](decisions/0001-status-field-options.md) — built-in Status options are GraphQL-mutable but replacement mints new IDs; init replaces on fresh (empty) projects only, maps-as-is on live boards.
 
 ## Guides
 
