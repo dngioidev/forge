@@ -283,7 +283,7 @@ The platform derives a **situation** per repo — computed from board + journal 
 
 **Situation-aware gating (platform law):** situations change what's *allowed*, not just what's shown. During `incident`: ship/release pause for all non-hotfix branches. During `security-response`: deploys frozen, CLI backends disabled, only the respond + investigate *skills* run (derived from an open `respond-open` journal event; cleared by `respond-close` — the containment fix then ships via hotfix under the `incident` rules). During `degraded`/`paused`: work queues, never fails.
 
-**Catch-up card** — one generated view: current situation + the event that triggered it, active tickets by lane, pending decisions with age, the last few notable journal events, and the next expected human action. Surfaced three ways: the console home screen (section 11), the opening block of every digest (section 6), and the `forge board status` verb for anyone in a terminal. A week away = one card to fully current.
+**Catch-up card** — one generated view: current situation + the event that triggered it, active tickets by lane, pending decisions with age, the last few notable journal events, and the next expected human action. Surfaced four ways: the console home screen (section 11), the opening block of every digest (section 6), the `forge board status` verb for anyone in a terminal, and the **Claude Code status line** — a compact always-visible strip in every session: situation glyph + active ticket + branch + pending-decision count. The status line ships minimal with SP1 (ticket + branch from forge.json/git; `forge init` offers to wire `scripts/statusline.mjs` into the repo's Claude Code settings) and upgrades to situation-aware at SP3. A week away = one card to fully current; mid-session = one glance at the bottom of the terminal.
 
 ## 8. Learning loop
 
@@ -384,7 +384,7 @@ Each sub-project = its own spec → plan → epic in the forge repo, executed wi
 
 | # | Sub-project | Size | Replaces |
 | --- | --- | --- | --- |
-| 1 | Plugin skeleton: marketplace, plugin.json, cms install, `forge.json` schema (board/team/features/roster) + `forge init` + `forge doctor` | S | — |
+| 1 | Plugin skeleton: marketplace, plugin.json, cms install, `forge.json` schema (board/team/features/roster) + `forge init` + `forge doctor` + status line (minimal: ticket/branch; situation-aware at SP3) | S | — |
 | 2 | Board automation: `forge:board` + scripts (statuses, assignees, digest, log) | M | manual GraphQL |
 | 3 | `forge:ship` + `forge:triage` + `forge:investigate` + escalation protocol (GitHub-native) + situation model & `status` catch-up card + journal format & append helper + destructive-command denylist hook + consumer CI template | M | ship-and-document ritual |
 | 4 | Agent roster + backend adapters (role cards, swap allowlist, agy adapter, fallback logic, pre-send scan, ignore-file sync) + `forge:review` (thin wrapper over the roles) | M | generic subagents |
