@@ -9,6 +9,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 ## Plans
 
 - [SP1 — Plugin skeleton](plans/2026-07-16-sp1-plugin-skeleton.md) — tasks T1–T8 for epic #1: manifests, lib, init/doctor, status line, Status-options spike.
+- [SP2 — Board automation](plans/2026-07-16-sp2-board-automation.md) — tasks T1–T10 for epic #2: boardctx lib + create/move/comment/receipt/log/digest/status scripts, forge:board skill.
 
 ## Decisions (ADRs)
 
