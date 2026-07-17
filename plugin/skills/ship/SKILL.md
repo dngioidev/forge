@@ -9,7 +9,7 @@ Branch → PR with gates, then the post-merge ritual. Since SP5 the core gates a
 
 ## Pre-PR checklist (in order — a failed gate stops the ritual)
 
-1. **Conventions lint** (spec §2): branch matches `<type>/<issue#>-<slug>`; every commit `type(scope): subject (#issue)` ≤72 chars; intended PR title is conventional-format with the issue ref.
+1. **Conventions lint** (spec §2): branch matches `<type>/<issue#>-<slug>`; every commit `type(scope): subject (#issue)` ≤72 chars; intended PR title is conventional-format with the issue ref. **Spike branches never ship** — a `spike/…` branch asking for a PR is refused outright (spec §4 item 12: findings merge as ADRs, code is re-implemented via plan/execute).
 2. **Rebase on main**; run the configured verify command — must pass locally.
 3. **Commits→issues map**: every commit has a ticket; otherwise apply the unplanned-work rule (trail `note` or triage).
 4. **Mechanical gates** (spec §13):
