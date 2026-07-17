@@ -8,7 +8,7 @@ import { runMove, parseArgs as moveArgs } from '../plugin/scripts/board/move.mjs
 import { runComment, parseArgs as commentArgs } from '../plugin/scripts/board/comment.mjs';
 import { runReceipt } from '../plugin/scripts/board/receipt.mjs';
 import { runLog } from '../plugin/scripts/board/log.mjs';
-import { runDigest, renderChildTable } from '../plugin/scripts/board/digest.mjs';
+import { runDigest, renderChildTable, computeFlowMetrics, renderFlow, cycleDays } from '../plugin/scripts/board/digest.mjs';
 import { runStatus } from '../plugin/scripts/board/status.mjs';
 import { fakeGh, REPO_VIEW } from './helpers/fakegh.mjs';
 
@@ -220,6 +220,58 @@ describe('digest (AC-2.5)', () => {
   it('renderChildTable is stable for empty epics', () => {
     const out = renderChildTable([]);
     expect(out).toContain('0 children');
+  });
+});
+
+describe('digest flow metrics (AC-7.6)', () => {
+  it('AC-7.6: cycle time per closed child with size, median, and journal counts', () => {
+    const rows = [
+      { number: 21, size: 'M', createdAt: '2026-07-10T00:00:00Z', closedAt: '2026-07-12T12:00:00Z' },
+      { number: 22, size: 'S', createdAt: '2026-07-11T00:00:00Z', closedAt: '2026-07-11T12:00:00Z' },
+      { number: 23, size: null, createdAt: '2026-07-12T00:00:00Z', closedAt: null }, // still open
+    ];
+    const events = [
+      { kind: 'gate-fail', gate: 'plandrift' }, { kind: 'gate-fail', gate: 'acgate' },
+      { kind: 'backend-fallback', role: 'investigator' },
+    ];
+    const m = computeFlowMetrics(rows, events);
+    expect(m.shipped).toEqual([
+      { number: 21, size: 'M', cycle: 2.5 },
+      { number: 22, size: 'S', cycle: 0.5 },
+    ]);
+    expect(m.medianCycle).toBe(1.5);
+    expect(m.counts).toEqual({ 'gate-fail': 2, 'backend-fallback': 1 });
+
+    const out = renderFlow(m);
+    expect(out).toContain('| #21 | M | 2.5d |');
+    expect(out).toContain('median cycle: 1.5d');
+    expect(out).toContain('2 gate-fail');
+    expect(out).toContain('1 backend-fallback');
+  });
+
+  it('AC-7.6: the digest managed block carries the Flow section', async () => {
+    let savedBody = null;
+    const { ctx } = await ctxWith([
+      [(j) => j.includes('subIssues'), { stdout: JSON.stringify({ data: { repository: { issue: { subIssues: { nodes: [
+        { number: 23, title: 'Child C', state: 'CLOSED', createdAt: '2026-07-10T00:00:00Z', closedAt: '2026-07-11T00:00:00Z' },
+      ] } } } } }) }],
+      [(j) => j.startsWith('project item-list'), itemList([
+        { id: 'i23', content: { number: 23 }, status: 'Done', size: 'M', assignees: [] },
+      ])],
+      ['issue view 2', { stdout: JSON.stringify({ body: 'Epic intro.', title: 'Epic', state: 'OPEN' }) }],
+      [(j, args) => j.startsWith('issue edit'), (j, args) => { savedBody = args[args.indexOf('--body') + 1]; return { stdout: '' }; }],
+    ]);
+    const res = await runDigest(ctx, { epic: 2 }, noop);
+    expect(res.ok).toBe(true);
+    expect(savedBody).toContain('### Flow');
+    expect(savedBody).toContain('| #23 | M | 1d |');
+    expect(savedBody).toContain('journal since last archive: clean');
+  });
+
+  it('cycleDays is null on open, missing, or negative spans', () => {
+    expect(cycleDays('2026-07-10T00:00:00Z', null)).toBe(null);
+    expect(cycleDays(null, '2026-07-10T00:00:00Z')).toBe(null);
+    expect(cycleDays('2026-07-12T00:00:00Z', '2026-07-10T00:00:00Z')).toBe(null);
   });
 });
 

@@ -35,7 +35,7 @@ export async function addSubIssue(gh, parentNodeId, childNodeId) {
 const SUB_ISSUES_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
-      subIssues(first: 100) { nodes { number title state } }
+      subIssues(first: 100) { nodes { number title state createdAt closedAt } }
     }
   }
 }`;

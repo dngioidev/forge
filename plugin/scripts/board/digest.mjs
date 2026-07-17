@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
  * board digest — epic body carries a managed block with the live child table,
- * blocked-first (plan T7, AC-2.5). Flow metrics land with SP7.
+ * blocked-first (plan T7, AC-2.5), plus flow metrics computed from data the
+ * board + journal already hold (spec §5; SP7 T5). Metrics we can't compute
+ * honestly (backend cost — no spend data yet) are omitted, not faked.
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +11,9 @@ import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { getSubIssues, getIssueBody, setIssueBody } from '../lib/issues.mjs';
 import { upsertBlock } from '../lib/markers.mjs';
+import { read as readJournal } from '../lib/journal.mjs';
+
+const METRIC_KINDS = ['gate-fail', 'cmd-fail', 'blocked-edit', 'backend-fallback', 'escalation', 'incident'];
 
 const STATUS_ORDER = ['blocked', 'inReview', 'inProgress', 'ready', 'backlog', 'done'];
 
@@ -41,6 +46,40 @@ export function renderChildTable(rows) {
   return lines.join('\n');
 }
 
+export function cycleDays(createdAt, closedAt) {
+  if (!createdAt || !closedAt) return null;
+  const ms = new Date(closedAt) - new Date(createdAt);
+  return Number.isFinite(ms) && ms >= 0 ? Math.round((ms / 86_400_000) * 10) / 10 : null;
+}
+
+export function computeFlowMetrics(rows, events) {
+  const shipped = rows
+    .map((r) => ({ number: r.number, size: r.size ?? null, cycle: cycleDays(r.createdAt, r.closedAt) }))
+    .filter((r) => r.cycle !== null);
+  const sorted = shipped.map((r) => r.cycle).sort((a, b) => a - b);
+  const median = sorted.length
+    ? Math.round(((sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2)) * 10) / 10
+    : null;
+  const counts = {};
+  for (const e of events) counts[e.kind] = (counts[e.kind] ?? 0) + 1;
+  return { shipped, medianCycle: median, counts };
+}
+
+export function renderFlow(metrics) {
+  const lines = ['### Flow', ''];
+  if (metrics.shipped.length) {
+    lines.push('| # | size | cycle |', '| --- | --- | --- |');
+    for (const r of metrics.shipped) lines.push(`| #${r.number} | ${r.size ?? '—'} | ${r.cycle}d |`);
+    lines.push('', `median cycle: ${metrics.medianCycle}d`);
+  } else {
+    lines.push('_no shipped children yet — cycle times appear as children close_');
+  }
+  const journalLine = METRIC_KINDS.filter((k) => metrics.counts[k])
+    .map((k) => `${metrics.counts[k]} ${k}`).join(' · ');
+  lines.push('', `journal since last archive: ${journalLine || 'clean'}`);
+  return lines.join('\n');
+}
+
 export async function runDigest(ctx, args, log = console.log) {
   if (!Number.isInteger(args.epic)) return { ok: false, error: '--epic <number> is required' };
 
@@ -56,15 +95,21 @@ export async function runDigest(ctx, args, log = console.log) {
       number: c.number,
       title: c.title,
       state: c.state,
+      createdAt: c.createdAt ?? null,
+      closedAt: c.closedAt ?? null,
       status: item?.status ?? null,
       statusKey: item ? ctx.itemFieldKey(item, 'status') : null,
       assignee: item?.assignees?.[0] ?? null,
+      size: item?.size ?? null,
     };
   });
 
+  const journal = await readJournal(ctx.cwd, { kinds: METRIC_KINDS });
+  const flow = renderFlow(computeFlowMetrics(rows, journal.events));
+
   const body = await getIssueBody(ctx.gh, args.epic);
   if (!body.ok) return body;
-  const updated = upsertBlock(body.body ?? '', 'digest', renderChildTable(rows));
+  const updated = upsertBlock(body.body ?? '', 'digest', `${renderChildTable(rows)}\n\n${flow}`);
   if (updated === body.body) {
     log(`digest: #${args.epic} unchanged`);
     return { ok: true, changed: false, rows: rows.length };
