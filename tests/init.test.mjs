@@ -13,7 +13,9 @@ const BOARD8 = {
   projectId: 'PVT_kwHOCkJQ784BdZrh',
   fields: [
     { id: 'PVTSSF_lAHOCkJQ784BdZrhzhX7emI', name: 'Status', options: [
-      { id: '04db063a', name: 'Backlog' }, { id: '29224f44', name: 'In progress' }, { id: '7d8a60b9', name: 'Done' }] },
+      // six-status set since the #32 migration (ids re-minted by replaceStatusOptions)
+      { id: '8a1e2226', name: 'Backlog' }, { id: 'e90d0eb6', name: 'Ready' }, { id: '2a209b69', name: 'In progress' },
+      { id: 'a9159ac9', name: 'In review' }, { id: '5b1d391c', name: 'Blocked / Needs decision' }, { id: '7c5d9faa', name: 'Done' }] },
     { id: 'PVTSSF_lAHOCkJQ784BdZrhzhX7esI', name: 'Priority', options: [
       { id: '66c7f4b7', name: 'P0' }, { id: '23a624d0', name: 'P1' }, { id: 'd9b45a49', name: 'P2' }] },
     { id: 'PVTSSF_lAHOCkJQ784BdZrhzhX7esU', name: 'Size', options: [
