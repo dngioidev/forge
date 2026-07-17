@@ -24,6 +24,10 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [Local web console](plans/2026-07-17-local-web-console.md) — tasks T1–T4 for #37: localhost serve, state + decide APIs, self-contained page.
 - [Console UI v2](plans/2026-07-17-console-ui-v2.md) — tasks T1–T5 for #39: decision-flow defect fixes, a11y floor, identity variants + owner pick.
 
+## Design specs
+
+- [Console — heat identity](design/2026-07-17-console.md) — visual spec for the local web console: situation-as-heat token system, states matrix, a11y contract.
+
 ## Decisions (ADRs)
 
 - [ADR-0001 — Status field options](decisions/0001-status-field-options.md) — built-in Status options are GraphQL-mutable but replacement mints new IDs; init replaces on fresh (empty) projects only, maps-as-is on live boards.

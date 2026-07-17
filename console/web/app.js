@@ -72,7 +72,7 @@ export function repoCard(r, now = Date.now()) {
     </div>`).join('');
   const journal = (r.journalTail ?? []).slice(-5).reverse().map((e) =>
     `<div title="${esc(e.ts ?? '')}">${esc(relativeTime(e.ts, now))} · ${esc(e.kind)}${e.gate ? ' (' + esc(e.gate) + ')' : ''}${e.ticket ? ' ' + esc(e.ticket) : ''}</div>`).join('');
-  return `<div class="repo">
+  return `<div class="repo ${esc(r.situation ?? '')}">
     <div class="repo-head"><span class="glyph">${esc(r.glyph ?? '·')}</span><span class="name">${esc(r.repo)}</span>
       <span class="situation ${esc(r.situation)}">${esc(r.situation)}</span></div>
     <div class="meta">${r.ticket ? `<b>${esc(r.ticket)}</b> · ` : ''}${esc(r.branch ?? 'no branch')}${l && l.total ? ` · tasks ${l.done}/${l.total}` : ''}</div>
