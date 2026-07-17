@@ -57,19 +57,33 @@ export function check(command) {
   return { blocked: false };
 }
 
+/** Verdict + journal in one testable place; a journal failure never changes the verdict. */
+export async function handle(payload, appendFn) {
+  if (payload?.tool_name !== 'Bash') return { code: 0 };
+  const cmd = payload.tool_input?.command ?? '';
+  const res = check(cmd);
+  if (!res.blocked) return { code: 0 };
+  try {
+    // learning-loop evidence (spec §8)
+    await appendFn(payload.cwd ?? process.cwd(), 'blocked-edit', { tool: 'Bash', cmd: cmd.slice(0, 300), rule: res.rule });
+  } catch { /* still block below */ }
+  return {
+    code: 2,
+    message:
+      `forge denylist blocked this command (${res.rule}): ${res.msg}. ` +
+      `Destructive actions require a human decision — escalate instead: ` +
+      `node plugin/scripts/board/escalate.mjs --issue <n> --reason "..." --options "do it|alternative" (spec §7).`,
+  };
+}
+
 async function main() {
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
-  const payload = JSON.parse(raw);
-  if (payload.tool_name !== 'Bash') return 0;
-  const res = check(payload.tool_input?.command ?? '');
-  if (!res.blocked) return 0;
-  process.stderr.write(
-    `forge denylist blocked this command (${res.rule}): ${res.msg}. ` +
-    `Destructive actions require a human decision — escalate instead: ` +
-    `node plugin/scripts/board/escalate.mjs --issue <n> --reason "..." --options "do it|alternative" (spec §7).`,
-  );
-  return 2;
+  const { append } = await import('../scripts/lib/journal.mjs');
+  const res = await handle(JSON.parse(raw), append);
+  if (res.message) process.stderr.write(res.message);
+  return res.code;
 }
 
-main().then((code) => process.exit(code)).catch(() => process.exit(0)); // fail open
+const isHookRun = process.argv[1] && /denylist\.mjs$/.test(process.argv[1]);
+if (isHookRun) main().then((code) => process.exit(code)).catch(() => process.exit(0)); // fail open
