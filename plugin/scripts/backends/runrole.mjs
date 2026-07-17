@@ -6,6 +6,7 @@ import { ADAPTERS } from './agy.mjs';
 import { scanPrompt } from './presend.mjs';
 import { extractReport, citeOrDrop } from './report.mjs';
 import { append as journalAppend } from '../lib/journal.mjs';
+import { deriveSituation } from '../lib/situation.mjs';
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -24,6 +25,14 @@ export async function runRole({ role, taskBrief, cwd, roster = {}, branchName = 
   }
   if (resolved.runtime === 'claude') {
     return { ok: true, claude: true, model: resolved.model, warnings: resolved.warnings };
+  }
+
+  // security-response freezes CLI backends: no repo content reaches third-party
+  // models during a suspected leak (spec §7/§4 item 18) — Claude-side fallback.
+  const situation = await deriveSituation(cwd);
+  if (situation.key === 'security-response') {
+    await journalAppend(cwd, 'backend-fallback', { role, reason: 'security-response', detail: `CLI backend ${resolved.runtime} frozen during security-response` });
+    return { ok: true, claude: true, model: null, fellBack: true, why: 'security-response: CLI backends frozen' };
   }
 
   const adapter = adapters[resolved.runtime];

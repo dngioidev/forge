@@ -1,4 +1,5 @@
 import { read as readJournal } from '../lib/journal.mjs';
+import { deriveSituation } from '../lib/situation.mjs';
 
 /**
  * Computed release-readiness checklist (spec §13) — forge:release refuses
@@ -12,6 +13,14 @@ export async function computeReadiness({ cwd, execFn, config, verifyCmd }) {
   const failItem = (name, msg) => items.push({ name, level: 'fail', msg });
 
   const git = (...args) => execFn('git', args);
+
+  // a release never cuts during an emergency (spec §7; SP10 T3)
+  const situation = await deriveSituation(cwd);
+  if (situation.key === 'incident' || situation.key === 'security-response') {
+    failItem('situation', `situation is ${situation.key} — close it first (node plugin/scripts/care/incident.mjs)`);
+  } else {
+    pass('situation', situation.key);
+  }
 
   const branch = await git('rev-parse', '--abbrev-ref', 'HEAD');
   if (!branch.ok || branch.stdout.trim() !== 'main') failItem('branch', `releases cut from main only (on '${branch.stdout.trim()}')`);
