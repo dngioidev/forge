@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>variant B — drawing no. 8</title>
+<style>
+  /* B: BLUEPRINT. The machine as an engineering drawing: prussian paper,
+     hairline grid, chalk lines, and situations applied as INSPECTION STAMPS —
+     the way a drawing is approved, held, or rejected. Signature: the stamp. */
+  :root { --paper:#0e2238; --grid:#16324e; --chalk:#dce8f2; --faint:#8fa9bf; --line:#3d5a75; --stamp-ok:#79c4a8; --stamp-hold:#e8c45a; --stamp-stop:#e86752; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--paper) 0 0/28px 28px; background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px); color:var(--chalk); font:13.5px/1.6 Consolas,'Cascadia Mono',ui-monospace,monospace; max-width:900px; margin:0 auto; padding:28px 20px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; border:1px solid var(--line); padding:10px 16px; margin-bottom:20px; background:var(--paper); }
+  h1 { font:400 20px Bahnschrift,'Arial Narrow',sans-serif; letter-spacing:.3em; text-transform:uppercase; }
+  h1 small { color:var(--faint); font-size:11px; letter-spacing:.1em; margin-left:12px; }
+  .sheet { position:relative; border:1px solid var(--line); background:var(--paper); padding:16px 18px 16px 18px; margin-bottom:16px; }
+  .sheet::after { content:attr(data-no); position:absolute; right:8px; bottom:4px; color:var(--faint); font-size:10px; letter-spacing:.2em; }
+  .stamp { position:absolute; top:10px; right:12px; border:2px solid var(--s,var(--faint)); color:var(--s,var(--faint)); padding:2px 10px; font-size:11px; letter-spacing:.25em; text-transform:uppercase; transform:rotate(-6deg); opacity:.9; }
+  .head { display:flex; gap:12px; align-items:baseline; }
+  .name { font:400 16px Bahnschrift,'Arial Narrow',sans-serif; letter-spacing:.18em; text-transform:uppercase; border-bottom:1px dashed var(--line); }
+  .meta { color:var(--faint); margin-top:8px; }
+  .meta b { color:var(--chalk); font-weight:normal; }
+  .rule { margin-top:12px; height:14px; position:relative; border-bottom:1px solid var(--line); }
+  .rule i { position:absolute; bottom:0; height:8px; border-left:1px solid var(--line); } /* ruler ticks */
+  .rule .fill { position:absolute; bottom:-1px; height:3px; background:var(--stamp-ok); }
+  .rule .mark { position:absolute; bottom:2px; font-size:10px; color:var(--faint); }
+  .decision { border:1px dashed var(--stamp-hold); margin-top:14px; padding:12px 14px; }
+  .decision p { margin-bottom:6px; } .age { color:var(--faint); font-size:11px; }
+  button { display:block; width:100%; text-align:left; background:transparent; color:var(--chalk); border:1px solid var(--line); padding:7px 12px; font:inherit; cursor:pointer; margin-top:6px; }
+  button:hover { border-style:dashed; border-color:var(--stamp-hold); }
+  .journal { margin-top:12px; color:var(--faint); font-size:11.5px; }
+  .journal div::before { content:'— '; }
+</style>
+</head>
+<body>
+<header><h1>Forge<small>SHEET 8 · MACHINE gioi-821b · REV 18:42</small></h1></header>
+
+<div class="sheet" data-no="DWG-88"><span class="stamp" style="--s:var(--stamp-stop)">HOLD · SECURITY</span>
+  <div class="head"><span class="name">payments-api</span></div>
+  <div class="meta"><b>#88</b> · hotfix/88-rotate-keys · containment 1/4</div>
+  <div class="rule"><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i><span class="fill" style="width:25%"></span><span class="mark" style="left:26%">1/4</span></div></div>
+
+<div class="sheet" data-no="DWG-71"><span class="stamp" style="--s:var(--stamp-stop)">INCIDENT</span>
+  <div class="head"><span class="name">cms</span></div>
+  <div class="meta"><b>#71</b> · hotfix/71-checkout-500 · fix 2/3</div>
+  <div class="rule"><i style="left:33%"></i><i style="left:66%"></i><span class="fill" style="width:66%"></span><span class="mark" style="left:67%">2/3</span></div>
+  <div class="journal"><div>18:38 incident #71 prod healthcheck failing</div></div></div>
+
+<div class="sheet" data-no="DWG-39"><span class="stamp" style="--s:var(--stamp-hold)">AWAITING APPROVAL</span>
+  <div class="head"><span class="name">forge</span></div>
+  <div class="meta"><b>#39</b> · feat/39-console-ui-v2</div>
+  <div class="decision"><p><b>#39</b> design pick: console identity <span class="age">0.3h</span></p>
+    <button>1. heat — situation as metal temperature</button>
+    <button>2. blueprint — drawing no. 8</button>
+    <button>3. print-ledger — steel &amp; stamp</button></div></div>
+
+<div class="sheet" data-no="DWG-205"><span class="stamp" style="--s:var(--stamp-ok)">IN WORK</span>
+  <div class="head"><span class="name">tasky</span></div>
+  <div class="meta"><b>#205</b> · feat/205-digest · tasks 5/8</div>
+  <div class="rule"><i style="left:12.5%"></i><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i><span class="fill" style="width:62%"></span><span class="mark" style="left:63%">5/8</span></div></div>
+
+<div class="sheet" data-no="DWG-0"><div class="head"><span class="name">dngioi.com</span></div>
+  <div class="meta">main · no open work orders</div></div>
+</body>
+</html>
