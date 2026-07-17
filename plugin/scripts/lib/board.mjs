@@ -111,20 +111,29 @@ export async function createSingleSelectField(gh, projectId, name, optionDefs) {
   return { ok: true, field: res.json.data.createProjectV2Field.projectV2Field };
 }
 
-const UPDATE_STATUS_MUTATION = `mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
-  updateProjectV2Field(input: { fieldId: $fieldId, singleSelectOptions: $options }) {
+/**
+ * Options must be INLINE literals: gh -F delivers a JSON array as a string
+ * (API rejects it), and option colors are GraphQL enums that JSON can't
+ * express unquoted. Verified live in the #32 migration + SP1 spike (#35).
+ */
+export function buildStatusMutation(fieldId, optionDefs) {
+  const opts = optionDefs
+    .map((o) => `{name: ${JSON.stringify(o.name)}, color: ${o.color}, description: ""}`)
+    .join(', ');
+  return `mutation {
+  updateProjectV2Field(input: { fieldId: ${JSON.stringify(fieldId)}, singleSelectOptions: [${opts}] }) {
     projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } }
   }
 }`;
+}
 
 /**
  * ADR-0001: replaces ALL options and mints new ids — call only on projects
  * with zero items (fresh bootstrap). Callers must check itemsCount first.
  */
 export async function replaceStatusOptions(gh, fieldId, optionDefs) {
-  const options = JSON.stringify(optionDefs.map((o) => ({ name: o.name, color: o.color, description: '' })));
   const res = await gh(
-    ['api', 'graphql', '-f', `query=${UPDATE_STATUS_MUTATION}`, '-f', `fieldId=${fieldId}`, '-F', `options=${options}`],
+    ['api', 'graphql', '-f', `query=${buildStatusMutation(fieldId, optionDefs)}`],
     { parseJson: true },
   );
   if (!res.ok) return { ok: false, error: res.stderr || 'status options update failed' };
