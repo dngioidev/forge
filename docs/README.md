@@ -26,4 +26,4 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 ## Guides
 
-_(none yet — install/init/backends/console runbooks land with their sub-projects)_
+- [Console daemon](guides/console-daemon.md) — register/once/watch/status, file-transport layout, metadata-only guardrail, the Firebase follow-up step.

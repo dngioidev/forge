@@ -1,0 +1,66 @@
+/**
+ * Telemetry collectors (spec §11 monitor; SP9a T1). Everything here reads
+ * state the pipeline already writes — .forge/journal.jsonl, .forge/decisions/,
+ * .forge/progress.md, .git/HEAD. No network, no gh: the daemon must be able
+ * to snapshot a repo even when offline. Output goes through sanitize.mjs
+ * before any transport sees it.
+ */
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { deriveSituation, pendingDecisions } from '../../plugin/scripts/lib/situation.mjs';
+import { read as readJournal } from '../../plugin/scripts/lib/journal.mjs';
+import { parseLedger, LEDGER_RELPATH } from '../../plugin/scripts/lib/ledger.mjs';
+import { parseBranch } from '../../plugin/scripts/lib/ticket.mjs';
+
+export async function currentBranch(cwd) {
+  try {
+    const head = await readFile(join(cwd, '.git', 'HEAD'), 'utf8');
+    const m = /^ref: refs\/heads\/(.+)$/m.exec(head.trim());
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function ledgerCounts(cwd) {
+  try {
+    const text = await readFile(join(cwd, LEDGER_RELPATH), 'utf8');
+    const tasks = parseLedger(text);
+    const by = (s) => tasks.filter((t) => t.status === s).length;
+    return { total: tasks.length, done: by('done'), inProgress: by('in-progress'), pending: by('pending') };
+  } catch {
+    return null;
+  }
+}
+
+const AGE_MS_HOUR = 3_600_000;
+
+/** One repo's snapshot. `now` injected — the daemon stamps once per cycle. */
+export async function collectRepo(cwd, now = Date.now()) {
+  const branch = await currentBranch(cwd);
+  const parsed = parseBranch(branch ?? '');
+  const situation = await deriveSituation(cwd);
+  const pending = await pendingDecisions(cwd);
+  const journal = await readJournal(cwd);
+
+  return {
+    repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? 'unknown',
+    situation: situation.key,
+    glyph: situation.glyph,
+    branch,
+    ticket: parsed.ticket ? `#${parsed.ticket}` : null,
+    branchKind: parsed.kind,
+    ledger: await ledgerCounts(cwd),
+    pendingDecisions: pending.map((d) => ({
+      id: d.id,
+      issue: d.issue,
+      reason: d.reason,
+      options: d.options,
+      ageHours: d.createdAt ? Math.round(((now - Date.parse(d.createdAt)) / AGE_MS_HOUR) * 10) / 10 : null,
+    })),
+    journalTail: journal.events.slice(-10).map((e) => ({
+      ts: e.ts, kind: e.kind, ticket: e.ticket ?? null, gate: e.gate ?? null, rule: e.rule ?? null,
+    })),
+    collectedAt: new Date(now).toISOString(),
+  };
+}
