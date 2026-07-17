@@ -50,6 +50,30 @@ describe('escalate (AC-3.2)', () => {
     expect(pending).toMatchObject({ status: 'pending', issue: 3, recommend: 'redesign the task' });
   });
 
+  it('AC-B1.1: board without a blocked option — decision comment, journal, pending file still land; no move fires (#27)', async () => {
+    const cfg = structuredClone(CFG);
+    cfg.board.fields.status.options = { backlog: 'sb', inProgress: 'sp', done: 'sd' }; // this repo's real shape
+    const dir = await mkdtemp(join(tmpdir(), 'forge-esc-nb-'));
+    await mkdir(join(dir, '.claude'), { recursive: true });
+    await writeFile(join(dir, '.claude', 'forge.json'), JSON.stringify(cfg), 'utf8');
+
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('/comments?'), { stdout: '[]' }],
+      [(j) => j.includes('/issues/3/comments'), { stdout: JSON.stringify({ id: 501 }) }],
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd: dir });
+    const logs = [];
+    const res = await runEscalate(ctx, parseArgs(['--issue', '3', '--reason', 'infra decision', '--options', 'a|b']), (m) => logs.push(m));
+    expect(res.ok).toBe(true);
+    expect(f.calls.some((c) => c.includes('item-edit'))).toBe(false); // no move attempted
+    expect(logs.join(' ')).toMatch(/no 'blocked' status option/);
+    const journal = await readJournal(dir, { kinds: ['escalation'] });
+    expect(journal.events[0]).toMatchObject({ issue: 3, reason: 'infra decision' });
+    const pending = JSON.parse(await readFile(join(dir, '.forge', 'decisions', `${res.id}.json`), 'utf8'));
+    expect(pending.status).toBe('pending');
+  });
+
   it('open: requires at least two options', async () => {
     const f = fakeGh([['repo view', REPO_VIEW]]);
     const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
@@ -81,6 +105,26 @@ describe('escalate (AC-3.2)', () => {
     expect(file.status).toBe('resolved');
     const journal = await readJournal(cwd, { kinds: ['escalation-resolved'] });
     expect(journal.events.length).toBe(1);
+  });
+
+  it('AC-B1.2: check resolves identically on a board without a blocked option (#27)', async () => {
+    const cfg = structuredClone(CFG);
+    cfg.board.fields.status.options = { backlog: 'sb', inProgress: 'sp', done: 'sd' };
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-esc-nb2-'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(cfg), 'utf8');
+    await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
+    await writeFile(join(cwd, '.forge', 'decisions', 'esc-9-nb.json'), JSON.stringify({ id: 'esc-9-nb', issue: 9, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
+        { id: 501, body: '<!-- forge:decision:esc-9-nb -->\n🚩 Decision needed' },
+        { id: 502, body: 'option 1' },
+      ]) }],
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    const res = await runCheck(ctx, { issue: 9 }, noop);
+    expect(res.resolved).toEqual([{ id: 'esc-9-nb', issue: 9, answer: 'option 1' }]);
   });
 
   it('check: stays pending when only forge-marked comments follow', async () => {
