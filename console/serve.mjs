@@ -49,6 +49,9 @@ export function makeApp(config, log = () => {}) {
       if (req.method === 'GET' && path === '/') {
         return send(200, await readFile(join(WEB_ROOT, 'index.html'), 'utf8'), 'text/html; charset=utf-8');
       }
+      if (req.method === 'GET' && path === '/app.js') {
+        return send(200, await readFile(join(WEB_ROOT, 'app.js'), 'utf8'), 'text/javascript; charset=utf-8');
+      }
       if (req.method === 'GET' && path === '/api/state') {
         return send(200, await stateOf(config));
       }

@@ -5,88 +5,58 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge console</title>
 <style>
-  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  /* Identity: A — heat (owner pick, #39). The situation model IS the visual
+     language: idle = cold iron, building = warming, awaiting-decision =
+     sparks, incident/security-response = ember glow bathing the card.
+     Tokens are defined in docs/design/2026-07-17-console.md (token delta). */
+  :root {
+    --iron:#161310; --plate:#1f1a15; --seam:#3a322a; --ash:#d8d2c8; --smoke:#a49a87;
+    --ember:#ff7a45; --spark:#ffd166; --steel:#7fa8c9; --cool:#4d5a52; --warm:#b56a3c; --alarm:#e2483d;
+  }
   * { box-sizing:border-box; margin:0; }
-  body { background:var(--bg); color:var(--fg); font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; padding:24px; max-width:960px; margin:0 auto; }
-  header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:20px; }
-  h1 { font-size:18px; } h1 small { color:var(--dim); font-weight:normal; margin-left:8px; }
-  #stamp { color:var(--dim); font-size:12px; }
-  .repo { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin-bottom:16px; }
-  .repo-head { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
-  .glyph { font-size:18px; }
-  .name { font-size:16px; font-weight:bold; }
-  .situation { color:var(--dim); }
-  .situation.incident, .situation.security-response { color:var(--bad); font-weight:bold; }
-  .situation.awaiting-decision { color:var(--warn); font-weight:bold; }
-  .meta { color:var(--dim); margin-top:4px; }
-  .meta b { color:var(--fg); font-weight:normal; }
-  .ledger { margin-top:8px; height:8px; background:var(--line); border-radius:4px; overflow:hidden; display:flex; }
-  .ledger .done { background:var(--ok); } .ledger .active { background:var(--warn); }
-  .decision { border:1px solid var(--warn); border-radius:6px; padding:12px; margin-top:12px; }
+  body { background:var(--iron); color:var(--ash); font:14px/1.55 Consolas,'Cascadia Mono',ui-monospace,monospace; padding:28px 20px; max-width:920px; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:baseline; border-bottom:1px solid var(--seam); padding-bottom:14px; margin-bottom:22px; }
+  h1 { font:600 24px/1 Bahnschrift,'DIN Alternate','Arial Narrow',sans-serif; letter-spacing:.14em; text-transform:uppercase; }
+  h1 small { color:var(--smoke); font:400 12px Consolas,ui-monospace,monospace; letter-spacing:normal; text-transform:none; margin-left:10px; }
+  #stamp { color:var(--smoke); font-size:12px; }
+  .repo { position:relative; background:var(--plate); border:1px solid var(--seam); border-left:4px solid var(--heat,var(--cool)); border-radius:2px; padding:16px 18px; margin-bottom:14px; overflow:hidden; }
+  .repo::before { content:''; position:absolute; inset:0; pointer-events:none; background:radial-gradient(120% 90% at 0% 100%, var(--glow,transparent), transparent 55%); }
+  .repo > * { position:relative; }
+  .repo.building { --heat:var(--warm); --glow:rgba(181,106,60,.10); }
+  .repo.awaiting-decision { --heat:var(--spark); --glow:rgba(255,209,102,.10); }
+  .repo.incident { --heat:var(--ember); --glow:rgba(255,122,69,.20); }
+  .repo.security-response { --heat:var(--alarm); --glow:rgba(226,72,61,.22); }
+  .repo-head { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  .glyph { font-size:17px; }
+  .name { font:600 16px Bahnschrift,'Arial Narrow',sans-serif; letter-spacing:.08em; text-transform:uppercase; }
+  .situation { font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--heat,var(--smoke)); }
+  .meta { color:var(--smoke); margin-top:6px; font-size:13px; }
+  .meta b { color:var(--ash); font-weight:normal; }
+  .ledger { margin-top:10px; height:6px; background:var(--seam); display:flex; }
+  .ledger .done { background:linear-gradient(90deg,var(--warm),var(--ember)); }
+  .ledger .active { background:var(--spark); }
+  .decision { border:1px dashed var(--spark); padding:12px 14px; margin-top:12px; background:rgba(255,209,102,.04); }
   .decision .reason { margin-bottom:8px; }
-  .decision .age { color:var(--dim); font-size:12px; }
+  .decision .age { color:var(--smoke); font-size:12px; }
   .opts { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
-  button { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; text-align:left; }
-  button:hover { border-color:var(--accent); }
+  button { background:transparent; color:var(--ash); border:1px solid var(--seam); padding:7px 12px; font:inherit; cursor:pointer; text-align:left; }
+  button:hover { border-color:var(--ember); color:var(--ember); }
+  button.armed { border-color:var(--spark); color:var(--spark); }
+  :is(button, input):focus-visible { outline:2px solid var(--ember); outline-offset:2px; }
   .free { display:flex; gap:6px; margin-top:8px; }
-  .free input { flex:1; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; }
-  .journal { margin-top:12px; color:var(--dim); font-size:12px; }
+  .free input { flex:1; background:var(--iron); color:var(--ash); border:1px solid var(--seam); padding:6px 10px; font:inherit; }
+  .errline { color:var(--alarm); font-size:12px; margin-top:6px; min-height:1em; }
+  .journal { margin-top:12px; color:var(--smoke); font-size:12px; border-top:1px solid var(--seam); padding-top:8px; }
   .journal div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .error { color:var(--bad); }
-  #empty { color:var(--dim); text-align:center; padding:40px 0; }
+  .error { color:var(--alarm); }
+  #empty { color:var(--smoke); text-align:center; padding:40px 0; }
+  @media (prefers-reduced-motion: no-preference) { .repo { transition:border-color .25s, background-color .25s; } }
 </style>
 </head>
 <body>
-<header><h1>forge console<small id="machine"></small></h1><span id="stamp"></span></header>
+<header><h1>forge<small id="machine"></small></h1><span id="stamp" role="status" aria-live="polite"></span></header>
 <div id="repos"></div>
 <div id="empty" hidden>no repos configured — run: node console/daemon.mjs register</div>
-<script>
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-async function decide(id, answer) {
-  if (!answer || !answer.trim()) return;
-  const res = await fetch('/api/decide', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id, answer }) });
-  const out = await res.json();
-  if (!res.ok) alert(out.error || 'decide failed');
-  refresh();
-}
-
-function repoCard(r) {
-  if (r.error) return `<div class="repo"><div class="repo-head"><span class="name">${esc(r.repo)}</span></div><div class="error">${esc(r.error)}</div></div>`;
-  const l = r.ledger;
-  const ledger = l && l.total ? `<div class="ledger" title="${l.done}/${l.total} done">
-      <span class="done" style="width:${(100*l.done/l.total).toFixed(0)}%"></span>
-      <span class="active" style="width:${(100*l.inProgress/l.total).toFixed(0)}%"></span></div>` : '';
-  const decisions = (r.pendingDecisions ?? []).map((d) => `
-    <div class="decision">
-      <div class="reason">🚩 <b>#${esc(d.issue)}</b> ${esc(d.reason)} <span class="age">${d.ageHours != null ? esc(d.ageHours)+'h old' : ''}</span></div>
-      <div class="opts">${(d.options ?? []).map((o, i) => `<button onclick="decide('${esc(d.id)}', ${JSON.stringify(esc(`option ${i+1} — ${o}`))})">${i+1}. ${esc(o)}</button>`).join('')}</div>
-      <div class="free"><input id="in-${esc(d.id)}" placeholder="or type an answer"><button onclick="decide('${esc(d.id)}', document.getElementById('in-${esc(d.id)}').value)">send</button></div>
-    </div>`).join('');
-  const journal = (r.journalTail ?? []).slice(-5).reverse().map((e) =>
-    `<div>${esc(e.ts ?? '')} · ${esc(e.kind)}${e.gate ? ' ('+esc(e.gate)+')' : ''}${e.ticket ? ' '+esc(e.ticket) : ''}</div>`).join('');
-  return `<div class="repo">
-    <div class="repo-head"><span class="glyph">${esc(r.glyph ?? '·')}</span><span class="name">${esc(r.repo)}</span>
-      <span class="situation ${esc(r.situation)}">${esc(r.situation)}</span></div>
-    <div class="meta">${r.ticket ? `<b>${esc(r.ticket)}</b> · ` : ''}${esc(r.branch ?? 'no branch')}${l && l.total ? ` · tasks ${l.done}/${l.total}` : ''}</div>
-    ${ledger}${decisions}
-    ${journal ? `<div class="journal">${journal}</div>` : ''}
-  </div>`;
-}
-
-async function refresh() {
-  try {
-    const s = await (await fetch('/api/state')).json();
-    document.getElementById('machine').textContent = s.machineId;
-    document.getElementById('stamp').textContent = new Date(s.generatedAt).toLocaleTimeString();
-    document.getElementById('repos').innerHTML = s.repos.map(repoCard).join('');
-    document.getElementById('empty').hidden = s.repos.length > 0;
-  } catch {
-    document.getElementById('stamp').textContent = 'server unreachable';
-  }
-}
-refresh();
-setInterval(refresh, 5000);
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

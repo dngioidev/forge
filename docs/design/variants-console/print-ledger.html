@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>variant C — steel &amp; stamp</title>
+<style>
+  /* C: PRINT LEDGER, light. A machinist's job card: brushed-steel white,
+     blued-steel ink, verdigris accents, and a red wax seal reserved for
+     emergencies only. The one light option; signature: the job-card seal. */
+  :root { --sheet:#eceff1; --card:#f7f9fa; --ink:#22303c; --grey:#5e6f7d; --rule:#c3ccd3; --verdigris:#2f7a66; --brass:#a07d2e; --seal:#b3372c; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--sheet); color:var(--ink); font:14px/1.55 Consolas,'Cascadia Mono',ui-monospace,monospace; max-width:900px; margin:0 auto; padding:28px 20px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:22px; }
+  h1 { font:700 24px Georgia,'Times New Roman',serif; letter-spacing:.02em; font-variant:small-caps; }
+  h1 span { color:var(--verdigris); }
+  .stamp { color:var(--grey); font-size:12px; }
+  .job { position:relative; background:var(--card); border:1px solid var(--rule); border-top:3px solid var(--top,var(--rule)); box-shadow:0 1px 2px rgba(34,48,60,.08); padding:14px 18px; margin-bottom:14px; }
+  .idle { --top:var(--rule); } .building { --top:var(--verdigris); } .deciding { --top:var(--brass); }
+  .incident, .lockdown { --top:var(--seal); }
+  .seal { position:absolute; top:-12px; right:14px; width:44px; height:44px; border-radius:50%; background:var(--seal); color:#f7e9e2; display:flex; align-items:center; justify-content:center; font-size:20px; box-shadow:0 2px 4px rgba(34,48,60,.25); }
+  .head { display:flex; gap:12px; align-items:baseline; }
+  .name { font:700 17px Georgia,serif; font-variant:small-caps; letter-spacing:.03em; }
+  .sit { font-size:12px; color:var(--grey); text-transform:uppercase; letter-spacing:.12em; }
+  .deciding .sit { color:var(--brass); } .incident .sit, .lockdown .sit { color:var(--seal); font-weight:bold; }
+  .meta { color:var(--grey); margin-top:6px; font-size:13px; }
+  .meta b { color:var(--ink); font-weight:normal; }
+  .bar { margin-top:10px; height:6px; background:var(--rule); }
+  .bar i { display:block; height:100%; background:var(--verdigris); }
+  .decision { border:1px solid var(--brass); background:#faf6ec; padding:12px 14px; margin-top:12px; }
+  .decision p { margin-bottom:6px; } .age { color:var(--grey); font-size:12px; }
+  button { display:block; width:100%; text-align:left; background:var(--card); color:var(--ink); border:1px solid var(--rule); padding:7px 12px; font:inherit; cursor:pointer; margin-top:6px; }
+  button:hover { border-color:var(--verdigris); color:var(--verdigris); }
+  .journal { margin-top:12px; font-size:12px; color:var(--grey); border-top:1px dashed var(--rule); padding-top:8px; }
+</style>
+</head>
+<body>
+<header><h1>Forge <span>Console</span></h1><span class="stamp">machine gioi-821b · 18:42:07</span></header>
+
+<div class="job lockdown"><div class="seal">🔒</div><div class="head"><span class="name">payments-api</span><span class="sit">security-response</span></div>
+  <div class="meta"><b>#88</b> · hotfix/88-rotate-keys · containment 1/4</div><div class="bar"><i style="width:25%"></i></div></div>
+
+<div class="job incident"><div class="seal">🔥</div><div class="head"><span class="name">cms</span><span class="sit">incident</span></div>
+  <div class="meta"><b>#71</b> · hotfix/71-checkout-500 · fix 2/3</div><div class="bar"><i style="width:66%"></i></div>
+  <div class="journal">4m ago · incident #71 · prod healthcheck failing</div></div>
+
+<div class="job deciding"><div class="head"><span class="name">forge</span><span class="sit">awaiting decision</span></div>
+  <div class="meta"><b>#39</b> · feat/39-console-ui-v2</div>
+  <div class="decision"><p>🚩 <b>#39</b> design pick: console identity <span class="age">0.3h old</span></p>
+    <button>1. heat — situation as metal temperature</button>
+    <button>2. blueprint — drawing no. 8</button>
+    <button>3. print-ledger — steel &amp; stamp</button></div></div>
+
+<div class="job building"><div class="head"><span class="name">tasky</span><span class="sit">building</span></div>
+  <div class="meta"><b>#205</b> · feat/205-digest · tasks 5/8</div><div class="bar"><i style="width:62%"></i></div></div>
+
+<div class="job idle"><div class="head"><span class="name">dngioi.com</span><span class="sit">idle</span></div>
+  <div class="meta">main · no open job cards</div></div>
+</body>
+</html>
