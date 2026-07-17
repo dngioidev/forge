@@ -12,6 +12,8 @@ A portable AI-dev-platform plugin for Claude Code: 18 pipeline skills in 5 lanes
 
 **[→ Full install guide](docs/guides/install.md)** — prerequisites, adopt-vs-create, per-feature wiring, troubleshooting.
 
+**[→ Handbook](docs/guides/handbook.md)** — daily use: every flow, every gate, and exactly where the human is needed.
+
 ## Find anything
 
 - [docs/README.md](docs/README.md) — the route index: every spec, plan, ADR, and guide, one line each.
