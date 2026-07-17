@@ -21,6 +21,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [SP9a — Console daemon](plans/2026-07-17-sp9a-console-daemon.md) — tasks T1–T6 for epic #11: collectors, metadata-only sanitizer, file/Firestore transports, daemon once/watch + decision write-back.
 - [SP10 — Hotfix + respond](plans/2026-07-17-sp10-hotfix-respond.md) — tasks T1–T6 for epic #13: incident mechanics, situation gate, backend freeze, hotfix/respond skills, rollback + data-recovery runbooks.
 - [SP11 — Maintain](plans/2026-07-17-sp11-maintain.md) — tasks T1–T5 for epic #14: outdated scan, patch/minor batch plan, majors bundled, CVE triage with SLA.
+- [Local web console](plans/2026-07-17-local-web-console.md) — tasks T1–T4 for #37: localhost serve, state + decide APIs, self-contained page.
 
 ## Decisions (ADRs)
 
