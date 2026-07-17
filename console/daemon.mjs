@@ -127,7 +127,14 @@ if (isMain) {
     });
   } else if (cmd === 'status') {
     loadCfg().then((cfg) => runStatus(cfg));
+  } else if (cmd === 'serve') {
+    const pi = process.argv.indexOf('--port');
+    loadCfg().then(async (cfg) => {
+      const { startServer, DEFAULT_PORT } = await import('./serve.mjs');
+      const { port } = await startServer(cfg, { port: pi > -1 ? Number(process.argv[pi + 1]) : DEFAULT_PORT, log: console.log });
+      console.log(`forge console → http://127.0.0.1:${port}  (${cfg.repos.length} repo(s), ctrl-c to stop)`);
+    });
   } else {
-    fail('usage: daemon.mjs <register|once|watch|status>');
+    fail('usage: daemon.mjs <register|once|watch|status|serve [--port N]>');
   }
 }
