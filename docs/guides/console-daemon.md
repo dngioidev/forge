@@ -9,7 +9,14 @@ node console/daemon.mjs register     # creates ~/.forge/daemon.json, adds this r
 node console/daemon.mjs once         # one cycle: collect → publish → inbox
 node console/daemon.mjs watch        # the same, every intervalSec
 node console/daemon.mjs status       # last-publish age per repo
+node console/daemon.mjs serve        # local web console → http://127.0.0.1:7433
 ```
+
+## Local web console (`serve`)
+
+One page for the whole machine: per-repo situation glyph, active ticket/branch, ledger progress, journal tail — and **tap-to-answer escalations**: each pending decision renders its options as buttons (plus a free-text box); answering writes the exact resolved decision file the daemon inbox produces, so the halted pipeline resumes identically. State is collected live per request, so it's always current even if `watch` isn't running.
+
+Localhost-only by construction: binds 127.0.0.1 and rejects foreign `Host` headers (DNS-rebinding guard). No auth because localhost *is* the machine owner — multi-user access is what the Firebase step adds (SP9b).
 
 Machine config `~/.forge/daemon.json`:
 
