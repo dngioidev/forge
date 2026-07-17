@@ -6,9 +6,12 @@
       "status": {
         "id": "PVTSSF_lAHOCkJQ784BdZrhzhX7emI",
         "options": {
-          "backlog": "04db063a",
-          "inProgress": "29224f44",
-          "done": "7d8a60b9"
+          "backlog": "8a1e2226",
+          "inProgress": "2a209b69",
+          "done": "7c5d9faa",
+          "ready": "e90d0eb6",
+          "inReview": "a9159ac9",
+          "blocked": "5b1d391c"
         }
       },
       "priority": {
