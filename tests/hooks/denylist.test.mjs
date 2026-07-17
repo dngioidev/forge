@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { check } from '../../plugin/hooks/denylist.mjs';
+import { check, handle } from '../../plugin/hooks/denylist.mjs';
 
 describe('denylist hook (AC-3.4)', () => {
   const blocked = [
@@ -51,5 +51,30 @@ describe('denylist hook (AC-3.4)', () => {
     expect(check(null).blocked).toBe(false);
     expect(check('').blocked).toBe(false);
     expect(check(123).blocked).toBe(false);
+  });
+});
+
+describe('denylist journals blocks (AC-7.3)', () => {
+  const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
+
+  it('AC-7.3: a block appends a blocked-edit event with the rule', async () => {
+    const appends = [];
+    const res = await handle(payload('git reset --hard HEAD~3'), async (cwd, kind, data) => { appends.push({ cwd, kind, data }); });
+    expect(res.code).toBe(2);
+    expect(res.message).toContain('hard-reset');
+    expect(appends).toEqual([{ cwd: '/repo', kind: 'blocked-edit', data: { tool: 'Bash', cmd: 'git reset --hard HEAD~3', rule: 'hard-reset' } }]);
+  });
+
+  it('AC-7.3: a journal write failure still blocks with exit 2', async () => {
+    const res = await handle(payload('git push --force origin main'), async () => { throw new Error('disk full'); });
+    expect(res.code).toBe(2);
+    expect(res.message).toContain('force-push');
+  });
+
+  it('allowed commands never touch the journal', async () => {
+    let called = false;
+    const res = await handle(payload('git push origin feat/9-learning-loop'), async () => { called = true; });
+    expect(res.code).toBe(0);
+    expect(called).toBe(false);
   });
 });
