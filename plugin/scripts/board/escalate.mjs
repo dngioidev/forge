@@ -36,8 +36,15 @@ export async function runEscalate(ctx, args, log = console.log) {
 
   const id = `esc-${args.issue}-${Date.now().toString(36)}`;
 
-  const moved = await runMove(ctx, { issue: args.issue, status: 'blocked' }, () => {});
-  if (!moved.ok) return moved;
+  // Adopted boards may not map 'blocked' — degrade gracefully (spec §5): the
+  // decision comment is the escalation; the column is only its shadow.
+  let boardNote = 'board → blocked';
+  if (ctx.fields?.status?.options?.blocked) {
+    const moved = await runMove(ctx, { issue: args.issue, status: 'blocked' }, () => {});
+    if (!moved.ok) return moved;
+  } else {
+    boardNote = "board unchanged (no 'blocked' status option mapped — add one in the project UI and re-run /forge:init to enable it)";
+  }
 
   const lines = [
     `🚩 **Decision needed** (\`${id}\`)`,
@@ -61,7 +68,7 @@ export async function runEscalate(ctx, args, log = console.log) {
     commentId: comment.id, status: 'pending', createdAt: new Date().toISOString(),
   });
 
-  log(`escalated #${args.issue} (${id}) — board → blocked, decision comment posted`);
+  log(`escalated #${args.issue} (${id}) — ${boardNote}, decision comment posted`);
   return { ok: true, id };
 }
 
