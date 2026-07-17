@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge console</title>
 <style>
-  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#a3aebc; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
   * { box-sizing:border-box; margin:0; }
   body { background:var(--bg); color:var(--fg); font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; padding:24px; max-width:960px; margin:0 auto; }
   header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:20px; }
@@ -28,65 +28,22 @@
   .opts { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
   button { background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; text-align:left; }
   button:hover { border-color:var(--accent); }
+  button.armed { border-color:var(--warn); color:var(--warn); }
+  :is(button, input):focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .free { display:flex; gap:6px; margin-top:8px; }
   .free input { flex:1; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; }
+  .errline { color:var(--bad); font-size:12px; margin-top:6px; min-height:1em; }
   .journal { margin-top:12px; color:var(--dim); font-size:12px; }
   .journal div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .error { color:var(--bad); }
   #empty { color:var(--dim); text-align:center; padding:40px 0; }
+  @media (prefers-reduced-motion: no-preference) { .repo { transition:border-color .2s; } }
 </style>
 </head>
 <body>
-<header><h1>forge console<small id="machine"></small></h1><span id="stamp"></span></header>
+<header><h1>forge console<small id="machine"></small></h1><span id="stamp" role="status" aria-live="polite"></span></header>
 <div id="repos"></div>
 <div id="empty" hidden>no repos configured — run: node console/daemon.mjs register</div>
-<script>
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-async function decide(id, answer) {
-  if (!answer || !answer.trim()) return;
-  const res = await fetch('/api/decide', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id, answer }) });
-  const out = await res.json();
-  if (!res.ok) alert(out.error || 'decide failed');
-  refresh();
-}
-
-function repoCard(r) {
-  if (r.error) return `<div class="repo"><div class="repo-head"><span class="name">${esc(r.repo)}</span></div><div class="error">${esc(r.error)}</div></div>`;
-  const l = r.ledger;
-  const ledger = l && l.total ? `<div class="ledger" title="${l.done}/${l.total} done">
-      <span class="done" style="width:${(100*l.done/l.total).toFixed(0)}%"></span>
-      <span class="active" style="width:${(100*l.inProgress/l.total).toFixed(0)}%"></span></div>` : '';
-  const decisions = (r.pendingDecisions ?? []).map((d) => `
-    <div class="decision">
-      <div class="reason">🚩 <b>#${esc(d.issue)}</b> ${esc(d.reason)} <span class="age">${d.ageHours != null ? esc(d.ageHours)+'h old' : ''}</span></div>
-      <div class="opts">${(d.options ?? []).map((o, i) => `<button onclick="decide('${esc(d.id)}', ${JSON.stringify(esc(`option ${i+1} — ${o}`))})">${i+1}. ${esc(o)}</button>`).join('')}</div>
-      <div class="free"><input id="in-${esc(d.id)}" placeholder="or type an answer"><button onclick="decide('${esc(d.id)}', document.getElementById('in-${esc(d.id)}').value)">send</button></div>
-    </div>`).join('');
-  const journal = (r.journalTail ?? []).slice(-5).reverse().map((e) =>
-    `<div>${esc(e.ts ?? '')} · ${esc(e.kind)}${e.gate ? ' ('+esc(e.gate)+')' : ''}${e.ticket ? ' '+esc(e.ticket) : ''}</div>`).join('');
-  return `<div class="repo">
-    <div class="repo-head"><span class="glyph">${esc(r.glyph ?? '·')}</span><span class="name">${esc(r.repo)}</span>
-      <span class="situation ${esc(r.situation)}">${esc(r.situation)}</span></div>
-    <div class="meta">${r.ticket ? `<b>${esc(r.ticket)}</b> · ` : ''}${esc(r.branch ?? 'no branch')}${l && l.total ? ` · tasks ${l.done}/${l.total}` : ''}</div>
-    ${ledger}${decisions}
-    ${journal ? `<div class="journal">${journal}</div>` : ''}
-  </div>`;
-}
-
-async function refresh() {
-  try {
-    const s = await (await fetch('/api/state')).json();
-    document.getElementById('machine').textContent = s.machineId;
-    document.getElementById('stamp').textContent = new Date(s.generatedAt).toLocaleTimeString();
-    document.getElementById('repos').innerHTML = s.repos.map(repoCard).join('');
-    document.getElementById('empty').hidden = s.repos.length > 0;
-  } catch {
-    document.getElementById('stamp').textContent = 'server unreachable';
-  }
-}
-refresh();
-setInterval(refresh, 5000);
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

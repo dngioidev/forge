@@ -82,14 +82,17 @@ describe('local web console', () => {
     expect(status).toBe(403);
   });
 
-  it('AC-B5.4: GET / serves the self-contained page; unknown routes 404', async () => {
+  it('AC-B5.4: GET / serves the page, /app.js serves the logic; no external assets; unknown routes 404', async () => {
     const { base } = await liveServer();
     const res = await fetch(base + '/');
     expect(res.headers.get('content-type')).toContain('text/html');
     const html = await res.text();
     expect(html).toContain('forge console');
-    expect(html).toContain('/api/decide');
-    expect(html).not.toMatch(/src="http|href="http/); // no external assets
+    expect(html).toContain('src="/app.js"'); // page logic moved to app.js in #39
+    expect(html).not.toMatch(/src="http|href="http/); // still no external assets
+    const app = await fetch(`${base}/app.js`);
+    expect(app.headers.get('content-type')).toContain('javascript');
+    expect(await app.text()).toContain('/api/decide');
     expect((await fetch(`${base}/nope`)).status).toBe(404);
   });
 
