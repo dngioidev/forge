@@ -4,5 +4,11 @@
   "description": "AI dev platform: pipeline skills, agent roster with pluggable backends, GitHub Projects board automation, learning loop, graph RAG",
   "author": {
     "name": "dngioi.dev"
+  },
+  "mcpServers": {
+    "forge-graph": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/graph/server.mjs"]
+    }
   }
 }
