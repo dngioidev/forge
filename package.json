@@ -13,6 +13,7 @@
     "verify": "vitest run"
   },
   "devDependencies": {
+    "ts-morph": "^28.0.0",
     "vitest": "^3.2.4"
   }
 }
