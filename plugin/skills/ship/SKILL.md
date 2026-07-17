@@ -9,20 +9,21 @@ Branch → PR with gates, then the post-merge ritual. Since SP5 the core gates a
 
 ## Pre-PR checklist (in order — a failed gate stops the ritual)
 
-1. **Conventions lint** (spec §2): branch matches `<type>/<issue#>-<slug>`; every commit `type(scope): subject (#issue)` ≤72 chars; intended PR title is conventional-format with the issue ref. **Spike branches never ship** — a `spike/…` branch asking for a PR is refused outright (spec §4 item 12: findings merge as ADRs, code is re-implemented via plan/execute).
-2. **Rebase on main**; run the configured verify command — must pass locally.
-3. **Commits→issues map**: every commit has a ticket; otherwise apply the unplanned-work rule (trail `note` or triage).
-4. **Mechanical gates** (spec §13):
+1. **Situation gate** (spec §7): `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/situationgate.mjs" --action ship --branch <branch>` — during an incident only `hotfix/*` ships; during security-response nothing ships. A refusal names the unlocking command; don't argue with it.
+2. **Conventions lint** (spec §2): branch matches `<type>/<issue#>-<slug>`; every commit `type(scope): subject (#issue)` ≤72 chars; intended PR title is conventional-format with the issue ref. **Spike branches never ship** — a `spike/…` branch asking for a PR is refused outright (spec §4 item 12: findings merge as ADRs, code is re-implemented via plan/execute).
+3. **Rebase on main**; run the configured verify command — must pass locally.
+4. **Commits→issues map**: every commit has a ticket; otherwise apply the unplanned-work rule (trail `note` or triage).
+5. **Mechanical gates** (spec §13):
    - `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/plandrift.mjs" --plan <plan>` — off-plan files ⇒ escalate or a reviewer-visible `.forge/scope.json` extension
    - `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/testintent.mjs"` — weakened existing assertions ⇒ explicit reviewer sign-off in the PR body, or revert
    - `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/depguard.mjs"` — new-dependency violations ⇒ remove or escalate
    - **AC gate**: `vitest run --reporter=json --outputFile=.forge/results.json` then `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/acgate.mjs" --plan <plan> --ticket <n> --results .forge/results.json` — every AC id in a passing test, machine evidence only
-5. **Security pass** (`security` role card on the full branch diff): findings journaled; criticals escalate.
-6. **Review pass** (`reviewer` role card; `design-reviewer` for UI when `features.designReview`).
-7. **Honest verification statement** for the PR body: what ran, what passed, what was NOT verified. Never overstate.
-8. Open the PR: `Closes #<n>` + commits→issues map + AC checklist + honest verification.
-9. Trail: `--phase pr`; on checks: `--phase ci-green` or `--phase gate-fail` (cause + fix, repeat).
-10. **CI-green check**: never ask for merge with failing checks.
+6. **Security pass** (`security` role card on the full branch diff): findings journaled; criticals escalate.
+7. **Review pass** (`reviewer` role card; `design-reviewer` for UI when `features.designReview`).
+8. **Honest verification statement** for the PR body: what ran, what passed, what was NOT verified. Never overstate.
+9. Open the PR: `Closes #<n>` + commits→issues map + AC checklist + honest verification.
+10. Trail: `--phase pr`; on checks: `--phase ci-green` or `--phase gate-fail` (cause + fix, repeat).
+11. **CI-green check**: never ask for merge with failing checks.
 
 ## Escalation triggers during ship (spec §7 — halt, don't improvise)
 
