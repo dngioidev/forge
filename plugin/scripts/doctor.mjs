@@ -115,6 +115,23 @@ export async function runDoctor(ctx) {
     else results.push(warn('deploy', `features.deploy is on but missing: ${missing.join(', ')}`, 'run /forge:deploy-init'));
   }
 
+  // graph layer (warn-level, only when features.graph is on)
+  if (cfg.ok && cfg.config.features?.graph === true) {
+    const { loadTsMorph } = await import('../mcp/graph/indexer.mjs');
+    const tsconfigExists = await stat(join(cwd, 'tsconfig.json')).then(() => true, () => false);
+    if (!tsconfigExists) {
+      results.push(warn('graph', 'features.graph is on but no tsconfig.json — the graph indexes TypeScript repos only', 'turn features.graph off; grep-first is the permanent fallback (spec §9)'));
+    } else {
+      const tm = await loadTsMorph(cwd);
+      if (!tm.ok) results.push(warn('graph', 'features.graph is on but ts-morph is not resolvable from this repo', 'npm i -D ts-morph, then node plugin/scripts/graph/graphctl.mjs rebuild'));
+      else {
+        const dbExists = await stat(join(cwd, '.forge', 'graph.db')).then(() => true, () => false);
+        if (dbExists) results.push(ok('graph', 'ts-morph resolvable, graph.db present'));
+        else results.push(warn('graph', 'graph.db not built yet', 'node plugin/scripts/graph/graphctl.mjs rebuild'));
+      }
+    }
+  }
+
   // statusline wired (info-level) — local settings first (that's where init writes it)
   const settingsLocal = await readJson(join(cwd, '.claude', 'settings.local.json')).catch(() => null);
   const settings = await readJson(join(cwd, '.claude', 'settings.json')).catch(() => null);
