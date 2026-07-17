@@ -17,6 +17,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [SP5 — Plan + execute](plans/2026-07-16-sp5-plan-execute.md) — tasks T1–T7 for epic #7: ledger, AC gate, plan-drift, dep guard, test-intent gate, plan/execute skills.
 - [SP6 — Front of pipeline](plans/2026-07-17-sp6-ideate-brainstorm-spike-design.md) — tasks T1–T6 for epic #8: ideate/brainstorm/spike/design skills, visual-spec template + lint.
 - [SP7 — Learning loop](plans/2026-07-17-sp7-learning-loop.md) — tasks T1–T6 for epic #9: capture hooks, /distill skill + mechanics, digest flow metrics.
+- [SP8 — Graph RAG MCP](plans/2026-07-17-sp8-graph-rag.md) — tasks T1–T7 for epic #10: SQLite structural index, ts-morph indexer, MCP stdio tools, incremental reindex + ticket edges.
 
 ## Decisions (ADRs)
 
