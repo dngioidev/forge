@@ -112,4 +112,4 @@ Rollback = redeploy the previous digest (one command, runbook). Migrations are f
 
 ## 11. When something's wrong
 
-`/forge:doctor` first — every ✗ has a fix hint. Gate refused: read its message, it names the unlock. Pipeline halted: check 🚩 decisions (`board status` or the console). Board ids dangling: re-run `/forge:init`. Anything the platform can't decide arrives as a decision comment — answer it and work resumes.
+`/forge:doctor` first — every ✗ has a fix hint. Known issues + recovery ladders: [troubleshooting guide](troubleshooting.md). Gate refused: read its message, it names the unlock. Pipeline halted: check 🚩 decisions (`board status` or the console). Board ids dangling: re-run `/forge:init`. Anything the platform can't decide arrives as a decision comment — answer it and work resumes.

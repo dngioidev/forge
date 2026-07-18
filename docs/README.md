@@ -36,6 +36,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 - [Install](guides/install.md) — forge into any project: prerequisites, marketplace install, init adopt-vs-create, doctor, per-feature wiring, superpowers migration.
 - [Handbook](guides/handbook.md) — daily use: the laws, the cockpit, the Build loop, every human interaction point, care/knowledge/scale flows, gates + situations tables.
+- [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, console, environment.
 - [Console daemon](guides/console-daemon.md) — register/once/watch/status, file-transport layout, metadata-only guardrail, the Firebase follow-up step.
 - [Rollback runbook](guides/rollback-runbook.md) — find the previous digest, redeploy it (one command), verify, record; forward-only-migration exception.
 - [Data-recovery runbook](guides/data-recovery-runbook.md) — restore → verify → postmortem; never debug against the only copy.
