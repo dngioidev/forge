@@ -50,6 +50,24 @@
   .journal div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .error { color:var(--alarm); }
   #empty { color:var(--smoke); text-align:center; padding:40px 0; }
+  /* control panel (C3) — the forge-control queue/sessions/audit + kill switch */
+  #control { margin-top:26px; border-top:1px solid var(--seam); padding-top:16px; }
+  #control h2 { font:600 13px Bahnschrift,'Arial Narrow',sans-serif; letter-spacing:.14em; text-transform:uppercase; color:var(--smoke); margin-bottom:10px; }
+  #control.paused h2 { color:var(--alarm); }
+  .cbanner { border:1px dashed var(--alarm); color:var(--alarm); padding:8px 12px; margin-bottom:12px; font-size:12px; }
+  .cverbs { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .cverbs button[data-destructive] { border-color:var(--warm); color:var(--warm); }
+  .cverbs button.armed { border-color:var(--alarm); color:var(--alarm); }
+  .cgrid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+  @media (max-width:720px) { .cgrid { grid-template-columns:1fr; } }
+  .ccol h3 { font:600 11px Bahnschrift,sans-serif; letter-spacing:.12em; text-transform:uppercase; color:var(--smoke); margin-bottom:6px; }
+  .crow { font-size:12px; padding:4px 0; border-bottom:1px solid rgba(58,50,42,.5); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .crow b { color:var(--ash); font-weight:normal; }
+  .crow .cid, .crow .cby { color:var(--smoke); }
+  .crow.session.alive b { color:var(--spark); }
+  .crow.session.killed b { color:var(--alarm); }
+  .cempty { color:var(--smoke); font-size:12px; padding:4px 0; }
+  #control .errline { color:var(--alarm); font-size:12px; min-height:1em; margin-top:8px; }
   @media (prefers-reduced-motion: no-preference) { .repo { transition:border-color .25s, background-color .25s; } }
 </style>
 </head>
@@ -57,6 +75,7 @@
 <header><h1>forge<small id="machine"></small></h1><span id="stamp" role="status" aria-live="polite"></span></header>
 <div id="repos"></div>
 <div id="empty" hidden>no repos configured — run: node console/daemon.mjs register</div>
+<section id="control" aria-label="forge-control"></section>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

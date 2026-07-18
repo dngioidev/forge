@@ -16,6 +16,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectRepo } from './lib/collect.mjs';
 import { resolveReply } from './daemon.mjs';
+import { runControl, readAudit, parseArgs as parseControlArgs, defaultBase as controlDefaultBase } from '../control/control.mjs';
+import * as controlQueue from '../control/lib/queue.mjs';
+import * as controlMachine from '../control/lib/machine.mjs';
 
 const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), 'web');
 export const DEFAULT_PORT = 7433;
@@ -36,7 +39,32 @@ export async function stateOf(config) {
   return { machineId: config.machineId, generatedAt: new Date().toISOString(), repos };
 }
 
+/** Read-only forge-control snapshot for the console control tab (C3). */
+export async function controlStateOf(base) {
+  const [q, s, paused, a] = await Promise.all([
+    controlQueue.list(base),
+    controlMachine.listSessions(base),
+    controlMachine.isPaused(base),
+    readAudit(base, { limit: 50 }),
+  ]);
+  return { base, paused, queue: q.entries, sessions: s.sessions, audit: a.audit };
+}
+
+/** Shape a JSON control request into the args object runControl expects. */
+export function controlArgsFromBody(body) {
+  return {
+    verb: body?.verb ?? null,
+    repo: body?.repo ?? null,
+    ticket: body?.ticket != null ? Number(body.ticket) : null,
+    brief: body?.brief ?? '',
+    id: body?.id ?? null,
+    reason: body?.reason ?? '',
+    by: body?.by ?? 'local-console',
+  };
+}
+
 export function makeApp(config, log = () => {}) {
+  const controlBase = config.controlBase ?? controlDefaultBase();
   return async function handle(req, res) {
     const send = (code, body, type = 'application/json') => {
       res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
@@ -54,6 +82,20 @@ export function makeApp(config, log = () => {}) {
       }
       if (req.method === 'GET' && path === '/api/state') {
         return send(200, await stateOf(config));
+      }
+      if (req.method === 'GET' && path === '/api/control/state') {
+        return send(200, await controlStateOf(controlBase));
+      }
+      if (req.method === 'POST' && path === '/api/control') {
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        let body;
+        try { body = JSON.parse(raw); } catch { return send(400, { error: 'invalid json' }); }
+        const args = controlArgsFromBody(body);
+        const r = await runControl(controlBase, args, log);
+        // an unknown/forbidden verb is a client error (400), not a server fault (500)
+        if (!r.ok && /unknown verb/.test(r.error ?? '')) return send(400, r);
+        return send(r.ok ? 200 : 400, r);
       }
       if (req.method === 'POST' && path === '/api/decide') {
         let raw = '';

@@ -81,6 +81,36 @@ export function repoCard(r, now = Date.now()) {
   </div>`;
 }
 
+// ---------- forge-control panel (C3) ----------
+
+/** Verbs whose button needs the two-step confirm before it fires. */
+export const CONTROL_DESTRUCTIVE = ['kill-all'];
+/** Verbs offered as one-click buttons in the panel (the safe subset of the allowlist). */
+export const CONTROL_VERBS = ['pause', 'resume', 'kill-all'];
+
+/** Render the control tab from GET /api/control/state. Pure — no DOM, testable. */
+export function controlPanel(state, now = Date.now()) {
+  const s = state ?? {};
+  const rows = (items, fn, empty) => (items && items.length ? items.map(fn).join('') : `<div class="cempty">${empty}</div>`);
+  const queue = rows(s.queue, (e) =>
+    `<div class="crow">#${esc(e.seq)} <b>${esc(e.state)}</b> ${esc(e.repo)}${e.ticket ? ' #' + esc(e.ticket) : ''} <span class="cid">${esc(e.id)}</span></div>`, 'queue empty');
+  const sessions = rows(s.sessions, (x) =>
+    `<div class="crow session ${esc(x.state)}">${esc(x.id)} <b>${esc(x.state)}</b> ${esc(x.repo)}${x.ticket ? ' #' + esc(x.ticket) : ''} pid:${esc(x.pid ?? '—')} · ${esc(relativeTime(x.lastHeartbeat, now))}</div>`, 'no sessions');
+  const audit = rows((s.audit ?? []).slice(0, 12), (a) =>
+    `<div class="crow">${esc(relativeTime(a.ts, now))} · <b>${esc(a.verb)}</b>${a.repo ? ' ' + esc(a.repo) : ''}${a.ticket ? ' #' + esc(a.ticket) : ''} <span class="cby">${esc(a.by ?? '')}</span></div>`, 'no audit yet');
+  const buttons = CONTROL_VERBS.map((v) =>
+    `<button data-verb="${esc(v)}"${CONTROL_DESTRUCTIVE.includes(v) ? ' data-destructive="1"' : ''}>${esc(v)}</button>`).join('');
+  const banner = s.paused ? `<div class="cbanner">⏸ PAUSED — the runner spawns nothing until resumed (human-only clear)</div>` : '';
+  return `<h2>forge-control${s.paused ? ' · paused' : ''}</h2>${banner}
+    <div class="cverbs">${buttons}</div>
+    <div class="cgrid">
+      <div class="ccol"><h3>queue</h3>${queue}</div>
+      <div class="ccol"><h3>sessions</h3>${sessions}</div>
+      <div class="ccol"><h3>audit</h3>${audit}</div>
+    </div>
+    <div class="errline" role="alert"></div>`;
+}
+
 // ---------- DOM wiring (browser only) ----------
 if (typeof document !== 'undefined') {
   const confirm = makeConfirm();
@@ -136,6 +166,46 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  // ----- control panel wiring -----
+  const controlConfirm = makeConfirm();
+
+  async function refreshControl() {
+    try {
+      const cs = await (await fetch('/api/control/state')).json();
+      const el = $('#control');
+      el.innerHTML = controlPanel(cs);
+      el.classList.toggle('paused', !!cs.paused);
+    } catch { /* control base may not exist yet — leave the panel as-is */ }
+  }
+
+  async function runVerb(verb, btn) {
+    const destructive = btn.dataset.destructive === '1';
+    if (destructive && !controlConfirm.arm(verb)) {
+      btn.classList.add('armed');
+      btn.dataset.original = btn.dataset.original ?? btn.textContent;
+      btn.textContent = `confirm ${verb}?`;
+      setTimeout(() => { if (controlConfirm.armedId() !== verb) refreshControl(); }, 6200);
+      return;
+    }
+    const errline = $('#control .errline');
+    try {
+      const res = await fetch('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verb }) });
+      const out = await res.json();
+      if (!res.ok) { if (errline) errline.textContent = `control: ${out.error ?? res.status}`; return; }
+      refreshControl();
+    } catch {
+      if (errline) errline.textContent = 'server unreachable — is the console still running?';
+    }
+  }
+
+  document.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('#control button[data-verb]');
+    if (!btn) return;
+    runVerb(btn.dataset.verb, btn);
+  });
+
   refresh();
+  refreshControl();
   setInterval(refresh, 5000);
+  setInterval(refreshControl, 5000);
 }
