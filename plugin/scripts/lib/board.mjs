@@ -95,16 +95,21 @@ export async function getProjectFields(gh, projectId) {
   return { ok: true, itemsCount: node.items.totalCount, fields };
 }
 
-const CREATE_FIELD_MUTATION = `mutation($projectId: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
-  createProjectV2Field(input: { projectId: $projectId, dataType: SINGLE_SELECT, name: $name, singleSelectOptions: $options }) {
+/** Same inline-literal law as buildStatusMutation (#35/#55): gh -F stringifies arrays. */
+export function buildCreateFieldMutation(projectId, name, optionDefs) {
+  const opts = optionDefs
+    .map((o) => `{name: ${JSON.stringify(o.name)}, color: ${o.color}, description: ""}`)
+    .join(', ');
+  return `mutation {
+  createProjectV2Field(input: { projectId: ${JSON.stringify(projectId)}, dataType: SINGLE_SELECT, name: ${JSON.stringify(name)}, singleSelectOptions: [${opts}] }) {
     projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } }
   }
 }`;
+}
 
 export async function createSingleSelectField(gh, projectId, name, optionDefs) {
-  const options = JSON.stringify(optionDefs.map((o) => ({ name: o.name, color: o.color, description: '' })));
   const res = await gh(
-    ['api', 'graphql', '-f', `query=${CREATE_FIELD_MUTATION}`, '-f', `projectId=${projectId}`, '-f', `name=${name}`, '-F', `options=${options}`],
+    ['api', 'graphql', '-f', `query=${buildCreateFieldMutation(projectId, name, optionDefs)}`],
     { parseJson: true },
   );
   if (!res.ok) return { ok: false, error: res.stderr || `create field ${name} failed` };

@@ -27,3 +27,20 @@ describe('replaceStatusOptions mutation shape (AC-B4.1, #35)', () => {
     expect(seen.find((a) => a.startsWith('query='))).toContain('color: GREEN');
   });
 });
+
+describe('createSingleSelectField mutation shape (AC-B11.1, #55)', () => {
+  it('AC-B11.1: inline literals, bare enum colors, no -F variables', async () => {
+    const { buildCreateFieldMutation, createSingleSelectField, STANDARD_FIELDS } = await import('../../plugin/scripts/lib/board.mjs');
+    const m = buildCreateFieldMutation('PVT_x', 'Priority', STANDARD_FIELDS.priority);
+    expect(m).toContain('{name: "P0", color: RED, description: ""}');
+    expect(m).toContain('dataType: SINGLE_SELECT, name: "Priority"');
+    expect(m).not.toContain('"RED"');
+    expect(m).not.toContain('$options');
+    let seen = null;
+    const gh = async (args) => { seen = args; return { ok: true, json: { data: { createProjectV2Field: { projectV2Field: { id: 'f1' } } } } }; };
+    const res = await createSingleSelectField(gh, 'PVT_x', 'Priority', STANDARD_FIELDS.priority);
+    expect(res.ok).toBe(true);
+    expect(seen.filter((a) => a === '-F')).toHaveLength(0);
+    expect(seen.filter((a) => a === '-f')).toHaveLength(1);
+  });
+});
