@@ -67,6 +67,18 @@ export async function createProject(gh, owner, title) {
   return { ok: true, id: res.json.id, number: res.json.number, title: res.json.title };
 }
 
+/**
+ * Link a project to a repo so it shows in the repo's Projects tab (#64). A
+ * ProjectV2 created via the CLI is owner-scoped and NOT repo-linked by default —
+ * linking is a separate call. Idempotent: an already-linked board is success.
+ */
+export async function linkProject(gh, owner, number, repoSlug) {
+  const res = await gh(['project', 'link', String(number), '--owner', owner, '--repo', repoSlug]);
+  if (res.ok) return { ok: true, linked: true };
+  if (/already linked|already exists/i.test(res.stderr || '')) return { ok: true, linked: false, note: 'already linked' };
+  return { ok: false, error: res.stderr || `project link ${number} failed` };
+}
+
 const FIELDS_QUERY = `query($id: ID!) {
   node(id: $id) {
     ... on ProjectV2 {

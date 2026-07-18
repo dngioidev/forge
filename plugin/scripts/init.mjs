@@ -10,7 +10,7 @@ import { run, makeGh } from './lib/exec.mjs';
 import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
 import { mergeJson } from './lib/jsonfile.mjs';
 import {
-  STANDARD_STATUS, STANDARD_FIELDS, getRepoInfo, getProject, createProject,
+  STANDARD_STATUS, STANDARD_FIELDS, getRepoInfo, getProject, createProject, linkProject,
   getProjectFields, createSingleSelectField, replaceStatusOptions,
   findIssueByTitle, createIssue, toConfigField,
 } from './lib/board.mjs';
@@ -77,6 +77,12 @@ export async function runInit(ctx) {
     if (!p.ok) return { ok: false, error: p.error, actions };
     project = p;
     say(`project: created #${p.number} "${p.title}"`);
+    // #64: a freshly created board is owner-scoped and NOT repo-linked — link it so it
+    // shows in the repo Projects tab. A link failure is a warning, not a fatal init error.
+    const slug = `${repo.owner}/${repo.name}`;
+    const link = await linkProject(gh, repo.owner, p.number, slug);
+    if (link.ok) say(link.linked ? `project: linked #${p.number} to ${slug}` : `project: already linked to ${slug}`);
+    else say(`project: WARNING could not link #${p.number} to ${slug} (${link.error}) — link manually: gh project link ${p.number} --owner ${repo.owner} --repo ${slug}`);
   } else {
     return { ok: false, error: 'no project specified — pass --project <number> or --create-project "<title>"', actions };
   }
