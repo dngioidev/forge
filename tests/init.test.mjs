@@ -52,6 +52,8 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
       ['auth status', AUTH_OK],
       ['repo view', REPO_VIEW],
       ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 9, title: 'forge' }) }],
+      ['project link', { stdout: '' }], // #64: fresh create links the board to the repo
+
       [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
         fieldsCall += 1;
         // first discovery: built-in status only, empty project; re-discovery: full set
@@ -123,6 +125,31 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
     expect(logs2.join(' ')).toMatch(/not a valid backend id/);
   });
 
+  it('AC-B64.2: fresh create links the new board to the repo (#64)', async () => {
+    const cwd = await tmpCwd();
+    const { gh, calls } = fakeGh(freshRoutes());
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+    // the link call names the created number, this owner, and the owner/name slug
+    const link = calls.find((c) => c.startsWith('project link'));
+    expect(link).toBeTruthy();
+    expect(link).toContain('project link 9');
+    expect(link).toContain('--owner dngioidev');
+    expect(link).toContain('--repo dngioidev/forge');
+  });
+
+  it('AC-B64.2: a link failure is a warning, not a fatal init error (#64)', async () => {
+    const cwd = await tmpCwd();
+    const routes = freshRoutes().map((r) => (r[0] === 'project link' ? ['project link', { ok: false, stderr: 'boom' }] : r));
+    const { gh } = fakeGh(routes);
+    const logs = [];
+    const res = await runInit({ gh, cwd, log: (m) => logs.push(m), args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true); // init still succeeds
+    expect(logs.join(' ')).toMatch(/could not link .* link manually/i);
+    // forge.json still written despite the link warning
+    expect((await readJson(join(cwd, '.claude', 'forge.json'))).board.projectNumber).toBe(9);
+  });
+
   it('AC-1.2: re-run is a no-op — no create/update mutations fire', async () => {
     const cwd = await tmpCwd();
     // first run
@@ -172,7 +199,7 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
 });
 
 describe('runInit — adopt mode (AC-1.3)', () => {
-  it('discovers board #8 into a board block identical to the committed forge.json', async () => {
+  it('discovers board #8 into a board block identical to the committed forge.json; adopt never auto-links (AC-B64.3)', async () => {
     const cwd = await tmpCwd();
     // seed the committed config (without deliveryLogIssue, as committed today)
     const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
@@ -192,6 +219,8 @@ describe('runInit — adopt mode (AC-1.3)', () => {
 
     // live board has items -> status options must NOT be replaced (ADR-0001)
     expect(calls.some((c) => c.includes('updateProjectV2Field'))).toBe(false);
+    // AC-B64.3: adopt mode never auto-links — the owner may track an existing board elsewhere
+    expect(calls.some((c) => c.startsWith('project link'))).toBe(false);
 
     const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
     expect(cfg.board.projectNumber).toBe(committed.board.projectNumber);

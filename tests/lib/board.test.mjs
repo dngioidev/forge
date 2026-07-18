@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS } from '../../plugin/scripts/lib/board.mjs';
+import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS, linkProject } from '../../plugin/scripts/lib/board.mjs';
+
+describe('linkProject (AC-B64.1, #64)', () => {
+  it('AC-B64.1: issues gh project link <n> --owner <o> --repo <slug>', async () => {
+    let seen = null;
+    const gh = async (args) => { seen = args; return { ok: true }; };
+    const res = await linkProject(gh, 'dngioidev', 12, 'dngioidev/forge');
+    expect(res).toMatchObject({ ok: true, linked: true });
+    expect(seen).toEqual(['project', 'link', '12', '--owner', 'dngioidev', '--repo', 'dngioidev/forge']);
+  });
+
+  it('AC-B64.1: an already-linked board is idempotent success, not a failure', async () => {
+    const gh = async () => ({ ok: false, stderr: 'project is already linked to this repository' });
+    const res = await linkProject(gh, 'dngioidev', 8, 'dngioidev/forge');
+    expect(res).toMatchObject({ ok: true, linked: false, note: 'already linked' });
+  });
+
+  it('AC-B64.1: a genuine link error surfaces as not-ok', async () => {
+    const gh = async () => ({ ok: false, stderr: 'HTTP 403: insufficient scope' });
+    const res = await linkProject(gh, 'dngioidev', 8, 'dngioidev/forge');
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('403');
+  });
+});
 
 describe('replaceStatusOptions mutation shape (AC-B4.1, #35)', () => {
   it('AC-B4.1: options are inline literals — enum colors bare, names JSON-escaped, no variables', () => {
