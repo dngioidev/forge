@@ -38,7 +38,16 @@ export function renderBar({ used, max }, cells = 8) {
 }
 
 /** Pure composition — everything optional except the branch. */
-export function composeLine({ situation, pendingCount, project, branch, ticket, context, model, costUsd }) {
+/** rate_limits -> '5h 24% / 7d 41%' (either window optional). */
+export function renderLimits(rl) {
+  const parts = [
+    typeof rl?.five_hour?.used_percentage === 'number' ? `5h ${Math.round(rl.five_hour.used_percentage)}%` : null,
+    typeof rl?.seven_day?.used_percentage === 'number' ? `7d ${Math.round(rl.seven_day.used_percentage)}%` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(' / ') : null;
+}
+
+export function composeLine({ situation, pendingCount, project, branch, ticket, context, model, costUsd, effort, rateLimits }) {
   const glyph =
     situation === 'security-response' ? '🔒' :
     situation === 'incident' ? '🔥' :
@@ -49,6 +58,8 @@ export function composeLine({ situation, pendingCount, project, branch, ticket, 
     branch ? (ticket != null ? `#${ticket} ${branch}` : branch) : null,
     context ? renderBar(context) : null,
     model || null,
+    effort ? `effort:${effort}` : null,
+    renderLimits(rateLimits),
     typeof costUsd === 'number' ? `$${costUsd.toFixed(2)}` : null,
   ];
   return segments.filter(Boolean).join(' · ');
@@ -84,6 +95,8 @@ async function main() {
     branch, ticket: parseBranch(branch).ticket,
     context: extractContext(payload),
     model: payload?.model?.display_name || null,
+    effort: payload?.effort?.level || null,
+    rateLimits: payload?.rate_limits || null,
     costUsd: typeof payload?.cost?.total_cost_usd === 'number' ? payload.cost.total_cost_usd : null,
   }));
 }

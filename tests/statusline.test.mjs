@@ -39,6 +39,16 @@ describe('statusline v2 composition (AC-B7.1, AC-B7.5)', () => {
     expect(line).toBe('▶ cms · #12 feat/12-widget · ▓▓▓▓░░░░ 45% · Fable 5 · $0.42');
   });
 
+  it('AC-B9.1: effort + rate-limit segments render when present, omit when absent', () => {
+    const line = composeLine({
+      situation: 'idle', project: 'forge', branch: 'main', effort: 'high',
+      rateLimits: { five_hour: { used_percentage: 23.5 }, seven_day: { used_percentage: 41.2 } },
+    });
+    expect(line).toBe('· forge · main · effort:high · 5h 24% / 7d 41%');
+    expect(composeLine({ situation: 'idle', project: 'f', branch: 'main', rateLimits: { seven_day: { used_percentage: 10 } } })).toContain('· 7d 10%');
+    expect(composeLine({ situation: 'idle', project: 'f', branch: 'main', rateLimits: {} })).toBe('· f · main');
+  });
+
   it('AC-B7.1: absent segments omit silently', () => {
     expect(composeLine({ situation: 'idle', project: 'forge', branch: 'main' })).toBe('· forge · main');
   });
