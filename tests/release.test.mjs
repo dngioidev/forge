@@ -101,3 +101,34 @@ describe('readiness (AC-4c.3)', () => {
     expect(crit.items.find((i) => i.name === 'findings').msg).toContain('critical');
   });
 });
+
+describe('release bumps version files (AC-B10.1, #51)', () => {
+  it('AC-B10.1: dry run computes the bump and lists both version files; regex targets only the version key', async () => {
+    const { runRelease } = await import('../plugin/scripts/release/release.mjs');
+    const { mkdir, writeFile, readFile } = await import('node:fs/promises');
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-rel-'));
+    await mkdir(join(cwd, 'plugin', '.claude-plugin'), { recursive: true });
+    await writeFile(join(cwd, 'package.json'), '{\n  "name": "forge",\n  "version": "0.1.0",\n  "private": true\n}', 'utf8');
+    await writeFile(join(cwd, 'plugin', '.claude-plugin', 'plugin.json'), '{\n  "name": "forge",\n  "version": "0.1.0",\n  "description": "version 0.1.0 of things"\n}', 'utf8');
+    const execFn = async (cmd, args) => {
+      const j = args.join(' ');
+      if (j.includes('--abbrev-ref')) return { ok: true, code: 0, stdout: 'main\n', stderr: '' };
+      if (j.includes('--porcelain')) return { ok: true, code: 0, stdout: '', stderr: '' };
+      if (j.includes('rev-list')) return { ok: true, code: 0, stdout: '0\n', stderr: '' };
+      if (j.startsWith('describe')) return { ok: true, code: 0, stdout: 'v0.1.0\n', stderr: '' };
+      if (j.startsWith('log')) return { ok: true, code: 0, stdout: 'feat(release): bump version files (#51)\n', stderr: '' };
+      if (j.startsWith('diff')) return { ok: true, code: 0, stdout: '', stderr: '' };
+      return { ok: true, code: 0, stdout: '', stderr: '' };
+    };
+    const gh = async () => ({ ok: false, stderr: 'no repo' });
+    const res = await runRelease({ cwd, gh, execFn }, { dryRun: true }, () => {});
+    expect(res).toMatchObject({ ok: true, dryRun: true, version: '0.2.0', bump: 'minor' });
+    expect(res.bumpFiles.sort()).toEqual(['package.json', join('plugin', '.claude-plugin', 'plugin.json')].sort());
+    // the replace regex must hit ONLY the version key, not other strings containing versions
+    const manifest = await readFile(join(cwd, 'plugin', '.claude-plugin', 'plugin.json'), 'utf8');
+    expect(manifest).toContain('"version": "0.1.0"'); // dry run wrote nothing
+    const bumped = manifest.replace(/"version":\s*"[^"]+"/, '"version": "0.2.0"');
+    expect(bumped).toContain('"version": "0.2.0"');
+    expect(bumped).toContain('version 0.1.0 of things'); // description untouched
+  });
+});

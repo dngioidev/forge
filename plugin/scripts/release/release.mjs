@@ -62,20 +62,35 @@ export async function runRelease(ctx, args, log = console.log) {
   const section = renderChangelogSection(version, date, groups, repoUrl);
   const body = renderReleaseBody({ version, summary: summarize(groups, version), groups, repoUrl, infraChanged, migrations, imageDigest });
 
-  if (args.dryRun) {
-    log(`\n— dry run — would release v${version} (${bump} bump from ${tag ?? 'no prior tag'})`);
-    log(section);
-    return { ok: true, dryRun: true, version, bump, body };
+  // version files the ecosystem actually reads (#51): package.json, and the
+  // plugin manifest — the field the Claude Code plugin updater compares.
+  const versionFiles = ['package.json', join('plugin', '.claude-plugin', 'plugin.json')];
+  const bumpTargets = [];
+  for (const rel of versionFiles) {
+    try {
+      const raw = await readFile(join(cwd, rel), 'utf8');
+      if (JSON.parse(raw).version !== undefined) bumpTargets.push({ rel, raw });
+    } catch { /* absent in consumer repos — skip */ }
   }
 
-  // 3. changelog commit
+  if (args.dryRun) {
+    log(`\n— dry run — would release v${version} (${bump} bump from ${tag ?? 'no prior tag'})`);
+    log(`— would bump version in: ${bumpTargets.map((t) => t.rel).join(', ') || '(no version files)'}`);
+    log(section);
+    return { ok: true, dryRun: true, version, bump, body, bumpFiles: bumpTargets.map((t) => t.rel) };
+  }
+
+  // 3. version bumps + changelog commit
+  for (const t of bumpTargets) {
+    await writeFile(join(cwd, t.rel), t.raw.replace(/"version":\s*"[^"]+"/, `"version": "${version}"`), 'utf8');
+  }
   const clPath = join(cwd, 'CHANGELOG.md');
   let cl = '';
   try { cl = await readFile(clPath, 'utf8'); } catch { cl = '# Changelog\n\n'; }
   const marker = '# Changelog\n\n';
   const updated = cl.startsWith(marker) ? marker + section + '\n' + cl.slice(marker.length) : section + '\n' + cl;
   await writeFile(clPath, updated, 'utf8');
-  const add = await git('add', 'CHANGELOG.md');
+  const add = await git('add', 'CHANGELOG.md', ...bumpTargets.map((t) => t.rel));
   const commit = add.ok && (await git('commit', '-m', `chore(release): v${version}`));
   if (!commit.ok) return { ok: false, error: 'changelog commit failed' };
 
