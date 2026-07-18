@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.0 — 2026-07-18
+
+### Features
+
+- /forge:statusline — check and fix the status bar (#53) ([#53](https://github.com/dngioidev/forge/issues/53))
+
 ## v0.2.0 — 2026-07-18
 
 ### Fixes

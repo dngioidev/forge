@@ -1,6 +1,6 @@
 {
   "name": "forge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI dev platform: pipeline skills, agent roster with pluggable backends, GitHub Projects board automation, learning loop, graph RAG",
   "author": {
     "name": "dngioi.dev"
