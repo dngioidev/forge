@@ -22,9 +22,11 @@ export function extractContext(payload) {
   ];
   for (const c of cands) {
     if (!c || typeof c !== 'object') continue;
-    const used = [c.used_tokens, c.used, c.input_tokens, c.tokens_used].find((v) => typeof v === 'number');
-    const max = [c.max_tokens, c.max, c.context_window_size, c.limit].find((v) => typeof v === 'number');
+    // real Claude Code shape (docs): total_input_tokens + context_window_size (+ used_percentage)
+    const used = [c.total_input_tokens, c.used_tokens, c.used, c.input_tokens, c.tokens_used].find((v) => typeof v === 'number');
+    const max = [c.context_window_size, c.max_tokens, c.max, c.limit].find((v) => typeof v === 'number');
     if (typeof used === 'number' && typeof max === 'number' && max > 0) return { used, max };
+    if (typeof c.used_percentage === 'number') return { used: c.used_percentage, max: 100 };
   }
   return null;
 }

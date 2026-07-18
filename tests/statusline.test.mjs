@@ -55,7 +55,10 @@ describe('statusline v2 composition (AC-B7.1, AC-B7.5)', () => {
 });
 
 describe('context bar (AC-B7.2)', () => {
-  it('AC-B7.2: extractContext handles the payload shapes; absent -> null', () => {
+  it('AC-B7.2 + AC-B8.1: extractContext handles the payload shapes incl. the documented one; absent -> null', () => {
+    // AC-B8.1: the documented Claude Code payload shape
+    expect(extractContext({ context_window: { total_input_tokens: 489_500, total_output_tokens: 1200, context_window_size: 1_000_000, used_percentage: 49, current_usage: null } })).toEqual({ used: 489_500, max: 1_000_000 });
+    expect(extractContext({ context_window: { used_percentage: 49 } })).toEqual({ used: 49, max: 100 });
     expect(extractContext({ context_window: { used_tokens: 1, max_tokens: 4 } })).toEqual({ used: 1, max: 4 });
     expect(extractContext({ context: { used: 2, max: 8 } })).toEqual({ used: 2, max: 8 });
     expect(extractContext({ usage: { input_tokens: 3, context_window_size: 6 } })).toEqual({ used: 3, max: 6 });
