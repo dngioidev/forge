@@ -6,14 +6,14 @@ Everything you do on the platform, flow by flow: what to run, what the agent doe
 
 1. **Ticket-first.** Every change starts as an issue on the board; silent side-work is forbidden. Unplanned discoveries mid-work become a trail note (in-scope) or a new ticket (out-of-scope).
 2. **The owner merges every PR.** Agents open PRs and wait; merge is always your click.
-3. **Situations change what's allowed.** An incident or security-response mechanically blocks ship/release/backends — not as advice, as an exit code.
+3. **Situations change what's allowed.** An incident or security-response mechanically blocks ship/release — not as advice, as an exit code.
 4. **Gates are scripts, not opinions.** A refusal names its reason and the unlocking command. Don't argue with a gate; fix the cause or escalate.
 5. **Honest verification.** Every PR states what was verified and what was NOT. "Unknown" is a valid answer.
 6. **The trail is the record.** Every lifecycle moment lands as an idempotent comment on the driving issue — you can follow everything from GitHub Mobile.
 
 ## 1. Setup (once per repo)
 
-Follow the [install guide](install.md): plugin install → `/forge:init` (adopt or create the board) → `/forge:doctor` → optional wiring (deploy, graph, backends, design review).
+Follow the [install guide](install.md): plugin install → `/forge:init` (adopt or create the board) → `/forge:doctor` → optional wiring (deploy, graph, design review).
 
 ## 2. The cockpit — where to look
 
@@ -54,7 +54,7 @@ The normal path, with your touch-points marked **[you]**:
 
 - **Unknown-cause bug** → `forge:investigate`: reproduce → bisect → root cause attached to the ticket; feeds a planned fix (execute) or an urgent one (hotfix).
 - **Production incident** → `forge:hotfix`: opens an `incident` journal event (statusline shows 🔥; ship/release freeze for non-hotfix branches), rollback-first decision ([runbook](rollback-runbook.md) — redeploy the previous digest; data corruption → [data-recovery runbook](data-recovery-runbook.md)), one-paragraph scope note instead of a plan, `hotfix/<n>-<slug>` branch, full deploy chain kept (staging smoke included). **Closing requires a postmortem ticket** — the command refuses without one.
-- **Security signal** → `forge:respond`: containment before code — `respond-open` freezes deploys and CLI backends machine-wide (🔒), rotate/revoke credentials, forensics from the journal, disclosure if users affected; the fix ships via hotfix afterwards; `respond-close` needs the postmortem.
+- **Security signal** → `forge:respond`: containment before code — `respond-open` freezes deploys machine-wide (🔒), rotate/revoke credentials, forensics from the journal, disclosure if users affected; the fix ships via hotfix afterwards; `respond-close` needs the postmortem.
 - **Dependencies** → `forge:maintain`: `maintain.mjs plan` batches patch/minor into one PR; majors get ONE coordinated ticket, never merged individually; `maintain.mjs advisories` SLA-stamps CVE alerts (critical 24h → low next-run).
 
 ## 6. The gate ladder (what ship runs, in order)
@@ -101,7 +101,6 @@ Rollback = redeploy the previous digest (one command, runbook). Migrations are f
 | `conventions` | verify command, docs dirs |
 | `team` | members, roles, approval policy (solo default: you are maintainer of everything) |
 | `features` | deploy · graph · designReview · e2e — all off by default |
-| `roster` | per-role backend overrides (only investigator/librarian/second-opinion may leave Claude) |
 | `deploy` | environments chain, healthcheck, registry |
 
 ## 11. When something's wrong

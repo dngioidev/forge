@@ -12,6 +12,12 @@ const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const CARDS_DIR = join(PLUGIN_ROOT, 'cards');
 export const AGENTS_DIR = join(PLUGIN_ROOT, 'agents');
 
+/** The canonical role set — one card + one compiled agent each (spec §5). */
+export const ROLES = [
+  'implementer', 'reviewer', 'security', 'design-reviewer', 'scoper',
+  'test-architect', 'devops', 'designer', 'investigator', 'librarian', 'second-opinion',
+];
+
 /** Read-only roles (spec §13 blast-radius control). Reviewer-shaped roles get Bash for diffs/tests. */
 const TOOLS = {
   reviewer: 'Read, Grep, Glob, Bash',

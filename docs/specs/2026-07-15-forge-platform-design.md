@@ -187,6 +187,8 @@ Migration order (parity proven on real cms work before retiring each superpowers
 
 ## 5. Agent roster & pluggable backends
 
+> **Removed (2026-07-19, [ADR-0004](../decisions/0004-remove-multi-backend-plane.md), #99).** The multi-backend / CLI role-swap plane described below (roster, `agy`/codex adapters, pre-send scan, report contract, `backends sync`) was **built but never wired into a runtime path** — the roster was never read to make a dispatch decision. It has been removed. What remains and ships is the **Claude-native** half: role cards in `plugin/cards/<role>.md` compiled to `plugin/agents/<role>.md` native subagents (the compile step, the read-only tool allowlists, the honesty clause, and the report contract the cards ask for). Every role runs on Claude. The text below is kept as the original design record; recover the removed plane from git history or the `v0.5.0` tag if an unattended/cheap-CLI workflow ever wants it.
+
 **Role ≠ runtime.** Each role is a **role card** (mission, checklist, output contract, guardrails) rendered onto a configurable **backend**.
 
 | Role | Default backend | Job |
