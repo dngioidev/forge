@@ -18,8 +18,12 @@ export const SITUATIONS = {
   idle: { glyph: '·', label: 'idle' },
 };
 
-/** Default forge-control base — the same path C1's control plane writes to. */
-export const controlBase = (home = homedir()) => join(home, '.forge', 'control');
+/**
+ * Default forge-control base — the same path C1's control plane writes to.
+ * `FORGE_CONTROL_BASE` overrides it (relocates the base; and lets tests point at a
+ * clean dir so they don't read the real machine kill switch — #93).
+ */
+export const controlBase = (home = homedir()) => process.env.FORGE_CONTROL_BASE || join(home, '.forge', 'control');
 
 /**
  * The C1 machine kill switch: `<base>/paused` present = engaged (#68). Read

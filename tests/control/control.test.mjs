@@ -107,7 +107,13 @@ describe('control CLI allowlist + audit (AC-C1.4)', () => {
     expect((await runControl(b, parseArgs(['dequeue']), noop)).ok).toBe(false); // needs --id
   });
 
-  it('defaultBase lives under ~/.forge/control', () => {
-    expect(defaultBase('/home/u')).toBe(join('/home/u', '.forge', 'control'));
+  it('defaultBase lives under ~/.forge/control, FORGE_CONTROL_BASE overrides (#93)', () => {
+    const saved = process.env.FORGE_CONTROL_BASE;
+    try {
+      delete process.env.FORGE_CONTROL_BASE;
+      expect(defaultBase('/home/u')).toBe(join('/home/u', '.forge', 'control'));
+      process.env.FORGE_CONTROL_BASE = '/custom/control';
+      expect(defaultBase('/home/u')).toBe('/custom/control');
+    } finally { if (saved === undefined) delete process.env.FORGE_CONTROL_BASE; else process.env.FORGE_CONTROL_BASE = saved; }
   });
 });

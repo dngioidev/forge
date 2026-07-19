@@ -3,7 +3,27 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { append } from '../../plugin/scripts/lib/journal.mjs';
-import { deriveSituation, pendingDecisions } from '../../plugin/scripts/lib/situation.mjs';
+import { deriveSituation, pendingDecisions, controlBase, machinePaused } from '../../plugin/scripts/lib/situation.mjs';
+
+describe('control base is env-overridable (AC-93.1, AC-93.2, #93)', () => {
+  it('AC-93.1: controlBase() honors FORGE_CONTROL_BASE, else ~/.forge/control', () => {
+    const saved = process.env.FORGE_CONTROL_BASE;
+    try {
+      process.env.FORGE_CONTROL_BASE = '/custom/control';
+      expect(controlBase()).toBe('/custom/control');
+      delete process.env.FORGE_CONTROL_BASE;
+      expect(controlBase('/home/u')).toBe(join('/home/u', '.forge', 'control'));
+    } finally { if (saved === undefined) delete process.env.FORGE_CONTROL_BASE; else process.env.FORGE_CONTROL_BASE = saved; }
+  });
+
+  it('AC-93.2: with the base pointed at a clean dir, situation is machine-state-independent', async () => {
+    // vitest already sets FORGE_CONTROL_BASE to a clean temp dir → no paused file there,
+    // so these do NOT read the real machine kill switch regardless of its state.
+    expect(await machinePaused(controlBase())).toBe(false);
+    expect((await deriveSituation(await tmp(), { blocked: 0, inProgress: 0 })).key).toBe('idle');
+    expect((await deriveSituation(await tmp(), { blocked: 0, inProgress: 2 })).key).toBe('building');
+  });
+});
 
 async function tmp() {
   return mkdtemp(join(tmpdir(), 'forge-sit-'));

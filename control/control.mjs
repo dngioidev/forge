@@ -22,7 +22,9 @@ import * as machine from './lib/machine.mjs';
 
 export const ALLOWED_VERBS = ['enqueue', 'dequeue', 'list', 'status', 'pause', 'resume', 'kill', 'kill-all'];
 
-export const defaultBase = (home = homedir()) => join(home, '.forge', 'control');
+// FORGE_CONTROL_BASE overrides the base (relocate it; tests point it at a clean dir — #93).
+// Kept independent of situation.mjs's controlBase() by design (no plugin↔control import).
+export const defaultBase = (home = homedir()) => process.env.FORGE_CONTROL_BASE || join(home, '.forge', 'control');
 
 export function parseArgs(argv) {
   const a = { verb: argv[0] ?? null, repo: null, ticket: null, brief: '', id: null, reason: '', by: 'owner' };
