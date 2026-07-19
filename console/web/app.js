@@ -113,6 +113,18 @@ export function controlPanel(state, now = Date.now()) {
   const alertBanner = alerts.length ? `<div class="cbanner alert" role="alert">🔴 ${alerts.length} alert${alerts.length === 1 ? '' : 's'} — ${esc(alerts[0].message)}</div>` : '';
   const alertFeed = alerts.length ? `<div class="ccol alerts"><h3>alerts</h3>${alerts.slice(0, 12).map((a) =>
     `<div class="crow alert ${esc(a.severity)}"><b>${esc(a.kind)}</b> ${esc(a.repo ?? '')}${a.ticket ? ' ' + esc(a.ticket) : ''}</div>`).join('')}</div>` : '';
+  // §3d quota panel (C8): account 5h/7d + trend + cost/day. Opt-in capture.
+  const arrow = (d) => (d === 'up' ? '↑' : d === 'down' ? '↓' : d === 'flat' ? '→' : '');
+  const q = s.quota;
+  const bar = (pct) => { const p = Math.max(0, Math.min(100, Math.round(pct ?? 0))); return `<span class="qbar"><span class="qfill" style="width:${p}%"></span></span> ${pct == null ? '—' : p + '%'}`; };
+  const quotaPanel = (() => {
+    if (!q || !q.count || !q.latest) return `<div class="ccol quota"><h3>quota</h3><div class="cempty">no quota captured — opt in with <code>.forge/quota.capture</code></div></div>`;
+    const days = (q.costByDay ?? []).slice(-5).map((d) => `<div class="crow">${esc(d.day)} · $${d.cost.toFixed(2)}</div>`).join('') || '<div class="cempty">no cost yet</div>';
+    return `<div class="ccol quota"><h3>quota</h3>
+      <div class="qrow">5h ${bar(q.latest.fiveHour)} <span class="qtrend">${arrow(q.trend?.fiveHour)}</span></div>
+      <div class="qrow">7d ${bar(q.latest.sevenDay)} <span class="qtrend">${arrow(q.trend?.sevenDay)}</span></div>
+      <div class="qcost">${days}</div></div>`;
+  })();
   return `<h2>forge-control${s.paused ? ' · paused' : ''}${alerts.length ? ' · ' + alerts.length + ' alert' + (alerts.length === 1 ? '' : 's') : ''}</h2>${alertBanner}${pausedBanner}
     <div class="cverbs">${buttons}</div>
     <div class="cgrid">
@@ -121,6 +133,7 @@ export function controlPanel(state, now = Date.now()) {
       <div class="ccol"><h3>audit</h3>${audit}</div>
     </div>
     ${alertFeed}
+    <div class="cgrid">${quotaPanel}</div>
     <div class="errline" role="alert"></div>`;
 }
 
