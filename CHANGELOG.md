@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.6.0 — 2026-07-19
+
+### Features
+
+- board CLI ergonomics + .gitattributes (#108, #109) ([#108](https://github.com/dngioidev/forge/issues/108) [#109](https://github.com/dngioidev/forge/issues/109))
+- pin each role to a right-sized model (#101) ([#101](https://github.com/dngioidev/forge/issues/101))
+- terser subagent output contracts (#97) ([#97](https://github.com/dngioidev/forge/issues/97))
+
+### Fixes
+
+- plandrift bare-name resolve + acgate multi-results (#106, #107) ([#106](https://github.com/dngioidev/forge/issues/106) [#107](https://github.com/dngioidev/forge/issues/107))
+- MCP server re-reads features.graph per call (#105) ([#105](https://github.com/dngioidev/forge/issues/105))
+- P0 consumer bugs — gitleaks perms + create.mjs flag handling (#103, #104) ([#103](https://github.com/dngioidev/forge/issues/103) [#104](https://github.com/dngioidev/forge/issues/104))
+
+### Docs
+
+- capture iomanage feedback batch (forge 0.5.0)
+
+### Chores
+
+- remove the unwired multi-backend (CLI role-swap) plane (#99) ([#99](https://github.com/dngioidev/forge/issues/99))
+- remove forge-control + local console (#95) ([#95](https://github.com/dngioidev/forge/issues/95))
+
 ## v0.5.0 — 2026-07-19
 
 ### Fixes
