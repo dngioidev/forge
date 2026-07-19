@@ -19,6 +19,21 @@ import { resolveReply } from './daemon.mjs';
 import { runControl, readAudit, parseArgs as parseControlArgs, defaultBase as controlDefaultBase } from '../control/control.mjs';
 import * as controlQueue from '../control/lib/queue.mjs';
 import * as controlMachine from '../control/lib/machine.mjs';
+import { read as readRepoJournal } from '../plugin/scripts/lib/journal.mjs';
+import { deriveAlerts } from './lib/alerts.mjs';
+import { notify } from './lib/toast.mjs';
+
+/** Light per-repo journal tails for the alert watcher — tolerant of unreadable repos. */
+async function repoJournals(repos = []) {
+  const out = [];
+  for (const cwd of repos) {
+    try {
+      const j = await readRepoJournal(cwd);
+      out.push({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, journalTail: (j.events ?? []).slice(-25) });
+    } catch { out.push({ repo: cwd, journalTail: [] }); }
+  }
+  return out;
+}
 
 const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), 'web');
 export const DEFAULT_PORT = 7433;
@@ -65,6 +80,16 @@ export function controlArgsFromBody(body) {
 
 export function makeApp(config, log = () => {}) {
   const controlBase = config.controlBase ?? controlDefaultBase();
+  // Toast dedup: fire an OS toast at most once per alert id (in-memory across polls).
+  const toastedIds = new Set();
+  const fireNewToasts = (alerts) => {
+    if (!config.toastEnabled) return;
+    for (const a of alerts) {
+      if (toastedIds.has(a.id)) continue;
+      toastedIds.add(a.id);
+      notify('forge alert', a.message, { enabled: true, spawnFn: config.toastSpawn, platform: config.toastPlatform });
+    }
+  };
   return async function handle(req, res) {
     const send = (code, body, type = 'application/json') => {
       res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
@@ -84,7 +109,10 @@ export function makeApp(config, log = () => {}) {
         return send(200, await stateOf(config));
       }
       if (req.method === 'GET' && path === '/api/control/state') {
-        return send(200, await controlStateOf(controlBase));
+        const cs = await controlStateOf(controlBase);
+        const alerts = deriveAlerts({ repos: await repoJournals(config.repos ?? []), sessions: cs.sessions, now: Date.now() });
+        fireNewToasts(alerts);
+        return send(200, { ...cs, alerts });
       }
       if (req.method === 'POST' && path === '/api/control') {
         let raw = '';

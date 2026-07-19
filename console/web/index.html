@@ -66,6 +66,10 @@
   #control h2 { font:600 13px Bahnschrift,'Arial Narrow',sans-serif; letter-spacing:.14em; text-transform:uppercase; color:var(--smoke); margin-bottom:10px; }
   #control.paused h2 { color:var(--alarm); }
   .cbanner { border:1px dashed var(--alarm); color:var(--alarm); padding:8px 12px; margin-bottom:12px; font-size:12px; }
+  .cbanner.alert { border-style:solid; background:rgba(226,72,61,.10); font-weight:600; }
+  .ccol.alerts { grid-column:1 / -1; margin-top:12px; }
+  .crow.alert.high b { color:var(--alarm); }
+  .crow.alert.warn b { color:var(--spark); }
   .cverbs { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
   .cverbs button[data-destructive] { border-color:var(--warm); color:var(--warm); }
   .cverbs button.armed { border-color:var(--alarm); color:var(--alarm); }
