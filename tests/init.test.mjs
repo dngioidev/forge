@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runInit, parseArgs, scaffoldRoster } from '../plugin/scripts/init.mjs';
+import { runInit, parseArgs } from '../plugin/scripts/init.mjs';
 import { readJson } from '../plugin/scripts/lib/jsonfile.mjs';
 import { fakeGh, fieldsResponse, REPO_VIEW, AUTH_OK } from './helpers/fakegh.mjs';
 
@@ -87,42 +87,6 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
 
     const gi = await readFile(join(cwd, '.gitignore'), 'utf8');
     expect(gi).toContain('.forge/');
-  });
-
-  it('AC-B12.1: --roster scaffolds investigator + librarian; absent → no roster; adopt never clobbers (#58)', async () => {
-    // scaffold shape
-    expect(scaffoldRoster('agy:gemini-flash')).toEqual({ investigator: { backend: 'agy:gemini-flash' }, librarian: { backend: 'agy:gemini-flash' } });
-
-    // fresh with --roster
-    const cwd = await tmpCwd();
-    const { gh } = fakeGh(freshRoutes());
-    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor', '--roster', 'agy:gemini-flash']) });
-    expect(res.ok).toBe(true);
-    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
-    expect(cfg.roster).toEqual({ investigator: { backend: 'agy:gemini-flash' }, librarian: { backend: 'agy:gemini-flash' } });
-
-    // fresh without --roster: no roster block at all (defaults apply)
-    const cwd2 = await tmpCwd();
-    const { gh: gh2 } = fakeGh(freshRoutes());
-    await runInit({ gh: gh2, cwd: cwd2, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
-    expect((await readJson(join(cwd2, '.claude', 'forge.json'))).roster).toBeUndefined();
-  });
-
-  it('AC-B12.3: an unknown runtime is scaffolded but warned; invalid id skipped', async () => {
-    const cwd = await tmpCwd();
-    const { gh } = fakeGh(freshRoutes());
-    const logs = [];
-    await runInit({ gh, cwd, log: (m) => logs.push(m), args: parseArgs(['--create-project', 'forge', '--skip-doctor', '--roster', 'codex:gpt-5']) });
-    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
-    expect(cfg.roster.investigator.backend).toBe('codex:gpt-5');       // written
-    expect(logs.join(' ')).toMatch(/no shipped adapter yet/);          // but warned
-
-    const cwd2 = await tmpCwd();
-    const { gh: gh2 } = fakeGh(freshRoutes());
-    const logs2 = [];
-    await runInit({ gh: gh2, cwd: cwd2, log: (m) => logs2.push(m), args: parseArgs(['--create-project', 'forge', '--skip-doctor', '--roster', ':::']) });
-    expect((await readJson(join(cwd2, '.claude', 'forge.json'))).roster).toBeUndefined();
-    expect(logs2.join(' ')).toMatch(/not a valid backend id/);
   });
 
   it('AC-B64.2: fresh create links the new board to the repo (#64)', async () => {

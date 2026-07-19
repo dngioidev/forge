@@ -15,32 +15,19 @@ import {
   findIssueByTitle, createIssue, toConfigField,
 } from './lib/board.mjs';
 import { runDoctor } from './doctor.mjs';
-import { parseBackendId } from './backends/loader.mjs';
-import { ADAPTERS } from './backends/agy.mjs';
 
 const DELIVERY_LOG_TITLE = 'Delivery log';
 
 export function parseArgs(argv) {
-  const args = { project: null, createProject: null, statusline: false, skipDoctor: false, roster: null };
+  const args = { project: null, createProject: null, statusline: false, skipDoctor: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--project') args.project = Number(argv[++i]);
     else if (a === '--create-project') args.createProject = argv[++i];
     else if (a === '--statusline') args.statusline = true;
     else if (a === '--skip-doctor') args.skipDoctor = true;
-    else if (a === '--roster') args.roster = argv[++i];
   }
   return args;
-}
-
-/**
- * Scaffold a roster for the swappable search roles (spec §5): investigator +
- * librarian, the two that default to Claude and gain most from a cheap CLI
- * backend. second-opinion keeps its own default. Pinned/gate roles are never
- * scaffolded — they can't leave Claude by law.
- */
-export function scaffoldRoster(backendId) {
-  return { investigator: { backend: backendId }, librarian: { backend: backendId } };
 }
 
 export async function runInit(ctx) {
@@ -160,25 +147,7 @@ export async function runInit(ctx) {
       },
     },
   };
-  // 6b. Roster scaffold (opt-in via --roster; init.md asks). mergeJson is
-  // no-clobber, so an existing roster (adopt mode) always survives.
-  let roster;
-  if (args.roster) {
-    const parsed = parseBackendId(args.roster);
-    if (!parsed) {
-      say(`roster: skipped — '${args.roster}' is not a valid backend id (expected <runtime>[:<model>])`);
-    } else {
-      roster = scaffoldRoster(args.roster);
-      say(`roster: scaffolded investigator + librarian → ${args.roster}`);
-      if (parsed.runtime !== 'claude' && !ADAPTERS[parsed.runtime]) {
-        say(`roster: ⚠ runtime '${parsed.runtime}' has no shipped adapter yet — the role falls back to Claude until one exists (agy is the shipped CLI backend)`);
-      } else if (parsed.runtime !== 'claude') {
-        say(`roster: run /forge:backends-sync to generate the CLI context + ignore files`);
-      }
-    }
-  }
-
-  await mergeJson(join(cwd, CONFIG_RELPATH), { ...defaults, ...(roster ? { roster } : {}), board });
+  await mergeJson(join(cwd, CONFIG_RELPATH), { ...defaults, board });
   say(`config: wrote ${CONFIG_RELPATH}`);
 
   // 7. .gitignore

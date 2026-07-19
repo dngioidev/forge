@@ -3,7 +3,6 @@
  * Situation gate (spec §7 — situations change what's ALLOWED; SP10 T2).
  *   --action ship    [--branch <name>]   incident: hotfix/* only · security-response: refused
  *   --action release                     incident or security-response: refused
- *   --action backend                     security-response: refused (CLI backends frozen)
  *   --action skill   --skill <name>      security-response: respond/investigate only
  * Exit 0 = proceed, 1 = refused (teaching message names the unlocking command).
  */
@@ -34,7 +33,7 @@ export function evaluate(situationKey, action, { branch = '', skill = null } = {
     if (action === 'skill' && RESPOND_SKILLS.includes(skill)) return { allowed: true, why: `${skill} runs during security-response` };
     return {
       allowed: false,
-      why: `security-response: deploys frozen, CLI backends disabled, only ${RESPOND_SKILLS.join('/')} run (spec §7). ${UNLOCK['security-response']}`,
+      why: `security-response: deploys frozen, only ${RESPOND_SKILLS.join('/')} run (spec §7). ${UNLOCK['security-response']}`,
     };
   }
   if (situationKey === 'incident') {
@@ -49,8 +48,8 @@ export function evaluate(situationKey, action, { branch = '', skill = null } = {
 }
 
 export async function runGate(cwd, args, log = console.log) {
-  if (!['ship', 'release', 'backend', 'skill'].includes(args.action)) {
-    return { ok: false, allowed: false, error: '--action must be ship|release|backend|skill' };
+  if (!['ship', 'release', 'skill'].includes(args.action)) {
+    return { ok: false, allowed: false, error: '--action must be ship|release|skill' };
   }
   const s = await deriveSituation(cwd);
   const verdict = evaluate(s.key, args.action, args);

@@ -1,6 +1,6 @@
 # forge
 
-A portable AI-dev-platform plugin for Claude Code: 18 pipeline skills in 5 lanes, an 11-role agent roster with pluggable backends, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, a graph-RAG index, and a per-machine console daemon. The platform ships itself — every feature here was planned, gated, trailed, and merged through its own pipeline.
+A portable AI-dev-platform plugin for Claude Code: 18 pipeline skills in 5 lanes, an 11-role Claude-native agent roster, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, and a graph-RAG index. The platform ships itself — every feature here was planned, gated, trailed, and merged through its own pipeline.
 
 ## Install
 

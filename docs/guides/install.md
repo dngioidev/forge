@@ -45,7 +45,6 @@ Run it after init and any time something feels off. ✗ items block work and say
 | --- | --- | --- |
 | deploy | `/forge:deploy-init` (sets `features.deploy`) | Dockerfile/compose/terraform scaffold, staging/production env-branch workflows, deploy-readiness gate, smoke script |
 | graph | `features.graph: true` + `npm i -D ts-morph` + `node <plugin>/scripts/graph/graphctl.mjs rebuild` | structural index: find_component / who_uses / blast_radius / reuse_candidates MCP tools (TypeScript repos only — grep-first is the permanent fallback otherwise) |
-| CLI backends | roster in `forge.json` + `/forge:backends-sync` | non-Claude backends for investigator/librarian/second-opinion, ignore-files synced |
 | design review | `features.designReview: true` | design-reviewer validates UI work against visual specs |
 
 ## 5. Working in it

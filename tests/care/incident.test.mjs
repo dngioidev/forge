@@ -6,7 +6,6 @@ import { runIncident, parseArgs } from '../../plugin/scripts/care/incident.mjs';
 import { evaluate, runGate } from '../../plugin/scripts/gates/situationgate.mjs';
 import { deriveSituation } from '../../plugin/scripts/lib/situation.mjs';
 import { computeReadiness } from '../../plugin/scripts/release/readiness.mjs';
-import { runRole } from '../../plugin/scripts/backends/runrole.mjs';
 
 const noop = () => {};
 const tmp = () => mkdtemp(join(tmpdir(), 'forge-inc-'));
@@ -53,7 +52,6 @@ describe('situation gate (AC-10.3)', () => {
     expect(refused.allowed).toBe(false);
     expect(refused.why).toMatch(/incident\.mjs close/);
     expect(evaluate('incident', 'release', {}).allowed).toBe(false);
-    expect(evaluate('incident', 'backend', {}).allowed).toBe(true);
   });
 
   it('AC-10.3: security-response — only respond/investigate skills pass', () => {
@@ -61,7 +59,6 @@ describe('situation gate (AC-10.3)', () => {
     expect(evaluate('security-response', 'skill', { skill: 'investigate' }).allowed).toBe(true);
     expect(evaluate('security-response', 'skill', { skill: 'execute' }).allowed).toBe(false);
     expect(evaluate('security-response', 'ship', { branch: 'hotfix/1-x' }).allowed).toBe(false);
-    expect(evaluate('security-response', 'backend', {}).allowed).toBe(false);
     expect(evaluate('security-response', 'release', {}).why).toMatch(/respond-close/);
   });
 
@@ -71,28 +68,6 @@ describe('situation gate (AC-10.3)', () => {
     await runIncident(cwd, parseArgs(['open', '--ticket', '1', '--summary', 's']), noop);
     const res = await runGate(cwd, { action: 'ship', branch: 'feat/1-x', skill: null }, noop);
     expect(res).toMatchObject({ ok: true, allowed: false, situation: 'incident' });
-  });
-});
-
-describe('CLI backend freeze (AC-10.4)', () => {
-  const roster = { investigator: { backend: 'agy:gemini-flash' } };
-
-  it('AC-10.4: a CLI-pinned role falls back to Claude during security-response, journaled', async () => {
-    const cwd = await tmp();
-    await runIncident(cwd, parseArgs(['respond-open', '--reason', 'r']), noop);
-    const res = await runRole({ role: 'investigator', taskBrief: 'look', cwd, roster, execFn: async () => ({ ok: true, code: 0, stdout: '', stderr: '' }) });
-    expect(res).toMatchObject({ ok: true, claude: true, fellBack: true });
-    expect(res.why).toMatch(/security-response/);
-    const journal = await readFile(join(cwd, '.forge', 'journal.jsonl'), 'utf8');
-    expect(journal).toContain('"reason":"security-response"');
-  });
-
-  it('AC-10.4: Claude-pinned roles are untouched during security-response', async () => {
-    const cwd = await tmp();
-    await runIncident(cwd, parseArgs(['respond-open', '--reason', 'r']), noop);
-    const res = await runRole({ role: 'security', taskBrief: 'scan', cwd, roster: {}, execFn: async () => ({ ok: true }) });
-    expect(res).toMatchObject({ ok: true, claude: true });
-    expect(res.fellBack).toBeUndefined();
   });
 });
 

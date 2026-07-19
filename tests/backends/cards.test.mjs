@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
-import { CARDS_DIR, AGENTS_DIR, compileCard } from '../../plugin/scripts/backends/compile.mjs';
-import { ROLES } from '../../plugin/scripts/backends/loader.mjs';
+import { CARDS_DIR, AGENTS_DIR, compileCard, ROLES } from '../../plugin/scripts/backends/compile.mjs';
 
 describe('role cards (AC-4.1)', () => {
   it('all 11 roles have a card and only those', async () => {
