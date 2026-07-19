@@ -36,6 +36,8 @@ describe('consumer CI template (AC-3.5)', () => {
     expect(wf).toContain('run: pnpm verify');
     expect(wf).not.toContain('{{VERIFY}}');
     expect(wf).toContain('gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7');
+    // #103: gitleaks job must grant pull-requests: read or it 403s on the first PR
+    expect(wf).toMatch(/gitleaks:[\s\S]*?permissions:[\s\S]*?pull-requests: read/);
   });
 
   it('init respects an existing verify workflow (no overwrite, any filename)', async () => {

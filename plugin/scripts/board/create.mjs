@@ -15,13 +15,18 @@ export function withDefaults(spec = {}) {
   return { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', parent: null, assignee: null, ...spec };
 }
 
+const KNOWN_FLAGS = '--title --body --body-file --type --priority --size --status --parent --assignee --from';
+
 export function parseArgs(argv) {
   const a = withDefaults();
   a.from = null;
+  a.bodyFile = null;
+  a.unknownFlags = [];
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--title') a.title = argv[++i];
     else if (k === '--body') a.body = argv[++i];
+    else if (k === '--body-file') a.bodyFile = argv[++i];
     else if (k === '--type') a.type = argv[++i];
     else if (k === '--priority') a.priority = argv[++i];
     else if (k === '--size') a.size = argv[++i];
@@ -29,6 +34,7 @@ export function parseArgs(argv) {
     else if (k === '--parent') a.parent = Number(argv[++i]);
     else if (k === '--assignee') a.assignee = argv[++i];
     else if (k === '--from') a.from = argv[++i];
+    else a.unknownFlags.push(k); // #104: never silently drop — a swallowed --body-file made empty-body tickets
   }
   return a;
 }
@@ -55,6 +61,15 @@ export async function runCreateBatch(ctx, specs, log = console.log) {
 }
 
 export async function runCreate(ctx, args, log = console.log) {
+  // #104: fail-fast on unrecognized flags rather than dropping them silently.
+  if (args.unknownFlags?.length) {
+    return { ok: false, error: `unrecognized flag(s): ${args.unknownFlags.join(', ')} — supported: ${KNOWN_FLAGS}` };
+  }
+  // #104: --body-file reads the body from a file (the flag that used to be swallowed).
+  if (args.bodyFile) {
+    try { args = { ...args, body: await readFile(args.bodyFile, 'utf8') }; }
+    catch (e) { return { ok: false, error: `--body-file: cannot read ${args.bodyFile}: ${e.message}` }; }
+  }
   if (!args.title) return { ok: false, error: '--title is required' };
   // validate option keys up front so we fail before creating anything
   for (const [f, k] of [['type', args.type], ['priority', args.priority], ['size', args.size], ['status', args.status]]) {
