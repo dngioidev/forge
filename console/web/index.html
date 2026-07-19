@@ -46,6 +46,17 @@
   .free { display:flex; gap:6px; margin-top:8px; }
   .free input { flex:1; background:var(--iron); color:var(--ash); border:1px solid var(--seam); padding:6px 10px; font:inherit; }
   .errline { color:var(--alarm); font-size:12px; margin-top:6px; min-height:1em; }
+  /* §3b conformance badge + §3a trace strip (C6) */
+  .badge { margin-left:auto; font-size:11px; letter-spacing:.06em; padding:2px 8px; border:1px solid var(--seam); border-radius:2px; white-space:nowrap; cursor:help; }
+  .badge.green { color:#7fbf7f; border-color:#3d5a3d; }
+  .badge.amber { color:var(--spark); border-color:var(--warm); }
+  .trace { margin-top:10px; font-size:11px; letter-spacing:.05em; color:var(--smoke); display:flex; flex-wrap:wrap; align-items:center; gap:2px; }
+  .trace .tstep { text-transform:uppercase; }
+  .trace .tstep.done { color:var(--ash); }
+  .trace .tstep.active { color:var(--spark); }
+  .trace .tstep.missing { color:var(--alarm); }
+  .trace .tstep.cur { text-decoration:underline; text-underline-offset:3px; }
+  .trace .tsep { color:var(--seam); margin:0 4px; }
   .journal { margin-top:12px; color:var(--smoke); font-size:12px; border-top:1px solid var(--seam); padding-top:8px; }
   .journal div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .error { color:var(--alarm); }

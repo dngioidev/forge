@@ -72,11 +72,18 @@ export function repoCard(r, now = Date.now()) {
     </div>`).join('');
   const journal = (r.journalTail ?? []).slice(-5).reverse().map((e) =>
     `<div title="${esc(e.ts ?? '')}">${esc(relativeTime(e.ts, now))} · ${esc(e.kind)}${e.gate ? ' (' + esc(e.gate) + ')' : ''}${e.ticket ? ' ' + esc(e.ticket) : ''}</div>`).join('');
+  // §3b conformance badge (C6): green = inside the lines, amber names the drift.
+  const cf = r.conformance;
+  const badge = cf ? `<span class="badge ${esc(cf.level)}" title="${esc((cf.checks ?? []).map((c) => `${c.pass ? '✓' : '✗'} ${c.name}: ${c.why}`).join('\n'))}">${cf.level === 'green' ? '🟢 conforms' : '🟡 ' + esc(cf.failing ?? 'drift')}</span>` : '';
+  // §3a trace phase strip (C6): the current step is lit.
+  const t = r.trace;
+  const strip = t && t.steps ? `<div class="trace" role="img" aria-label="work trace">${t.steps.map((s, i) =>
+    `${i ? '<span class="tsep">›</span>' : ''}<span class="tstep ${esc(s.state)}${s.key === t.current ? ' cur' : ''}" title="${esc(s.label)}">${esc(s.key)}</span>`).join('')}</div>` : '';
   return `<div class="repo ${esc(r.situation ?? '')}">
     <div class="repo-head"><span class="glyph">${esc(r.glyph ?? '·')}</span><span class="name">${esc(r.repo)}</span>
-      <span class="situation ${esc(r.situation)}">${esc(r.situation)}</span></div>
+      <span class="situation ${esc(r.situation)}">${esc(r.situation)}</span>${badge}</div>
     <div class="meta">${r.ticket ? `<b>${esc(r.ticket)}</b> · ` : ''}${esc(r.branch ?? 'no branch')}${l && l.total ? ` · tasks ${l.done}/${l.total}` : ''}</div>
-    ${ledger}${decisions}
+    ${strip}${ledger}${decisions}
     ${journal ? `<div class="journal">${journal}</div>` : ''}
   </div>`;
 }
