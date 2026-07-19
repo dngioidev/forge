@@ -26,6 +26,32 @@ function fakeSpawn(mode, sink = []) {
 let idSeq = 0;
 const mintId = () => `sess-${++idSeq}`;
 
+describe('repo path vs trail slug (AC-73.1, #73)', () => {
+  it('AC-73.1: enqueue carries repoSlug; the spawner gets the path, the trail gets the slug', async () => {
+    const b = await base();
+    const e = await queue.enqueue(b, { repo: 'C:/mywp/forge', repoSlug: 'dngioidev/forge', ticket: 73, brief: 'x' });
+    expect(e.entry).toMatchObject({ repo: 'C:/mywp/forge', repoSlug: 'dngioidev/forge' });
+
+    const spawned = [];
+    const trails = [];
+    await runOnce(b, {
+      spawn: fakeSpawn('success', spawned),
+      trail: async (repo, ticket, body) => trails.push({ repo, ticket }),
+      journal: async () => {}, mintId,
+    });
+    expect(spawned[0].repo).toBe('C:/mywp/forge');          // spawner uses the PATH
+    expect(trails[0]).toMatchObject({ repo: 'dngioidev/forge', ticket: 73 }); // trail uses the SLUG
+  });
+
+  it('AC-73.1: no repoSlug → back-compat, the trail falls back to repo (path)', async () => {
+    const b = await base();
+    await queue.enqueue(b, { repo: 'C:/mywp/forge', ticket: 73, brief: 'x' });
+    const trails = [];
+    await runOnce(b, { spawn: fakeSpawn('success'), trail: async (repo) => trails.push(repo), journal: async () => {}, mintId });
+    expect(trails[0]).toBe('C:/mywp/forge'); // unchanged behavior (defaultTrail would then skip a non-slug)
+  });
+});
+
 describe('spawn shape + classify (AC-C2.3, AC-C2.4)', () => {
   it('buildArgs is the verified headless flag string; resume swaps the id flag', () => {
     expect(buildArgs({ brief: 'do X', sessionId: 'u1', repo: '/r', model: 'm', permissionMode: 'plan' }))
