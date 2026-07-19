@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildTrace, conformance, phasesInOrder, ledgerPlanRef } from '../../plugin/scripts/lib/trace.mjs';
+import { buildTrace, conformance, phasesInOrder, ledgerPlanRef, resolvePlan } from '../../plugin/scripts/lib/trace.mjs';
 import { runTrace } from '../../plugin/scripts/trace.mjs';
 
 const noop = () => {};
@@ -82,6 +82,39 @@ describe('conformance (AC-C6.2)', () => {
   });
 });
 
+describe('resolvePlan + plan-doc fallback (AC-76.1, #76)', () => {
+  const plans = [
+    { path: 'docs/plans/2026-07-19-c6.md', text: '# C6\n**Ticket:** #74\n**Files:** plugin/scripts/lib/trace.mjs' },
+    { path: 'docs/plans/2026-07-19-other.md', text: '# other #99\n**Files:** x.mjs' },
+  ];
+
+  it('AC-76.1: ledger Plan: ref wins when it resolves to a listed plan (source ledger)', () => {
+    const r = resolvePlan({ ledgerText: 'Plan: docs/plans/2026-07-19-c6.md', ticket: 74, plans });
+    expect(r).toMatchObject({ found: true, source: 'ledger', ref: 'docs/plans/2026-07-19-c6.md' });
+    expect(r.files).toContain('plugin/scripts/lib/trace.mjs');
+  });
+
+  it('AC-76.1: no ledger → falls back to the ticket\'s plan doc (source plandoc)', () => {
+    const r = resolvePlan({ ledgerText: '', ticket: 74, plans });
+    expect(r).toMatchObject({ found: true, source: 'plandoc', ref: 'docs/plans/2026-07-19-c6.md' });
+    expect(r.files).toContain('plugin/scripts/lib/trace.mjs');
+  });
+
+  it('AC-76.1: no ledger and no matching plan doc → not found', () => {
+    expect(resolvePlan({ ledgerText: '', ticket: 12345, plans })).toMatchObject({ found: false, source: null });
+    expect(() => resolvePlan()).not.toThrow();
+  });
+
+  it('AC-76.1: conformance goes GREEN on the plan-doc loop (no ledger) via planSource', () => {
+    const r = resolvePlan({ ledgerText: '', ticket: 74, plans });
+    const c = conformance({ branch: 'feat/74-x', ledgerText: '', planExists: r.found, planSource: r.source, planRef: r.ref, touchedFiles: ['plugin/scripts/lib/trace.mjs'], planFiles: r.files });
+    expect(c.level).toBe('green');
+    expect(c.checks.find((x) => x.name === 'ledger-plan').why).toMatch(/plan doc/);
+    // back-compat: with no planSource and no ledger ref, ledger-plan still fails
+    expect(conformance({ branch: 'feat/74-x', ledgerText: '', planExists: true, touchedFiles: [], planFiles: [] }).failing).toBe('ledger-plan');
+  });
+});
+
 describe('trace CLI (AC-C6.3)', () => {
   async function repo(conforming) {
     const cwd = await mkdtemp(join(tmpdir(), 'forge-trace-'));
@@ -117,5 +150,23 @@ describe('trace CLI (AC-C6.3)', () => {
     const r = await runTrace(cwd, { execFn }, noop);
     expect(r.conforming).toBe(false);
     expect(r.badge.failing).toBe('files-in-scope');
+  });
+
+  it('AC-76.1: plan-doc loop (no ledger, plan in docs/plans) resolves green via the CLI', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-trace-'));
+    await mkdir(join(cwd, '.forge'), { recursive: true });
+    await mkdir(join(cwd, 'docs', 'plans'), { recursive: true });
+    await writeFile(join(cwd, 'docs', 'plans', '2026-07-19-c6.md'), '# C6\n**Ticket:** #74\n**Files:** plugin/scripts/lib/trace.mjs\n', 'utf8');
+    await writeFile(join(cwd, '.forge', 'journal.jsonl'), '', 'utf8'); // NO ledger on purpose
+    const execFn = async (cmd, args) => {
+      const j = args.join(' ');
+      if (cmd === 'git' && j.includes('rev-parse')) return { ok: true, stdout: 'feat/74-x\n' };
+      if (cmd === 'git' && j.includes('diff')) return { ok: true, stdout: 'plugin/scripts/lib/trace.mjs\n' };
+      if (cmd === 'gh') return { ok: true, stdout: '**started** go\n' };
+      return { ok: false, stdout: '', stderr: 'unrouted' };
+    };
+    const r = await runTrace(cwd, { execFn }, noop);
+    expect(r.conforming).toBe(true);                                   // was amber before #76
+    expect(r.badge.checks.find((c) => c.name === 'ledger-plan').why).toMatch(/plan doc/);
   });
 });

@@ -5,13 +5,22 @@
  * to snapshot a repo even when offline. Output goes through sanitize.mjs
  * before any transport sees it.
  */
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { deriveSituation, pendingDecisions } from '../../plugin/scripts/lib/situation.mjs';
 import { read as readJournal } from '../../plugin/scripts/lib/journal.mjs';
 import { parseLedger, LEDGER_RELPATH } from '../../plugin/scripts/lib/ledger.mjs';
 import { parseBranch } from '../../plugin/scripts/lib/ticket.mjs';
-import { buildTrace, conformance, ledgerPlanRef, extractPlanFiles } from '../../plugin/scripts/lib/trace.mjs';
+import { buildTrace, conformance, resolvePlan } from '../../plugin/scripts/lib/trace.mjs';
+
+/** docs/plans/*.md listing [{path, text}] for the plan-doc conformance fallback (#76). */
+async function readPlanDocs(cwd) {
+  let names;
+  try { names = (await readdir(join(cwd, 'docs', 'plans'))).filter((f) => f.endsWith('.md')).sort(); } catch { return []; }
+  const out = [];
+  for (const n of names) out.push({ path: `docs/plans/${n}`, text: (await readFile(join(cwd, 'docs', 'plans', n), 'utf8').catch(() => '')) });
+  return out;
+}
 
 export async function currentBranch(cwd) {
   try {
@@ -61,11 +70,11 @@ export async function collectRepo(cwd, now = Date.now(), { diff = defaultDiff } 
   // §3a/§3b (C6): trace timeline + conformance badge from files already written.
   const ledgerText = (await readFile(join(cwd, LEDGER_RELPATH), 'utf8').catch(() => '')) || '';
   const ledgerTasks = parseLedger(ledgerText);
-  const planRef = ledgerPlanRef(ledgerText);
-  const planText = planRef ? await readFile(resolve(cwd, planRef), 'utf8').catch(() => null) : null;
+  // #76: resolve the plan from the ledger ref first, else the ticket's committed plan doc.
+  const plan = resolvePlan({ ledgerText, ticket: parsed.ticket, plans: await readPlanDocs(cwd) });
   const touched = await diff(cwd, 'main').catch(() => []);
-  const trace = buildTrace({ branch: branch ?? '', ledgerTasks, ledgerPlan: planRef, touchedFiles: touched, journalEvents: journal.events });
-  const badge = conformance({ branch: branch ?? '', ledgerText, planExists: planText != null, touchedFiles: touched, planFiles: extractPlanFiles(planText ?? ''), phasesSeen: null });
+  const trace = buildTrace({ branch: branch ?? '', ledgerTasks, ledgerPlan: plan.ref, touchedFiles: touched, journalEvents: journal.events });
+  const badge = conformance({ branch: branch ?? '', ledgerText, planExists: plan.found, planSource: plan.source, planRef: plan.ref, touchedFiles: touched, planFiles: plan.files, phasesSeen: null });
 
   return {
     repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? 'unknown',

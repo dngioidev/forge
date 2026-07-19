@@ -16,6 +16,32 @@ export function ledgerPlanRef(ledgerText) {
   return m ? m[1].trim() : null;
 }
 
+/**
+ * Resolve the plan governing this work (#76). Ledger `Plan:` ref first; else the
+ * ticket's committed plan doc — so the plan-doc loop (plans in docs/plans/ + main,
+ * no `initLedger`) is recognized instead of read as drift. `plans` is the injected
+ * docs/plans listing [{path, text}] (name-sorted, newest last). Returns
+ * { found, ref, files, source: 'ledger'|'plandoc'|null }.
+ */
+export function resolvePlan({ ledgerText = '', ticket = null, plans = [] } = {}) {
+  const norm = (s) => String(s ?? '').replaceAll('\\', '/');
+  const ref = ledgerPlanRef(ledgerText);
+  if (ref) {
+    const nref = norm(ref);
+    const hit = (plans ?? []).find((p) => { const np = norm(p?.path); return np && (np === nref || np.endsWith(nref) || nref.endsWith(np)); });
+    if (hit) return { found: true, ref, files: extractPlanFiles(hit.text), source: 'ledger' };
+  }
+  if (ticket != null) {
+    const tag = new RegExp(`#${ticket}\\b`);
+    const cands = (plans ?? []).filter((p) => tag.test(p?.text ?? '') || tag.test(p?.path ?? ''));
+    if (cands.length) {
+      const pick = cands[cands.length - 1]; // callers pass name-sorted; date-prefixed newest last
+      return { found: true, ref: pick.path, files: extractPlanFiles(pick.text ?? ''), source: 'plandoc' };
+    }
+  }
+  return { found: false, ref: ref ?? null, files: [], source: null };
+}
+
 /** Canonical pipeline phase order — used to light the current step + check ordering. */
 export const PHASE_ORDER = ['started', 'plan', 'tests', 'implement', 'gates', 'pr', 'ci-green', 'done'];
 
@@ -70,11 +96,14 @@ export function phasesInOrder(phasesSeen) {
  * GitHub, so the offline console skips it while the CLI (with gh) supplies the real
  * sequence. Returns { level: 'green'|'amber', checks: [{name, pass, why}], failing }.
  */
-export function conformance({ branch = '', ledgerText = '', planExists = false, touchedFiles = [], planFiles = [], phasesSeen = null } = {}) {
+export function conformance({ branch = '', ledgerText = '', planExists = false, planSource = null, planRef = null, touchedFiles = [], planFiles = [], phasesSeen = null } = {}) {
   const parsed = parseBranch(branch || '');
-  const planRef = ledgerPlanRef(ledgerText);
+  const ledgerRef = ledgerPlanRef(ledgerText);
   const validBranch = parsed.kind === 'work' || parsed.kind === 'hotfix';
   const deviations = (touchedFiles ?? []).filter((f) => !isAllowed(f, planFiles, [], DEFAULT_ALLOW));
+  // A plan counts when found via the ledger ref OR (#76) the ticket's committed plan doc.
+  // Legacy callers pass no planSource → the check stays exactly ledger-only (back-compat).
+  const planPass = planExists && (!!ledgerRef || planSource === 'plandoc');
 
   const checks = [
     {
@@ -84,8 +113,10 @@ export function conformance({ branch = '', ledgerText = '', planExists = false, 
     },
     {
       name: 'ledger-plan',
-      pass: !!planRef && planExists,
-      why: !planRef ? 'ledger has no Plan: reference' : !planExists ? `ledger Plan '${planRef}' is not a committed file` : `ledger → ${planRef}`,
+      pass: planPass,
+      why: planSource === 'plandoc' ? `plan doc → ${planRef ?? '?'}`
+        : !ledgerRef ? 'no plan: ledger has no Plan: line and no plan doc references this ticket'
+          : !planExists ? `ledger Plan '${ledgerRef}' is not a committed file` : `ledger → ${ledgerRef}`,
     },
     {
       name: 'files-in-scope',
