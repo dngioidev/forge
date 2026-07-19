@@ -19,13 +19,16 @@ export async function getIssueNode(gh, owner, repo, number) {
   return { ok: true, id: issue.id, parentNumber: issue.parent?.number ?? null };
 }
 
-const ADD_SUB_ISSUE = `mutation($parentId: ID!, $childId: ID!) {
-  addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) { issue { number } }
+/** replaceParent:true moves a child that already has a parent (re-parent, #87). */
+export function buildAddSubIssue(replaceParent = false) {
+  return `mutation($parentId: ID!, $childId: ID!) {
+  addSubIssue(input: { issueId: $parentId, subIssueId: $childId${replaceParent ? ', replaceParent: true' : ''} }) { issue { number } }
 }`;
+}
 
-export async function addSubIssue(gh, parentNodeId, childNodeId) {
+export async function addSubIssue(gh, parentNodeId, childNodeId, { replaceParent = false } = {}) {
   const res = await gh(
-    ['api', 'graphql', '-f', `query=${ADD_SUB_ISSUE}`, '-f', `parentId=${parentNodeId}`, '-f', `childId=${childNodeId}`],
+    ['api', 'graphql', '-f', `query=${buildAddSubIssue(replaceParent)}`, '-f', `parentId=${parentNodeId}`, '-f', `childId=${childNodeId}`],
     { parseJson: true },
   );
   if (!res.ok) return { ok: false, error: res.stderr || 'addSubIssue failed' };
