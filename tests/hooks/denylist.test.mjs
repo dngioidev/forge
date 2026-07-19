@@ -1,5 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { check, handle } from '../../plugin/hooks/denylist.mjs';
+import { check, handle, segments } from '../../plugin/hooks/denylist.mjs';
+
+describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () => {
+  it('AC-B85.1: a push chained with an unrelated `gh … -f` is NOT force-push', () => {
+    expect(check("git push origin my-branch && gh api graphql -f query='mutation{...}'").blocked).toBe(false);
+    expect(check("gh api graphql -f query='...' ; git push origin feat/1-x").blocked).toBe(false);
+    expect(check("git push origin br | tee log.txt").blocked).toBe(false);
+  });
+
+  it('AC-B85.2: a real force-push still blocks — alone or in any segment', () => {
+    expect(check('git push --force origin main').rule).toBe('force-push');
+    expect(check('git status && git push -f origin main').rule).toBe('force-push');
+    expect(check('git push --force-with-lease origin feat/1-x').blocked).toBe(false); // still allowed
+  });
+
+  it('AC-B85.3: destructive command in one segment still blocks; benign chained segments do not', () => {
+    expect(check('npm test && git reset --hard HEAD~1').rule).toBe('hard-reset');
+    expect(check('git add -A && git clean -fdx').rule).toBe('git-clean-force');
+    expect(check('git push origin --delete staging && echo done').rule).toBe('env-branch-delete');
+    expect(check('git push origin main && npm run build && gh pr create').blocked).toBe(false);
+  });
+
+  it('segments() splits on &&, ||, ;, |, and newlines', () => {
+    expect(segments('a && b || c ; d | e\nf')).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    expect(segments('git push origin main')).toEqual(['git push origin main']);
+  });
+});
 
 describe('denylist hook (AC-3.4)', () => {
   const blocked = [

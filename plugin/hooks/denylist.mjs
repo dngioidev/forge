@@ -49,10 +49,23 @@ export const RULES = [
   },
 ];
 
+/**
+ * Split a command line into sub-commands on shell separators (&& || ; | newline)
+ * so each rule tests ONE sub-command, not the whole string. Without this a benign
+ * chained call false-positives — e.g. `git push … && gh api graphql -f query=…`
+ * tripped force-push because `git push` and an unrelated `-f` were both present
+ * somewhere in the string (#85). Over-splitting is safe: a destructive command is
+ * still fully contained in its own segment.
+ */
+export function segments(command) {
+  return command.split(/&&|\|\||[;|\n]/).map((s) => s.trim()).filter(Boolean);
+}
+
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
+  const segs = segments(command);
   for (const rule of RULES) {
-    if (rule.test(command)) return { blocked: true, rule: rule.name, msg: rule.msg };
+    if (segs.some((seg) => rule.test(seg))) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
 }
