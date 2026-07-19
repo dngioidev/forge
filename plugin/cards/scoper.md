@@ -16,7 +16,7 @@ Ticket impact analysis before work starts: which components/files are touched, w
 - The file list you emit is what plan-drift is checked against at ship — it is a contract, not a suggestion.
 
 ## Output contract
-Markdown body (radius narrative), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (radius narrative), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

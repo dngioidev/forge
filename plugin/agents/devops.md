@@ -25,7 +25,7 @@ Own the deploy layer: Dockerfile/compose/Terraform, CI deploy jobs, infra diff r
 - Infra and CI are attack surface: pinned to Claude, config cannot override.
 
 ## Output contract
-Markdown body (what changed / plan summary), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (what changed / plan summary), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

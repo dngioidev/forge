@@ -17,7 +17,7 @@ Validate a UI implementation against its committed visual spec — token-only st
 - Judge against the committed spec, not personal taste; taste changes go through a design ticket.
 
 ## Output contract
-Markdown body (section-by-section verdicts), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (section-by-section verdicts), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

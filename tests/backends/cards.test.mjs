@@ -21,6 +21,14 @@ describe('role cards (AC-4.1)', () => {
     }
   });
 
+  it('AC-97.1: output contracts ask for a concise body, not free-prose (token pass, #97)', async () => {
+    for (const role of ROLES) {
+      const card = await readFile(join(CARDS_DIR, `${role}.md`), 'utf8');
+      expect(card, `${role} still uses the verbose "Markdown body (" lead`).not.toContain('Markdown body (');
+      expect(card, `${role} missing the concise-body instruction`).toContain('concise, bullets over prose');
+    }
+  });
+
   it('compiled agents are in sync with their cards (freshness gate)', async () => {
     for (const role of ROLES) {
       const card = await readFile(join(CARDS_DIR, `${role}.md`), 'utf8');
