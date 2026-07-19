@@ -4,7 +4,7 @@
  * runner's JSON output. Machine evidence only — role reports are never
  * consulted. Vitest JSON reporter format (v1).
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, glob } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -37,14 +37,28 @@ export function checkAcCoverage(acIds, tests) {
 }
 
 export function parseArgs(argv) {
-  const a = { plan: null, ticket: null, results: null, acs: null };
+  const a = { plan: null, ticket: null, results: [], acs: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--plan') a.plan = argv[++i];
     else if (argv[i] === '--ticket') a.ticket = Number(argv[++i]);
-    else if (argv[i] === '--results') a.results = argv[++i];
+    else if (argv[i] === '--results') a.results.push(argv[++i]); // #107: repeatable; each value may be a glob
     else if (argv[i] === '--acs') a.acs = argv[++i];
   }
   return a;
+}
+
+/** Resolve --results paths (repeatable; each may be a glob) into a concrete file list, cwd-relative. */
+export async function resolveResultFiles(results, cwd = process.cwd()) {
+  const specs = Array.isArray(results) ? results : (results ? [results] : []);
+  const files = [];
+  for (const spec of specs) {
+    if (/[*?[]/.test(spec)) {
+      for await (const f of glob(spec, { cwd })) files.push(resolve(cwd, f));
+    } else {
+      files.push(resolve(cwd, spec));
+    }
+  }
+  return [...new Set(files)];
 }
 
 export async function runAcGate(args, log = console.log) {
@@ -53,10 +67,13 @@ export async function runAcGate(args, log = console.log) {
   else if (args.plan) acIds = extractAcIds(await readFile(args.plan, 'utf8'), args.ticket);
   else return { ok: false, error: 'need --acs "AC-7.1,…" or --plan <file> [--ticket N]' };
   if (acIds.length === 0) return { ok: false, error: 'no AC ids found — the plan must map ACs (AC-<ticket>.<n>) to tests' };
-  if (!args.results) return { ok: false, error: '--results <vitest-json-file> is required (run: vitest run --reporter=json --outputFile=<file>)' };
 
-  const json = JSON.parse(await readFile(args.results, 'utf8'));
-  const check = checkAcCoverage(acIds, flattenResults(json));
+  const files = await resolveResultFiles(args.results, args.cwd);
+  if (files.length === 0) return { ok: false, error: '--results <vitest-json-file> is required — repeatable, and each value may be a glob for monorepos (run: vitest run --reporter=json --outputFile=<file>)' };
+
+  const tests = [];
+  for (const f of files) tests.push(...flattenResults(JSON.parse(await readFile(f, 'utf8'))));
+  const check = checkAcCoverage(acIds, tests);
   for (const id of acIds) {
     const state = check.missing.includes(id) ? '✗ no test' : check.failing.includes(id) ? '✗ failing' : '✓';
     log(`${state.padEnd(10)} ${id}`);

@@ -14,6 +14,15 @@ describe('plan-drift gate (AC-5.3)', () => {
     expect(files).toContain('plugin/scripts/gates/');
   });
 
+  it('AC-106.1: a bare filename after a full path resolves to that dir (#106)', () => {
+    const plan = '**Files:** packages/ui/src/components/Button.tsx, TextField.tsx, Select.tsx\n**Files:** README.md';
+    const files = extractPlanFiles(plan);
+    expect(files).toContain('packages/ui/src/components/Button.tsx');
+    expect(files).toContain('packages/ui/src/components/TextField.tsx'); // resolved, not off-plan
+    expect(files).toContain('packages/ui/src/components/Select.tsx');
+    expect(files).toContain('README.md'); // top-level bare name (no preceding dir) stays as-is
+  });
+
   it('isAllowed: declared exact + dir prefixes + scope extras + default allow', () => {
     const declared = ['src/a.mjs', 'src/widgets/'];
     expect(isAllowed('src/a.mjs', declared, [], DEFAULT_ALLOW)).toBe(true);

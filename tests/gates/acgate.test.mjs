@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { extractAcIds, flattenResults, checkAcCoverage } from '../../plugin/scripts/gates/acgate.mjs';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { extractAcIds, flattenResults, checkAcCoverage, runAcGate } from '../../plugin/scripts/gates/acgate.mjs';
+
+const noop = () => {};
+const pass = (title) => ({ testResults: [{ assertionResults: [{ title, fullName: title, status: 'passed' }] }] });
 
 const RESULTS = {
   testResults: [
@@ -31,5 +37,23 @@ describe('ac gate (AC-5.2)', () => {
   it('a failing test with the id does not count as coverage even when another test passes without it', () => {
     const tests = flattenResults(RESULTS);
     expect(checkAcCoverage(['AC-7.2'], tests).ok).toBe(false);
+  });
+
+  it('AC-107.1: merges multiple --results files — an AC passing in any file counts (#107)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-acgate-'));
+    await writeFile(join(dir, 'a.json'), JSON.stringify(pass('AC-7.1: alpha')), 'utf8');
+    await writeFile(join(dir, 'b.json'), JSON.stringify(pass('AC-7.2: beta')), 'utf8');
+    const res = await runAcGate({ acs: 'AC-7.1,AC-7.2', results: [join(dir, 'a.json'), join(dir, 'b.json')] }, noop);
+    expect(res).toMatchObject({ ok: true, covered: 2 });
+  });
+
+  it('AC-107.2: --results accepts a glob for per-package result files (#107)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-acgate-'));
+    await mkdir(join(dir, 'p1'), { recursive: true });
+    await mkdir(join(dir, 'p2'), { recursive: true });
+    await writeFile(join(dir, 'p1', 'results.json'), JSON.stringify(pass('AC-7.1: alpha')), 'utf8');
+    await writeFile(join(dir, 'p2', 'results.json'), JSON.stringify(pass('AC-7.2: beta')), 'utf8');
+    const res = await runAcGate({ acs: 'AC-7.1,AC-7.2', results: ['*/results.json'], cwd: dir }, noop);
+    expect(res).toMatchObject({ ok: true, covered: 2 });
   });
 });
