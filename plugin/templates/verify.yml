@@ -29,6 +29,11 @@ jobs:
 
   gitleaks:
     runs-on: ubuntu-latest
+    # gitleaks-action lists PR commits via the API — needs pull-requests: read,
+    # else the first PR of every repo 403s "Resource not accessible by integration".
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:

@@ -106,6 +106,31 @@ describe('create (AC-2.1)', () => {
     expect(res.error).toContain('valid priority keys');
     expect(calls.some((c) => c.startsWith('issue'))).toBe(false);
   });
+
+  it('AC-104.1: unrecognized flags fail fast — never a silent empty-body ticket (#104)', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--bogus']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unrecognized flag/);
+    expect(res.error).toContain('--bogus');
+    expect(calls.some((c) => c.startsWith('issue'))).toBe(false); // created nothing
+  });
+
+  it('AC-104.2: --body-file loads the body from a file (#104)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-bodyfile-'));
+    const bf = join(dir, 'body.md');
+    await writeFile(bf, 'Body loaded from file, not empty.', 'utf8');
+    const { ctx, calls } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: createdIssueUrl }],
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--body-file', bf]), noop);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('Body loaded from file, not empty.'))).toBe(true);
+  });
 });
 
 describe('batch create --from (AC-87.1, #87)', () => {
