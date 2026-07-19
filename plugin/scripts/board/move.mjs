@@ -14,22 +14,28 @@ export function parseArgs(argv) {
   return a;
 }
 
+/** Accept kebab-case status aliases (in-progress, in-review) for the camelCase config keys (#108). */
+export function normalizeStatusKey(s) {
+  return String(s ?? '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+}
+
 export async function runMove(ctx, args, log = console.log) {
   if (!Number.isInteger(args.issue)) return { ok: false, error: '--issue <number> is required' };
-  const opt = ctx.resolveOption('status', args.status ?? '');
+  const status = normalizeStatusKey(args.status);
+  const opt = ctx.resolveOption('status', status);
   if (!opt.ok) return { ok: false, error: opt.error };
 
   const found = await ctx.findItemByIssue(args.issue);
   if (!found.ok) return { ok: false, error: found.error };
   if (!found.item) return { ok: false, error: `issue #${args.issue} is not on board #${ctx.projectNumber} — run board create first` };
 
-  if (ctx.itemFieldKey(found.item, 'status') === args.status) {
-    log(`#${args.issue}: already ${args.status}`);
+  if (ctx.itemFieldKey(found.item, 'status') === status) {
+    log(`#${args.issue}: already ${status}`);
     return { ok: true, changed: false };
   }
-  const set = await ctx.setSelect(found.item.id, 'status', args.status);
+  const set = await ctx.setSelect(found.item.id, 'status', status);
   if (!set.ok) return set;
-  log(`#${args.issue}: status -> ${args.status}`);
+  log(`#${args.issue}: status -> ${status}`);
   return { ok: true, changed: true };
 }
 

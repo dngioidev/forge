@@ -12,11 +12,13 @@ import { upsertMarkedComment } from '../lib/issues.mjs';
 export const PHASES = ['started', 'spec', 'plan', 'pr', 'gate-fail', 'escalation', 'ci-green', 'merged', 'note'];
 
 export function parseArgs(argv) {
-  const a = { issue: null, phase: null, body: null };
+  const a = { issue: null, phase: null, body: null, actor: null, session: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--issue') a.issue = Number(argv[++i]);
     else if (argv[i] === '--phase') a.phase = argv[++i];
     else if (argv[i] === '--body') a.body = argv[++i];
+    else if (argv[i] === '--actor') a.actor = argv[++i];
+    else if (argv[i] === '--session') a.session = argv[++i];
   }
   return a;
 }
@@ -26,7 +28,9 @@ export async function runComment(ctx, args, log = console.log) {
   if (!PHASES.includes(args.phase)) return { ok: false, error: `unknown phase '${args.phase}' — valid: ${PHASES.join(', ')}` };
   if (!args.body) return { ok: false, error: '--body is required' };
 
-  const content = `**forge trail** — ${args.body}`;
+  // #108: optional actor + session so a picked ticket records who + which session.
+  const meta = [args.actor && `by @${args.actor}`, args.session && `session \`${args.session}\``].filter(Boolean).join(' · ');
+  const content = `**forge trail** — ${args.body}${meta ? `\n\n<sub>${meta}</sub>` : ''}`;
   const res = await upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, args.issue, `trail:${args.phase}`, content);
   if (!res.ok) return res;
   log(`#${args.issue} trail:${args.phase} ${res.action}`);

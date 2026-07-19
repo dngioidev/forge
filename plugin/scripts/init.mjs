@@ -159,6 +159,18 @@ export async function runInit(ctx) {
     say('.gitignore: added .forge/');
   }
 
+  // 7b. .gitattributes — normalize line endings to LF (#109). On Windows, CRLF
+  // causes git "LF will be replaced by CRLF" churn and breaks tests that compare
+  // generated files byte-for-byte. No-clobber: only added when absent.
+  const gaPath = join(cwd, '.gitattributes');
+  let ga = '';
+  try { ga = await readFile(gaPath, 'utf8'); } catch { /* no .gitattributes yet */ }
+  if (!ga.split(/\r?\n/).some((l) => l.trim().startsWith('* text'))) {
+    const rule = '# forge: normalize line endings to LF (avoids CRLF churn + generated-file test breakage)\n* text=auto eol=lf\n';
+    await writeFile(gaPath, ga + (ga.endsWith('\n') || ga === '' ? '' : '\n') + rule, 'utf8');
+    say('.gitattributes: added LF normalization (* text=auto eol=lf)');
+  }
+
   // 7b. Consumer CI template (spec §6; lands with SP3): install when missing
   const wfDir = join(cwd, '.github', 'workflows');
   let hasVerify = false;

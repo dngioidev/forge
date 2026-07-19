@@ -209,6 +209,16 @@ describe('move (AC-2.2)', () => {
     const missing = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
     expect(missing.error).toContain('board create');
   });
+
+  it('AC-108.1: accepts kebab-case status aliases (in-progress -> inProgress) (#108)', async () => {
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_2', content: { number: 5 }, status: 'Ready' }])],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const moved = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'in-progress']), noop);
+    expect(moved).toMatchObject({ ok: true, changed: true }); // resolved to inProgress, not rejected as unknown
+    expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(1);
+  });
 });
 
 describe('comment (AC-2.3)', () => {
@@ -227,6 +237,21 @@ describe('comment (AC-2.3)', () => {
     const second = await runComment(ctx, commentArgs(['--issue', '2', '--phase', 'pr', '--body', 'PR #9 updated']), noop);
     expect(second).toMatchObject({ ok: true, action: 'updated', id: 77 });
     expect(calls.filter((c) => c.startsWith('api -X PATCH')).length).toBe(1);
+  });
+
+  it('AC-108.2: --actor/--session embed a provenance footer (#108)', async () => {
+    let comments = [];
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('api repos/') && j.includes('/comments?'), () => ({ stdout: JSON.stringify(comments) })],
+      [(j) => j.startsWith('api repos/') && j.endsWith('/comments') === false && j.includes('-f'), () => {
+        comments = [{ id: 88, body: '<!-- forge:trail:started -->' }];
+        return { stdout: JSON.stringify({ id: 88 }) };
+      }],
+    ]);
+    const res = await runComment(ctx, commentArgs(['--issue', '3', '--phase', 'started', '--body', 'picked', '--actor', 'iomanage', '--session', 'sess-1']), noop);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('by @iomanage'))).toBe(true);
+    expect(calls.some((c) => c.includes('session'))).toBe(true);
   });
 
   it('rejects unknown phases', async () => {
