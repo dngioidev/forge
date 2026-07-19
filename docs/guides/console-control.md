@@ -5,12 +5,13 @@ running agent sessions, the audit trail, alerts, quota, and a per-repo work trac
 badge — plus buttons to pause, resume, and kill work. It's how you *see and steer* the agents
 running on your machine.
 
-> **Read this first — where it lives.** The console and control plane are **repo-level tooling**
-> (`console/` and `control/` in the forge repo). They are **not packaged in the installed plugin**
-> today, and the plugin is still tagged **0.3.0** (the C1–C8 control-plane work is merged to `main`
-> but unreleased). So you run the console control **from a forge checkout**, not from
-> `~/.claude/plugins/…`. Until a release packages them, `/plugin update` will not give you these
-> features. See [Limits & status](#limits--status).
+> **Read this first — where it lives.** The console and control plane are **repo-level operator
+> tooling** (`console/` and `control/` in the forge repo), run from a **forge checkout** — not from
+> the installed plugin (`~/.claude/plugins/…`). This is **by design**, not a gap: the control plane
+> is a machine-global tool that watches many repos and spawns sessions, so it isn't a per-project
+> plugin artifact ([ADR-0002](../decisions/0002-console-control-distribution.md)). `/plugin update`
+> maintains the pipeline plugin; the console control you clone and run. See
+> [Distribution model](#distribution-model).
 
 ---
 
@@ -150,12 +151,13 @@ Clearing the switch is **always a human action** (`resume`, or delete the file) 
 
 ---
 
-## 8. Limits & status
+## 8. Distribution model
 
-- **Not in the plugin yet.** `console/` + `control/` ship as repo tooling, not in the packaged
-  plugin, and no release since 0.3.0 includes the C1–C8 work. To use the console control you need a
-  forge **checkout**. Packaging them (and cutting a release) is the follow-up that makes
-  `/plugin update` deliver this.
+- **Run from a checkout, by design.** `console/` + `control/` are repo-level operator tooling, not
+  part of the packaged plugin — a deliberate choice ([ADR-0002](../decisions/0002-console-control-distribution.md)):
+  the control plane is machine-global (it watches many repos and spawns sessions), so it isn't a
+  per-project plugin artifact. The pipeline plugin you install/update; the console control you clone
+  and run. A one-command bootstrap launcher may come later, but the checkout stays the source of truth.
 - **Best-effort-loud, not push.** Alerts/toast require the console open or the toast enabled; there
   is no phone push without Firebase.
 - **Quota is as fresh as your last status-line refresh**, and cost-per-day is approximate (derived
