@@ -32,14 +32,13 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 ## Decisions (ADRs)
 
 - [ADR-0001 — Status field options](decisions/0001-status-field-options.md) — built-in Status options are GraphQL-mutable but replacement mints new IDs; init replaces on fresh (empty) projects only, maps-as-is on live boards.
-- [ADR-0002 — Console/control distribution](decisions/0002-console-control-distribution.md) — the console + control plane ship as repo tooling run from a checkout, not in the packaged plugin; it's a machine-global operator tool, not a per-project artifact (#91).
+- [ADR-0002 — Console/control distribution](decisions/0002-console-control-distribution.md) — *(superseded by ADR-0003)* the console + control plane ship as repo tooling run from a checkout, not in the packaged plugin (#91).
+- [ADR-0003 — Remove forge-control + console](decisions/0003-remove-control-console.md) — the local control plane + console are removed (unused for a solo interactive workflow; token/scope reduction). Preserved in the v0.5.0 tag; the pipeline (skills/board/gates/care) is unaffected (#95).
 
 ## Guides
 
 - [Install](guides/install.md) — forge into any project: prerequisites, marketplace install, init adopt-vs-create, doctor, per-feature wiring, superpowers migration.
 - [Handbook](guides/handbook.md) — daily use: the laws, the cockpit, the Build loop, every human interaction point, care/knowledge/scale flows, gates + situations tables.
-- [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, console, environment.
-- [Console daemon](guides/console-daemon.md) — register/once/watch/status, file-transport layout, metadata-only guardrail, the Firebase follow-up step.
-- [Console control](guides/console-control.md) — operator guide for the forge-control cockpit: launch, the control tab (queue/sessions/audit/alerts/quota/trace), the CLI verbs, the runner, opt-in capture/toast, the safety model. Runs from a checkout (not yet packaged in the plugin).
+- [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, environment.
 - [Rollback runbook](guides/rollback-runbook.md) — find the previous digest, redeploy it (one command), verify, record; forward-only-migration exception.
 - [Data-recovery runbook](guides/data-recovery-runbook.md) — restore → verify → postmortem; never debug against the only copy.

@@ -16,7 +16,6 @@ const RESPOND_SKILLS = ['respond', 'investigate'];
 const UNLOCK = {
   incident: 'close it first: node plugin/scripts/care/incident.mjs close --ticket <n> --postmortem "<ref>"',
   'security-response': 'containment first; clear with: node plugin/scripts/care/incident.mjs respond-close --postmortem "<ref>"',
-  paused: 'resume the machine: node control/control.mjs resume (or delete ~/.forge/control/paused — human-only clear)',
 };
 
 export function parseArgs(argv) {
@@ -29,14 +28,8 @@ export function parseArgs(argv) {
   return a;
 }
 
-/** Pure rule table: (situationKey, action, {branch, skill, paused}) -> {allowed, why}. */
-export function evaluate(situationKey, action, { branch = '', skill = null, paused = false } = {}) {
-  // The machine kill switch holds ship/release regardless of the care-situation (#68):
-  // even a hotfix during an incident does not ship while the owner has paused the machine.
-  // It does NOT freeze containment (backend/skill) — paused stops *shipping*, not response.
-  if (paused && (action === 'ship' || action === 'release')) {
-    return { allowed: false, why: `paused: the machine is held — ${action} waits until resumed (spec §2). ${UNLOCK.paused}` };
-  }
+/** Pure rule table: (situationKey, action, {branch, skill}) -> {allowed, why}. */
+export function evaluate(situationKey, action, { branch = '', skill = null } = {}) {
   if (situationKey === 'security-response') {
     if (action === 'skill' && RESPOND_SKILLS.includes(skill)) return { allowed: true, why: `${skill} runs during security-response` };
     return {
@@ -55,15 +48,14 @@ export function evaluate(situationKey, action, { branch = '', skill = null, paus
   return { allowed: true, why: `situation '${situationKey}' does not restrict '${action}'` };
 }
 
-export async function runGate(cwd, args, log = console.log, { controlBase } = {}) {
+export async function runGate(cwd, args, log = console.log) {
   if (!['ship', 'release', 'backend', 'skill'].includes(args.action)) {
     return { ok: false, allowed: false, error: '--action must be ship|release|backend|skill' };
   }
-  const s = await deriveSituation(cwd, { blocked: 0, inProgress: 0 }, { controlBase });
-  const verdict = evaluate(s.key, args.action, { ...args, paused: s.paused });
-  const tag = s.paused && s.key !== 'paused' ? `${s.glyph} ${s.key}+paused` : `${s.glyph} ${s.key}`;
-  log(`situation-gate [${tag}] ${args.action}${args.branch ? ` (${args.branch})` : ''}${args.skill ? ` (${args.skill})` : ''}: ${verdict.allowed ? 'proceed' : 'REFUSED'} — ${verdict.why}`);
-  return { ok: true, allowed: verdict.allowed, situation: s.key, paused: s.paused, why: verdict.why };
+  const s = await deriveSituation(cwd);
+  const verdict = evaluate(s.key, args.action, args);
+  log(`situation-gate [${s.glyph} ${s.key}] ${args.action}${args.branch ? ` (${args.branch})` : ''}${args.skill ? ` (${args.skill})` : ''}: ${verdict.allowed ? 'proceed' : 'REFUSED'} — ${verdict.why}`);
+  return { ok: true, allowed: verdict.allowed, situation: s.key, why: verdict.why };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;

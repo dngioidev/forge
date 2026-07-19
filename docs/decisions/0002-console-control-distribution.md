@@ -1,6 +1,6 @@
 # ADR-0002 — The console + control plane ship as repo tooling, not in the plugin
 
-**Date:** 2026-07-19 · **Status:** accepted · **Ticket:** #91 (iomanage feedback)
+**Date:** 2026-07-19 · **Status:** superseded by [ADR-0003](0003-remove-control-console.md) · **Ticket:** #91 (iomanage feedback)
 
 ## Context
 
@@ -22,7 +22,7 @@ Three options were weighed (#91):
 
 ## Consequences
 
-- Plugin users reach the console control by cloning forge and running `node console/daemon.mjs serve` — documented in [the console-control guide](../guides/console-control.md).
+- Plugin users reach the console control by cloning forge and running `node console/daemon.mjs serve` — documented in the console-control guide (both removed in ADR-0003).
 - `console/`/`control/` keep their current layout and import paths; no refactor.
 - **Revisit if:** the control plane is later deemed a first-class *plugin* feature (→ Option 1), or checkout friction proves painful in practice (→ Option 3, a bootstrap launcher — the checkout stays the source of truth either way).
 

@@ -13,12 +13,7 @@ Everything you do on the platform, flow by flow: what to run, what the agent doe
 
 ## 1. Setup (once per repo)
 
-Follow the [install guide](install.md): plugin install → `/forge:init` (adopt or create the board) → `/forge:doctor` → optional wiring (deploy, graph, backends, design review). Then, once per **machine**, register repos with the console:
-
-```
-cd <repo> && node <forge-checkout>/console/daemon.mjs register
-node <forge-checkout>/console/daemon.mjs serve     # → http://127.0.0.1:7433
-```
+Follow the [install guide](install.md): plugin install → `/forge:init` (adopt or create the board) → `/forge:doctor` → optional wiring (deploy, graph, backends, design review).
 
 ## 2. The cockpit — where to look
 
@@ -26,7 +21,6 @@ node <forge-checkout>/console/daemon.mjs serve     # → http://127.0.0.1:7433
 | --- | --- | --- |
 | **Status line** (bottom of every session) | situation glyph · active ticket · branch · pending-decision count | always on; a 🚩/🔥/🔒 glyph means you're needed |
 | **`forge board status`** | the catch-up card: situation, column counts, pending decisions with age, next expected human action | back from time away |
-| **Local console** (127.0.0.1:7433) | every repo on the machine as a heat card + tap-to-answer decisions | leave open while agents work |
 | **Issue trail comments** | started / plan / spec / pr / gate-fail / escalation / ci-green / merged / note per ticket | reviewing any piece of work |
 | **Epic digests** (managed block in the epic body) | live child table, blocked-first + flow metrics (cycle times, gate-fails) | tracking an epic |
 | **Delivery log** (pinned issue) | one row per merged PR | the release history at a glance |
@@ -37,7 +31,7 @@ The normal path, with your touch-points marked **[you]**:
 
 1. **Capture** — `forge:ideate` for raw ideas → product notes; anything actionable goes straight to
 2. **Ticket** — `/forge:ticket` (quick triage): issue created, board fields set (type/priority/size), status Backlog. **[you]** set priority when you care about order.
-3. **Shape** (bigger features) — `forge:brainstorm` explores approaches and ends in a spec; **[you] approve the spec via a decision comment** — reply with your choice on the issue, in-session, or in the console.
+3. **Shape** (bigger features) — `forge:brainstorm` explores approaches and ends in a spec; **[you] approve the spec via a decision comment** — reply with your choice on the issue or in-session.
 4. **Design** (UI-flagged tickets) — `forge:design` generates 2–3 real-token variants; **[you] pick one via decision comment**; the winner becomes a visual spec (speclint-enforced) that later review validates against.
 5. **Plan** — `forge:plan` writes `docs/plans/…` with tasks and **AC-IDs** (acceptance criteria that must map to passing tests). Committed to main before work starts.
 6. **Execute** — `forge:execute` works the plan task-by-task against a `.forge/progress.md` ledger (resumable mid-task). Tests come with the code.
@@ -47,7 +41,7 @@ The normal path, with your touch-points marked **[you]**:
 
 ## 4. Your interaction points (the complete list)
 
-- **Decision comments** (`🚩 Decision needed` on an issue): reply with the option number or free text — on the GitHub issue, in-session, or via console buttons. All three resume the pipeline identically.
+- **Decision comments** (`🚩 Decision needed` on an issue): reply with the option number or free text — on the GitHub issue or in-session. Both resume the pipeline identically.
 - **PR merges** — every one.
 - **Spec/design/brainstorm approvals** — decision comments like any other.
 - **Environment-branch merges** — merging main into `staging` *is* the deploy authorization; nothing deploys without it. Production promote is a decision-gated human act.
@@ -112,4 +106,4 @@ Rollback = redeploy the previous digest (one command, runbook). Migrations are f
 
 ## 11. When something's wrong
 
-`/forge:doctor` first — every ✗ has a fix hint. Known issues + recovery ladders: [troubleshooting guide](troubleshooting.md). Gate refused: read its message, it names the unlock. Pipeline halted: check 🚩 decisions (`board status` or the console). Board ids dangling: re-run `/forge:init`. Anything the platform can't decide arrives as a decision comment — answer it and work resumes.
+`/forge:doctor` first — every ✗ has a fix hint. Known issues + recovery ladders: [troubleshooting guide](troubleshooting.md). Gate refused: read its message, it names the unlock. Pipeline halted: check 🚩 decisions (`board status`). Board ids dangling: re-run `/forge:init`. Anything the platform can't decide arrives as a decision comment — answer it and work resumes.

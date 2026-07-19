@@ -37,7 +37,6 @@ Still stale? Check you're not shadowed: a repo-local override (a same-named skil
 - **Port already in use** — another serve is running: reuse it, or `serve --port 7434`.
 - **Repo missing from the page** — it was never registered; run `register` from that repo's directory. Moved a checkout? Edit `~/.forge/daemon.json` `repos` paths by hand.
 - **Situation shows idle during active work** — collect is offline-by-design (no board API); ticket/branch/decisions still show. Not a bug.
-- **A decision answered in the console didn't resume the session** — the session reads `.forge/decisions/` when it next checks (`escalate --check` or skill resume); a fully idle session has nothing polling. Nudge it, or reply on the issue instead.
 
 ## 6. Environment breaks (Windows portable installs)
 

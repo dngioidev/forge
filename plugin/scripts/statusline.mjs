@@ -13,7 +13,6 @@ import { pathToFileURL } from 'node:url';
 import { run } from './lib/exec.mjs';
 import { parseBranch } from './lib/ticket.mjs';
 import { deriveSituation } from './lib/situation.mjs';
-import { appendQuotaSample } from './lib/quota.mjs';
 
 /** Context usage across known payload shapes -> {used, max} or null. */
 export function extractContext(payload) {
@@ -90,8 +89,6 @@ async function main() {
   } catch { /* glyph degrades to branch inference */ }
 
   const projectDir = payload?.workspace?.project_dir || payload?.workspace?.current_dir || cwd;
-  const rateLimits = payload?.rate_limits || null;
-  const costUsd = typeof payload?.cost?.total_cost_usd === 'number' ? payload.cost.total_cost_usd : null;
   process.stdout.write(composeLine({
     situation, pendingCount,
     project: String(projectDir).split(/[\\/]/).filter(Boolean).pop(),
@@ -99,16 +96,9 @@ async function main() {
     context: extractContext(payload),
     model: payload?.model?.display_name || null,
     effort: payload?.effort?.level || null,
-    rateLimits,
-    costUsd,
+    rateLimits: payload?.rate_limits || null,
+    costUsd: typeof payload?.cost?.total_cost_usd === 'number' ? payload.cost.total_cost_usd : null,
   }));
-
-  // C8 (#79): opt-in quota capture — numeric-only, marker-gated, never breaks the strip.
-  await appendQuotaSample(cwd, {
-    fiveHour: rateLimits?.five_hour?.used_percentage,
-    sevenDay: rateLimits?.seven_day?.used_percentage,
-    cost: costUsd ?? undefined,
-  }).catch(() => {});
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
