@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.4.0 — 2026-07-19
+
+### Docs
+
+- record iomanage 0.3.0 field feedback
+- C8 quota panel (#79) ([#79](https://github.com/dngioidev/forge/issues/79))
+- C7 alerts (#77) ([#77](https://github.com/dngioidev/forge/issues/77))
+- C6 agent-work trace + structure conformance (#74) ([#74](https://github.com/dngioidev/forge/issues/74))
+- add control/README.md operator guide (#71) ([#71](https://github.com/dngioidev/forge/issues/71))
+- C5 dogfood one real ticket end-to-end (#70) ([#70](https://github.com/dngioidev/forge/issues/70))
+- C4 situationgate reads paused flag (#68) ([#68](https://github.com/dngioidev/forge/issues/68))
+- C3 console control tab (#66) ([#66](https://github.com/dngioidev/forge/issues/66))
+- C2 forge-control runner — spawn + supervise (#62) ([#62](https://github.com/dngioidev/forge/issues/62))
+- C1 control queue + registry + CLI (#60) ([#60](https://github.com/dngioidev/forge/issues/60))
+- forge-control v2 — agent trace, conformance, alerts, quota (#56) ([#56](https://github.com/dngioidev/forge/issues/56))
+- forge-control — local control plane draft (#56) ([#56](https://github.com/dngioidev/forge/issues/56))
+
+### Fixes
+
+- conformance falls back to the ticket's plan doc when no ledger (#76) ([#76](https://github.com/dngioidev/forge/issues/76))
+- split entry.repo into spawn-path + trail-slug (#73) ([#73](https://github.com/dngioidev/forge/issues/73))
+- link the new board to the repo after create (#64) ([#64](https://github.com/dngioidev/forge/issues/64))
+- offer + scaffold a CLI-backend roster (agy/gemini) (#58) ([#58](https://github.com/dngioidev/forge/issues/58))
+- createSingleSelectField uses inline-literal mutation (#55) ([#55](https://github.com/dngioidev/forge/issues/55))
+
+### Features
+
+- C8 Claude Code quota panel (#79) ([#79](https://github.com/dngioidev/forge/issues/79))
+- C7 alerts — journal-failure + stale-session watcher (#77) ([#77](https://github.com/dngioidev/forge/issues/77))
+- C6 agent-work trace + conformance badge (#74) ([#74](https://github.com/dngioidev/forge/issues/74))
+- C4 situationgate reads the machine paused flag (#68) ([#68](https://github.com/dngioidev/forge/issues/68))
+- C3 console control tab — queue/sessions/audit + verbs (#66) ([#66](https://github.com/dngioidev/forge/issues/66))
+- C2 runner — spawn claude -p + supervise (#62) ([#62](https://github.com/dngioidev/forge/issues/62))
+- C1 — work queue, machine registry, allowlisted CLI (#60) ([#60](https://github.com/dngioidev/forge/issues/60))
+
 ## v0.3.0 — 2026-07-18
 
 ### Features
