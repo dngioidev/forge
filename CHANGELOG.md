@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.0 — 2026-07-19
+
+### Fixes
+
+- make deriveSituation machine-state independent via FORGE_CONTROL_BASE (#93) ([#93](https://github.com/dngioidev/forge/issues/93))
+- denylist tests per command segment, not whole string (#85) ([#85](https://github.com/dngioidev/forge/issues/85))
+
+### Docs
+
+- adopt Option 2 — console/control ship as repo tooling (#91) ([#91](https://github.com/dngioidev/forge/issues/91))
+- add console-control operator guide (#83) ([#83](https://github.com/dngioidev/forge/issues/83))
+
+### Features
+
+- seed Program type + plan-aware secret-scan (#89) ([#89](https://github.com/dngioidev/forge/issues/89))
+- batch create (--from) + reparent script (#87) ([#87](https://github.com/dngioidev/forge/issues/87))
+
 ## v0.4.0 — 2026-07-19
 
 ### Docs
