@@ -88,6 +88,25 @@ describe('runDoctor — failure classes (AC-1.4)', () => {
     expect(byName(res, 'branch-protection')[0].level).toBe('warn');
     expect(byName(res, 'secret-scanning')[0].level).toBe('warn');
   });
+
+  it('AC-89.2: private repo without secret scanning available → skip (n/a), not warn', async () => {
+    const cwd = await tmpCwd();
+    await writeFile(join(cwd, '.gitignore'), '.forge/\n', 'utf8');
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      [(j) => j.startsWith('api repos/') && j.includes('/protection'), { ok: false, stderr: '404' }],
+      // private repo, no secret_scanning offered (free plan, no GHAS)
+      [(j) => j.startsWith('api repos/'), { stdout: JSON.stringify({ private: true, security_and_analysis: {} }) }],
+      [() => true, { ok: false, stderr: 'x' }],
+    ]);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const ss = byName(res, 'secret-scanning')[0];
+    expect(ss.level).toBe('skip');
+    expect(ss.msg).toMatch(/n\/a on this plan/);
+    // skip is never a failure — secret-scanning must not appear among failed checks
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('secret-scanning');
+  });
 });
 
 describe('runDoctor — healthy repo shape', () => {

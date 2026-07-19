@@ -14,6 +14,7 @@ import { getRepoInfo, getProjectFields } from './lib/board.mjs';
 const ok = (name, msg) => ({ name, level: 'ok', msg });
 const warn = (name, msg, hint) => ({ name, level: 'warn', msg, hint });
 const fail = (name, msg, hint) => ({ name, level: 'fail', msg, hint });
+const skip = (name, msg) => ({ name, level: 'skip', msg }); // not applicable — never a failure (#89)
 
 export async function runDoctor(ctx) {
   const { gh, cwd, log } = ctx;
@@ -147,12 +148,16 @@ export async function runDoctor(ctx) {
 
     const sec = await gh(['api', `repos/${repo.owner}/${repo.name}`], { parseJson: true });
     const sa = sec.ok ? sec.json.security_and_analysis : null;
+    const isPrivate = sec.ok && (sec.json.private === true || sec.json.visibility === 'private');
     if (sa?.secret_scanning?.status === 'enabled') results.push(ok('secret-scanning', 'enabled'));
+    // private repos without GitHub Advanced Security can't offer secret scanning — that's a plan
+    // limitation, not a misconfiguration, so don't nag (#89).
+    else if (isPrivate && !sa?.secret_scanning) results.push(skip('secret-scanning', 'n/a on this plan — needs a public repo or GitHub Advanced Security'));
     else results.push(warn('secret-scanning', 'secret scanning not enabled', 'enable secret scanning + push protection in repo settings (spec §13)'));
   }
 
   const failed = results.filter((r) => r.level === 'fail');
-  const icon = { ok: '✓', warn: '⚠', fail: '✗' };
+  const icon = { ok: '✓', warn: '⚠', fail: '✗', skip: '·' };
   for (const r of results) {
     log(`${icon[r.level]} ${r.name.padEnd(18)} ${r.msg}${r.hint ? `  → ${r.hint}` : ''}`);
   }
