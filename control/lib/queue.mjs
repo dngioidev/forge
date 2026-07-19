@@ -33,12 +33,15 @@ async function nextSeq(base) {
 
 function fileFor(seq, id) { return `${pad(seq)}-${id}.json`; }
 
-export async function enqueue(base, { id, ticket = null, repo, brief = '', at } = {}) {
+export async function enqueue(base, { id, ticket = null, repo, repoSlug = null, brief = '', at } = {}) {
   if (!repo) return { ok: false, error: 'enqueue needs a repo' };
   const dir = join(base, Q);
   await mkdir(dir, { recursive: true });
   const seq = await nextSeq(base);
-  const rec = { id: id ?? `q-${seq}`, seq, ticket, repo, brief, state: 'pending', enqueuedAt: at ?? new Date().toISOString() };
+  // `repo` is the filesystem path the runner spawns in (--add-dir); `repoSlug` is the
+  // owner/name used to trail the ticket on GitHub (#73). They differ — a path can't be
+  // a slug — so the trail no-ops on a path-only entry. repoSlug is optional/back-compat.
+  const rec = { id: id ?? `q-${seq}`, seq, ticket, repo, repoSlug, brief, state: 'pending', enqueuedAt: at ?? new Date().toISOString() };
   await writeFile(join(dir, fileFor(seq, rec.id)), JSON.stringify(rec), 'utf8');
   return { ok: true, entry: rec };
 }

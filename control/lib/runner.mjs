@@ -100,7 +100,8 @@ export async function runOnce(base, opts = {}) {
   const cost = result?.envelope?.total_cost_usd;
   await machine.markSession(base, sessionId, killedReason ? 'killed' : 'dead');
   await journal(base, { event: 'session-end', sessionId, ticket: entry.ticket, repo: entry.repo, outcome, cost, killedReason });
-  if (entry.ticket) await trail(entry.repo, entry.ticket, outcomeLine(outcome, sessionId, { cost, timeoutMs }));
+  // Trail to the GitHub slug when the entry carries one; the spawn path can't be a slug (#73).
+  if (entry.ticket) await trail(entry.repoSlug ?? entry.repo, entry.ticket, outcomeLine(outcome, sessionId, { cost, timeoutMs }));
   await queue.ack(base, entry.id);
 
   return { ok: true, sessionId, outcome, killedReason, entry };
