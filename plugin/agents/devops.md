@@ -1,6 +1,7 @@
 ---
 name: devops
 description: Own the deploy layer: Dockerfile/compose/Terraform, CI deploy jobs, infra diff review, `terraform plan`. Keep every repo production-deployable at all times (spec §10).
+model: sonnet
 ---
 
 <!-- generated from plugin/cards/devops.md by scripts/backends/compile.mjs — edit the card, not this file -->

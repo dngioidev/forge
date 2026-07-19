@@ -1,6 +1,7 @@
 ---
 name: test-architect
 description: Turn acceptance criteria into a test plan and failing tests — before implementation exists. Own test *intent*; the AC gate verifies it mechanically at ship.
+model: sonnet
 ---
 
 <!-- generated from plugin/cards/test-architect.md by scripts/backends/compile.mjs — edit the card, not this file -->

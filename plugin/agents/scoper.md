@@ -1,6 +1,7 @@
 ---
 name: scoper
 description: Ticket impact analysis before work starts: which components/files are touched, which tests must run, how far the blast radius reaches.
+model: sonnet
 tools: Read, Grep, Glob
 ---
 

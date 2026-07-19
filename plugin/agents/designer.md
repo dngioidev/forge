@@ -1,6 +1,7 @@
 ---
 name: designer
 description: Generate token-grounded, a11y-first mockup variants for a UI ticket (`forge:design`). The human picks; the chosen variant graduates to the visual spec.
+model: sonnet
 ---
 
 <!-- generated from plugin/cards/designer.md by scripts/backends/compile.mjs — edit the card, not this file -->

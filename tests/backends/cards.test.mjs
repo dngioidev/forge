@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
-import { CARDS_DIR, AGENTS_DIR, compileCard, ROLES } from '../../plugin/scripts/backends/compile.mjs';
+import { CARDS_DIR, AGENTS_DIR, compileCard, ROLES, MODELS } from '../../plugin/scripts/backends/compile.mjs';
 
 describe('role cards (AC-4.1)', () => {
   it('all 11 roles have a card and only those', async () => {
@@ -36,10 +36,16 @@ describe('role cards (AC-4.1)', () => {
     }
   });
 
-  it('compiled agents carry no model pin; read-only roles carry tool allowlists', async () => {
+  it('AC-101.1: every role pins a right-sized model; read-only roles carry tool allowlists', async () => {
+    // "enough to do, not too generous": lookup on haiku, gates/writing on sonnet, only second-opinion on opus.
+    expect(MODELS.investigator).toBe('haiku');
+    expect(MODELS.librarian).toBe('haiku');
+    expect(MODELS.reviewer).toBe('sonnet');   // the security net — not skimped to a cheaper tier
+    expect(MODELS.security).toBe('sonnet');
+    expect(MODELS['second-opinion']).toBe('opus');
     for (const role of ROLES) {
       const agent = await readFile(join(AGENTS_DIR, `${role}.md`), 'utf8');
-      expect(agent).not.toMatch(/^model:/m);
+      expect(agent, `${role} missing its model pin`).toMatch(new RegExp(`^model: ${MODELS[role]}$`, 'm'));
     }
     const librarian = await readFile(join(AGENTS_DIR, 'librarian.md'), 'utf8');
     expect(librarian).toMatch(/^tools: Read, Grep, Glob$/m);
