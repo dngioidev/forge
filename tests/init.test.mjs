@@ -87,6 +87,10 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
 
     const gi = await readFile(join(cwd, '.gitignore'), 'utf8');
     expect(gi).toContain('.forge/');
+
+    // #109: init writes a .gitattributes normalizing line endings to LF
+    const ga = await readFile(join(cwd, '.gitattributes'), 'utf8');
+    expect(ga).toMatch(/^\* text=auto eol=lf$/m);
   });
 
   it('AC-B64.2: fresh create links the new board to the repo (#64)', async () => {
