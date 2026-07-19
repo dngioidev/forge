@@ -13,13 +13,25 @@ import { readJson } from '../lib/jsonfile.mjs';
 /** Always allowed: the artifacts every task legitimately produces. */
 export const DEFAULT_ALLOW = ['tests/', 'docs/', '.forge/', 'CHANGELOG.md', 'pnpm-lock.yaml', 'package-lock.json'];
 
-/** Pull file paths from every `**Files:**` line in the plan. */
+/**
+ * Pull file paths from every `**Files:**` line in the plan. Shorthand where a
+ * bare filename follows a full path on the same line (e.g.
+ * `packages/ui/src/Button.tsx, TextField.tsx`) resolves the bare name against
+ * the preceding path's directory (#106) — otherwise it read as off-plan.
+ */
 export function extractPlanFiles(planText) {
   const files = [];
   for (const m of (planText ?? '').matchAll(/\*\*Files:\*\*\s*(.+)$/gm)) {
+    let lastDir = null; // dir of the most recent path token on THIS line
     for (const raw of m[1].split(/[,\s]+/)) {
       const f = raw.replace(/[`()]/g, '').trim();
-      if (f && !f.startsWith('+')) files.push(f);
+      if (!f || f.startsWith('+')) continue;
+      if (f.includes('/')) {
+        files.push(f);
+        lastDir = f.endsWith('/') ? f.replace(/\/$/, '') : f.slice(0, f.lastIndexOf('/'));
+      } else {
+        files.push(lastDir ? `${lastDir}/${f}` : f);
+      }
     }
   }
   return [...new Set(files)];
