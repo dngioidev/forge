@@ -121,17 +121,33 @@ export async function isGraphEnabled(root) {
   }
 }
 
+/**
+ * Per-call graph state (#105) — re-reads features.graph on every call so a
+ * toggle in forge.json (+ `graphctl rebuild`) takes effect without restarting
+ * the MCP process. The db is opened lazily on the first enabled call and
+ * memoized (no reopen per call); flipping the flag off closes and drops it.
+ */
+export function makeGraphState(root, { open = openDb, isEnabled = isGraphEnabled } = {}) {
+  let db = null;
+  return async function resolve() {
+    const enabled = await isEnabled(root);
+    if (enabled && !db) db = open(root);
+    else if (!enabled && db) { try { db.close?.(); } catch { /* ignore */ } db = null; }
+    return { enabled, db };
+  };
+}
+
 async function main() {
   const root = process.cwd();
-  const graphEnabled = await isGraphEnabled(root);
-  const db = graphEnabled ? openDb(root) : null;
-  const handle = makeHandler({ db, root, graphEnabled });
+  const state = makeGraphState(root);
   const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on('line', (line) => {
+  rl.on('line', async (line) => {
     if (!line.trim()) return;
     let msg;
     try { msg = JSON.parse(line); } catch { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }) + '\n'); return; }
-    const res = handle(msg);
+    // Resolve enabled/db fresh per line so config changes need no restart.
+    const { enabled, db } = await state();
+    const res = makeHandler({ db, root, graphEnabled: enabled })(msg);
     if (res) process.stdout.write(JSON.stringify(res) + '\n');
   });
 }
