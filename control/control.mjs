@@ -12,7 +12,7 @@
  *   control.mjs pause [--reason "..."] | resume
  *   control.mjs kill --id <session> | kill-all
  */
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -41,6 +41,22 @@ async function audit(base, verb, args) {
   await mkdir(base, { recursive: true });
   const rec = redact({ ts: new Date().toISOString(), verb, by: args.by, repo: args.repo, ticket: args.ticket, id: args.id });
   await appendFile(join(base, 'audit.jsonl'), JSON.stringify(rec) + '\n', 'utf8');
+}
+
+/**
+ * The last `limit` audit records, newest-first (C3/#66). Records were already
+ * redacted at write time, so this never re-exposes a secret. A missing or
+ * partially-written file yields as many valid records as parse — never throws.
+ */
+export async function readAudit(base, { limit = 50 } = {}) {
+  let raw;
+  try { raw = await readFile(join(base, 'audit.jsonl'), 'utf8'); } catch { return { ok: true, audit: [] }; }
+  const recs = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try { recs.push(JSON.parse(line)); } catch { /* skip half-written tail line */ }
+  }
+  return { ok: true, audit: recs.slice(-limit).reverse() };
 }
 
 /** Dispatch one verb. Returns {ok, ...}; unknown verbs are refused here. */
