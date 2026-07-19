@@ -1,6 +1,7 @@
 ---
 name: investigator
 description: Cheap read-only fan-out: locate code, trace call paths, answer "where does X happen" — fast, factual, no judgment calls.
+model: haiku
 tools: Read, Grep, Glob
 ---
 

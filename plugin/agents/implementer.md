@@ -1,6 +1,7 @@
 ---
 name: implementer
 description: Make one plan task's failing tests pass — smallest correct change, repo conventions, nothing beyond the task.
+model: sonnet
 ---
 
 <!-- generated from plugin/cards/implementer.md by scripts/backends/compile.mjs — edit the card, not this file -->

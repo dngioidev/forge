@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * Compile backend-neutral role cards → Claude-native subagent definitions
- * (spec §5). Agents carry NO model pin — the orchestrator passes the model at
- * spawn time from the roster. Read-only roles get read-only tool allowlists.
+ * Compile role cards → Claude-native subagent definitions (spec §5). Each agent
+ * carries an explicit `model:` pin sized to its job (MODELS below) so subagents
+ * never inherit the session's model by default. Read-only roles also get
+ * read-only tool allowlists.
  */
 import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname, resolve, basename } from 'node:path';
@@ -17,6 +18,26 @@ export const ROLES = [
   'implementer', 'reviewer', 'security', 'design-reviewer', 'scoper',
   'test-architect', 'devops', 'designer', 'investigator', 'librarian', 'second-opinion',
 ];
+
+/**
+ * Per-role model pin (#101) — "enough to do, not too generous":
+ *   haiku  — pure search/lookup, safe to be cheap
+ *   sonnet — reasoning + writing, and the review/security gates (don't skimp on the safety net)
+ *   opus   — only second-opinion: its whole value is stronger independent eyes, and it's on-demand
+ */
+export const MODELS = {
+  investigator: 'haiku',
+  librarian: 'haiku',
+  reviewer: 'sonnet',
+  security: 'sonnet',
+  scoper: 'sonnet',
+  'test-architect': 'sonnet',
+  implementer: 'sonnet',
+  designer: 'sonnet',
+  'design-reviewer': 'sonnet',
+  devops: 'sonnet',
+  'second-opinion': 'opus',
+};
 
 /** Read-only roles (spec §13 blast-radius control). Reviewer-shaped roles get Bash for diffs/tests. */
 const TOOLS = {
@@ -33,8 +54,9 @@ const TOOLS = {
 export function compileCard(role, cardBody) {
   const missionMatch = /## Mission\r?\n(.+?)(?:\r?\n)/s.exec(cardBody);
   const description = (missionMatch?.[1] ?? role).trim();
+  const model = MODELS[role] ? `\nmodel: ${MODELS[role]}` : '';
   const tools = TOOLS[role] ? `\ntools: ${TOOLS[role]}` : '';
-  return `---\nname: ${role}\ndescription: ${description}${tools}\n---\n\n<!-- generated from plugin/cards/${role}.md by scripts/backends/compile.mjs — edit the card, not this file -->\n\n${cardBody}`;
+  return `---\nname: ${role}\ndescription: ${description}${model}${tools}\n---\n\n<!-- generated from plugin/cards/${role}.md by scripts/backends/compile.mjs — edit the card, not this file -->\n\n${cardBody}`;
 }
 
 export async function compileAll({ cardsDir = CARDS_DIR, agentsDir = AGENTS_DIR } = {}) {
