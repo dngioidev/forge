@@ -70,6 +70,14 @@
   .ccol.alerts { grid-column:1 / -1; margin-top:12px; }
   .crow.alert.high b { color:var(--alarm); }
   .crow.alert.warn b { color:var(--spark); }
+  /* §3d quota panel (C8) */
+  .ccol.quota { grid-column:1 / -1; margin-top:12px; }
+  .quota .qrow { display:flex; align-items:center; gap:8px; font-size:12px; margin:4px 0; }
+  .quota .qbar { display:inline-block; width:120px; height:7px; background:var(--seam); position:relative; }
+  .quota .qfill { position:absolute; left:0; top:0; bottom:0; background:linear-gradient(90deg,var(--warm),var(--ember)); }
+  .quota .qtrend { color:var(--smoke); }
+  .quota .qcost { margin-top:6px; color:var(--smoke); font-size:12px; }
+  .quota code { color:var(--steel); }
   .cverbs { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
   .cverbs button[data-destructive] { border-color:var(--warm); color:var(--warm); }
   .cverbs button.armed { border-color:var(--alarm); color:var(--alarm); }

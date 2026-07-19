@@ -20,8 +20,36 @@ import { runControl, readAudit, parseArgs as parseControlArgs, defaultBase as co
 import * as controlQueue from '../control/lib/queue.mjs';
 import * as controlMachine from '../control/lib/machine.mjs';
 import { read as readRepoJournal } from '../plugin/scripts/lib/journal.mjs';
+import { readSamples as readQuotaSamples, summarizeQuota } from '../plugin/scripts/lib/quota.mjs';
 import { deriveAlerts } from './lib/alerts.mjs';
 import { notify } from './lib/toast.mjs';
+
+/**
+ * Aggregate quota across configured repos (C8). 5h/7d are account-global, so the
+ * newest sample overall is the freshest quota; cost/day sums each repo's per-day
+ * peak. Repos without a captured quota file are skipped (opt-in).
+ */
+async function aggregateQuota(repos = []) {
+  const all = [];
+  for (const cwd of repos) {
+    const s = await readQuotaSamples(cwd).catch(() => []);
+    for (const x of s) all.push({ ...x, _repo: cwd });
+  }
+  if (!all.length) return { count: 0, latest: null, trend: null, costByDay: [] };
+  all.sort((a, b) => (Date.parse(a.ts ?? 0) || 0) - (Date.parse(b.ts ?? 0) || 0));
+  const summary = summarizeQuota(all);
+  const perRepoDay = new Map();
+  for (const x of all) {
+    const day = typeof x.ts === 'string' ? x.ts.slice(0, 10) : null;
+    if (!day || typeof x.cost !== 'number') continue;
+    const k = `${x._repo}|${day}`;
+    if (x.cost > (perRepoDay.get(k) ?? 0)) perRepoDay.set(k, x.cost);
+  }
+  const dayTotals = new Map();
+  for (const [k, cost] of perRepoDay) { const day = k.split('|')[1]; dayTotals.set(day, (dayTotals.get(day) ?? 0) + cost); }
+  const costByDay = [...dayTotals.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, cost]) => ({ day, cost }));
+  return { ...summary, costByDay };
+}
 
 /** Light per-repo journal tails for the alert watcher — tolerant of unreadable repos. */
 async function repoJournals(repos = []) {
@@ -112,7 +140,8 @@ export function makeApp(config, log = () => {}) {
         const cs = await controlStateOf(controlBase);
         const alerts = deriveAlerts({ repos: await repoJournals(config.repos ?? []), sessions: cs.sessions, now: Date.now() });
         fireNewToasts(alerts);
-        return send(200, { ...cs, alerts });
+        const quota = await aggregateQuota(config.repos ?? []);
+        return send(200, { ...cs, alerts, quota });
       }
       if (req.method === 'POST' && path === '/api/control') {
         let raw = '';
