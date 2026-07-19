@@ -3,14 +3,21 @@
  * board create — issue + parent sub-issue + board item + fields + assignee,
  * one command, resumable (spec §6 idempotency law; plan T2, AC-2.1).
  */
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { getIssueNode, addSubIssue } from '../lib/issues.mjs';
 
+/** Defaults applied to a single ticket spec (flags or a --from JSON entry). */
+export function withDefaults(spec = {}) {
+  return { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', parent: null, assignee: null, ...spec };
+}
+
 export function parseArgs(argv) {
-  const a = { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', parent: null, assignee: null };
+  const a = withDefaults();
+  a.from = null;
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--title') a.title = argv[++i];
@@ -21,8 +28,30 @@ export function parseArgs(argv) {
     else if (k === '--status') a.status = argv[++i];
     else if (k === '--parent') a.parent = Number(argv[++i]);
     else if (k === '--assignee') a.assignee = argv[++i];
+    else if (k === '--from') a.from = argv[++i];
   }
   return a;
+}
+
+/**
+ * Batch create from a list of specs (#87). Runs the same idempotent create per
+ * entry, sequentially, and CONTINUES past a per-entry failure — one bad ticket
+ * doesn't sink the rest. Returns a summary + per-entry results. Run it in the
+ * background for large batches (it's N round-trips, one invocation).
+ */
+export async function runCreateBatch(ctx, specs, log = console.log) {
+  if (!Array.isArray(specs) || specs.length === 0) return { ok: false, error: '--from file must be a non-empty JSON array of ticket specs' };
+  const results = [];
+  let created = 0; let skipped = 0; let failed = 0;
+  for (const [i, raw] of specs.entries()) {
+    const spec = withDefaults(raw);
+    log(`[${i + 1}/${specs.length}] ${spec.title ?? '(no title)'}`);
+    const r = await runCreate(ctx, spec, log);
+    if (r.ok) { r.resumed ? skipped++ : created++; results.push({ ok: true, title: spec.title, number: r.number }); }
+    else { failed++; results.push({ ok: false, title: spec.title, error: r.error }); log(`  ✗ ${r.error}`); }
+  }
+  log(`batch: ${created} created, ${skipped} resumed, ${failed} failed of ${specs.length}`);
+  return { ok: failed === 0, created, skipped, failed, results };
 }
 
 export async function runCreate(ctx, args, log = console.log) {
@@ -40,6 +69,7 @@ export async function runCreate(ctx, args, log = console.log) {
   );
   if (!found.ok) return { ok: false, error: found.stderr || 'issue list failed' };
   let issue = found.json.find((i) => i.title === args.title) ?? null;
+  const resumed = !!issue;
   if (issue) {
     log(`issue: exists #${issue.number} (resuming)`);
   } else {
@@ -93,7 +123,7 @@ export async function runCreate(ctx, args, log = console.log) {
     log(`field: ${fieldKey}=${wanted}`);
   }
 
-  return { ok: true, number: issue.number, itemId };
+  return { ok: true, number: issue.number, itemId, resumed };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
@@ -101,7 +131,14 @@ if (isMain) {
   const gh = makeGh(run);
   makeBoardCtx({ gh, cwd: process.cwd() }).then(async (ctx) => {
     if (!ctx.ok) { console.error(ctx.error); process.exit(1); }
-    const res = await runCreate(ctx, parseArgs(process.argv.slice(2)));
+    const args = parseArgs(process.argv.slice(2));
+    if (args.from) {
+      let specs;
+      try { specs = JSON.parse(await readFile(args.from, 'utf8')); } catch (e) { console.error(`--from: cannot read/parse ${args.from}: ${e.message}`); process.exit(1); }
+      const res = await runCreateBatch(ctx, specs);
+      process.exit(res.ok ? 0 : 1); // failures already logged per-entry
+    }
+    const res = await runCreate(ctx, args);
     if (!res.ok) { console.error(`create failed: ${res.error}`); process.exit(1); }
     console.log(`created/verified #${res.number}`);
   });

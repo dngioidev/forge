@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBoardCtx } from '../plugin/scripts/lib/boardctx.mjs';
-import { runCreate, parseArgs as createArgs } from '../plugin/scripts/board/create.mjs';
+import { runCreate, runCreateBatch, parseArgs as createArgs } from '../plugin/scripts/board/create.mjs';
+import { buildAddSubIssue, addSubIssue } from '../plugin/scripts/lib/issues.mjs';
+import { runReparent, parseArgs as reparentArgs } from '../plugin/scripts/board/reparent.mjs';
 import { runMove, parseArgs as moveArgs } from '../plugin/scripts/board/move.mjs';
 import { runComment, parseArgs as commentArgs } from '../plugin/scripts/board/comment.mjs';
 import { runReceipt } from '../plugin/scripts/board/receipt.mjs';
@@ -103,6 +105,62 @@ describe('create (AC-2.1)', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain('valid priority keys');
     expect(calls.some((c) => c.startsWith('issue'))).toBe(false);
+  });
+});
+
+describe('batch create --from (AC-87.1, #87)', () => {
+  it('AC-87.1: creates each spec, continues past a per-entry failure, returns a summary', async () => {
+    const { ctx } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/20\n' }],
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreateBatch(ctx, [
+      { title: 'Alpha' },                     // valid → created
+      { title: 'Beta', priority: 'urgent' },  // invalid option → fails before any gh, batch continues
+    ], noop);
+    expect(res).toMatchObject({ ok: false, created: 1, failed: 1 });
+    expect(res.results[0]).toMatchObject({ ok: true, title: 'Alpha' });
+    expect(res.results[1]).toMatchObject({ ok: false, title: 'Beta' });
+  });
+
+  it('AC-87.1: a non-array / empty file is refused', async () => {
+    const { ctx } = await ctxWith([]);
+    expect((await runCreateBatch(ctx, [], noop)).ok).toBe(false);
+    expect((await runCreateBatch(ctx, null, noop)).ok).toBe(false);
+  });
+});
+
+describe('reparent (AC-87.2, AC-87.3, #87)', () => {
+  it('AC-87.2: addSubIssue carries replaceParent only when asked', async () => {
+    expect(buildAddSubIssue(true)).toContain('replaceParent: true');
+    expect(buildAddSubIssue(false)).not.toContain('replaceParent');
+    let seen = null;
+    const gh = async (a) => { seen = a; return { ok: true, json: { data: { addSubIssue: { issue: { number: 5 } } } } }; };
+    await addSubIssue(gh, 'P', 'C', { replaceParent: true });
+    expect(seen.find((x) => x.startsWith('query='))).toContain('replaceParent: true');
+  });
+
+  it('AC-87.3: moves a child to a new parent via replaceParent', async () => {
+    const f = fakeGh([
+      [(j) => j.includes('parent { number }') && j.includes('number=5'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I5', parent: { number: 9 } } } } }) }],
+      [(j) => j.includes('parent { number }') && j.includes('number=3'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I3', parent: null } } } }) }],
+      [(j) => j.includes('addSubIssue'), { stdout: JSON.stringify({ data: { addSubIssue: { issue: { number: 5 } } } }) }],
+    ]);
+    const res = await runReparent(f.gh, 'dngioidev', 'forge', reparentArgs(['--issue', '5', '--parent', '3']), noop);
+    expect(res).toMatchObject({ ok: true, moved: true, from: 9, to: 3 });
+    expect(f.calls.some((c) => c.includes('replaceParent: true'))).toBe(true);
+  });
+
+  it('AC-87.3: no-op when already under the parent; refuses missing/self args', async () => {
+    const f = fakeGh([
+      [(j) => j.includes('parent { number }') && j.includes('number=5'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I5', parent: { number: 3 } } } } }) }],
+    ]);
+    expect(await runReparent(f.gh, 'o', 'r', reparentArgs(['--issue', '5', '--parent', '3']), noop)).toMatchObject({ ok: true, moved: false });
+    expect((await runReparent(f.gh, 'o', 'r', reparentArgs(['--issue', '5']), noop)).ok).toBe(false);
+    expect((await runReparent(f.gh, 'o', 'r', reparentArgs(['--issue', '5', '--parent', '5']), noop)).ok).toBe(false);
   });
 });
 
