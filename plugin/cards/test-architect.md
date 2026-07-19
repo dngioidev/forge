@@ -17,7 +17,7 @@ Turn acceptance criteria into a test plan and failing tests — before implement
 - No global coverage theater — cover the changed behavior thoroughly, skip vanity tests.
 
 ## Output contract
-Markdown body (test plan: AC map + edge matrix + layers), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (test plan: AC map + edge matrix + layers), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

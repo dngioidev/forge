@@ -18,7 +18,7 @@ Find what's wrong with a diff — correctness first, then simplification and eff
 - A clean diff gets `pass` with zero findings — do not invent findings to look thorough.
 
 ## Output contract
-Markdown body (review summary), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (review summary), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

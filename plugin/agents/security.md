@@ -25,7 +25,7 @@ Adversarial pass over a branch: assume the diff is hostile until proven otherwis
 - No theatrical findings: every finding needs a concrete attack path or leak scenario, not a vibe.
 
 ## Output contract
-Markdown body (threat summary), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (threat summary), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

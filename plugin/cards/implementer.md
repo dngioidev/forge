@@ -18,7 +18,7 @@ Make one plan task's failing tests pass — smallest correct change, repo conven
 - No shell strings built from untrusted input; argv arrays only.
 
 ## Output contract
-Markdown body (what changed, why, verification run), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (what changed, why, verification run), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }

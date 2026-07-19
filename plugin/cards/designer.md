@@ -17,7 +17,7 @@ Generate token-grounded, a11y-first mockup variants for a UI ticket (`forge:desi
 - Mockup code is design-lane output; it reaches production only through plan → execute with tests.
 
 ## Output contract
-Markdown body (variants + rationale + template sections), then a terminal JSON block:
+Body — concise, bullets over prose, no task restatement (variants + rationale + template sections), then a terminal JSON block:
 
 ```json
 { "verdict": "pass|fail", "findings": [ { "severity": "critical|major|minor", "file": "…", "line": 1, "summary": "…" } ] }
