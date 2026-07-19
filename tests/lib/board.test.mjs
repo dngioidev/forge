@@ -51,6 +51,17 @@ describe('replaceStatusOptions mutation shape (AC-B4.1, #35)', () => {
   });
 });
 
+describe('Program type seeded (AC-89.1, #89)', () => {
+  it('AC-89.1: STANDARD_FIELDS.type includes program as a first-class tracker type', async () => {
+    const { STANDARD_FIELDS } = await import('../../plugin/scripts/lib/board.mjs');
+    const keys = STANDARD_FIELDS.type.map((o) => o.key);
+    expect(keys).toContain('program');
+    expect(keys).toEqual(expect.arrayContaining(['program', 'epic', 'item', 'bug', 'test']));
+    const program = STANDARD_FIELDS.type.find((o) => o.key === 'program');
+    expect(program.name).toBe('Program'); // the name a fresh init seeds as a single-select option
+  });
+});
+
 describe('createSingleSelectField mutation shape (AC-B11.1, #55)', () => {
   it('AC-B11.1: inline literals, bare enum colors, no -F variables', async () => {
     const { buildCreateFieldMutation, createSingleSelectField, STANDARD_FIELDS } = await import('../../plugin/scripts/lib/board.mjs');

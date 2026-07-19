@@ -28,6 +28,7 @@ export const STANDARD_FIELDS = {
     { key: 'xl', name: 'XL', color: 'RED' },
   ],
   type: [
+    { key: 'program', name: 'Program', color: 'GRAY' }, // a tracker above epics (#89 — iomanage feedback)
     { key: 'epic', name: 'Epic', color: 'PURPLE' },
     { key: 'item', name: 'Item', color: 'BLUE' },
     { key: 'bug', name: 'Bug', color: 'RED' },
