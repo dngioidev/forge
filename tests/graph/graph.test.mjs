@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb, resetDb, upsertNode, upsertEdge, deleteFileScope, counts, NODE_KINDS } from '../../plugin/mcp/graph/db.mjs';
 import { rebuild, indexFiles, fileKind, loadTsMorph } from '../../plugin/mcp/graph/indexer.mjs';
 import { findComponent, whoUses, similarProps, blastRadius, codeForTicket, reuseCandidates } from '../../plugin/mcp/graph/queries.mjs';
-import { makeHandler, validateInput, canonicalize, TOOLS } from '../../plugin/mcp/graph/server.mjs';
+import { makeHandler, validateInput, canonicalize, TOOLS, makeGraphState } from '../../plugin/mcp/graph/server.mjs';
 import { parseTicketLog, scanTickets, installHook, HOOK_MARKER } from '../../plugin/scripts/graph/graphctl.mjs';
 import { runDoctor } from '../../plugin/scripts/doctor.mjs';
 import { fakeGh, REPO_VIEW, AUTH_OK } from '../helpers/fakegh.mjs';
@@ -112,6 +112,33 @@ describe('MCP stdio protocol (AC-8.3)', () => {
     const res = h({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'find_component', arguments: { query: 'x' } } });
     expect(res.result.isError).toBe(true);
     expect(res.result.content[0].text).toContain('features.graph is off');
+  });
+
+  it('AC-105.1: graph state re-reads features.graph per call — toggle needs no restart, db opened lazily + memoized', async () => {
+    let enabled = false;
+    const opened = [];
+    const open = () => { const db = { closed: false, close() { this.closed = true; } }; opened.push(db); return db; };
+    const state = makeGraphState(FIXTURE, { isEnabled: async () => enabled, open });
+
+    // off at startup: no db opened
+    expect(await state()).toMatchObject({ enabled: false, db: null });
+    expect(opened.length).toBe(0);
+
+    // flip on mid-session (as `graphctl rebuild` would): next call sees it, db opened lazily
+    enabled = true;
+    const s1 = await state();
+    expect(s1.enabled).toBe(true);
+    expect(s1.db).toBe(opened[0]);
+    expect(opened.length).toBe(1);
+
+    // memoized — a second enabled call reuses the same db, no reopen
+    expect((await state()).db).toBe(opened[0]);
+    expect(opened.length).toBe(1);
+
+    // flip off: db closed and dropped
+    enabled = false;
+    expect(await state()).toMatchObject({ enabled: false, db: null });
+    expect(opened[0].closed).toBe(true);
   });
 });
 
