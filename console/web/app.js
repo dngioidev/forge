@@ -107,14 +107,20 @@ export function controlPanel(state, now = Date.now()) {
     `<div class="crow">${esc(relativeTime(a.ts, now))} · <b>${esc(a.verb)}</b>${a.repo ? ' ' + esc(a.repo) : ''}${a.ticket ? ' #' + esc(a.ticket) : ''} <span class="cby">${esc(a.by ?? '')}</span></div>`, 'no audit yet');
   const buttons = CONTROL_VERBS.map((v) =>
     `<button data-verb="${esc(v)}"${CONTROL_DESTRUCTIVE.includes(v) ? ' data-destructive="1"' : ''}>${esc(v)}</button>`).join('');
-  const banner = s.paused ? `<div class="cbanner">⏸ PAUSED — the runner spawns nothing until resumed (human-only clear)</div>` : '';
-  return `<h2>forge-control${s.paused ? ' · paused' : ''}</h2>${banner}
+  const pausedBanner = s.paused ? `<div class="cbanner">⏸ PAUSED — the runner spawns nothing until resumed (human-only clear)</div>` : '';
+  // §3c alerts (C7): a red banner when anything is wrong + a feed of the events.
+  const alerts = s.alerts ?? [];
+  const alertBanner = alerts.length ? `<div class="cbanner alert" role="alert">🔴 ${alerts.length} alert${alerts.length === 1 ? '' : 's'} — ${esc(alerts[0].message)}</div>` : '';
+  const alertFeed = alerts.length ? `<div class="ccol alerts"><h3>alerts</h3>${alerts.slice(0, 12).map((a) =>
+    `<div class="crow alert ${esc(a.severity)}"><b>${esc(a.kind)}</b> ${esc(a.repo ?? '')}${a.ticket ? ' ' + esc(a.ticket) : ''}</div>`).join('')}</div>` : '';
+  return `<h2>forge-control${s.paused ? ' · paused' : ''}${alerts.length ? ' · ' + alerts.length + ' alert' + (alerts.length === 1 ? '' : 's') : ''}</h2>${alertBanner}${pausedBanner}
     <div class="cverbs">${buttons}</div>
     <div class="cgrid">
       <div class="ccol"><h3>queue</h3>${queue}</div>
       <div class="ccol"><h3>sessions</h3>${sessions}</div>
       <div class="ccol"><h3>audit</h3>${audit}</div>
     </div>
+    ${alertFeed}
     <div class="errline" role="alert"></div>`;
 }
 
