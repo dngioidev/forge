@@ -10,12 +10,22 @@ import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run } from './lib/exec.mjs';
+import { readdir } from 'node:fs/promises';
 import { read as readJournal } from './lib/journal.mjs';
 import { parseLedger, LEDGER_RELPATH } from './lib/ledger.mjs';
 import { parseBranch } from './lib/ticket.mjs';
-import { buildTrace, conformance, ledgerPlanRef, extractPlanFiles } from './lib/trace.mjs';
+import { buildTrace, conformance, resolvePlan } from './lib/trace.mjs';
 
 async function readMaybe(path) { try { return await readFile(path, 'utf8'); } catch { return null; } }
+
+/** The docs/plans/*.md listing [{path, text}], name-sorted (date-prefixed → newest last). */
+async function readPlanDocs(cwd) {
+  let names;
+  try { names = (await readdir(join(cwd, 'docs', 'plans'))).filter((f) => f.endsWith('.md')).sort(); } catch { return []; }
+  const out = [];
+  for (const n of names) out.push({ path: `docs/plans/${n}`, text: (await readMaybe(join(cwd, 'docs', 'plans', n))) ?? '' });
+  return out;
+}
 
 /** Best-effort trail phases from the ticket's gh comments (skipped if gh/ticket absent). */
 async function trailPhases(ticket, execFn) {
@@ -37,19 +47,18 @@ export async function runTrace(cwd, { execFn = run, base = 'main', online = true
 
   const ledgerText = (await readMaybe(join(cwd, LEDGER_RELPATH))) ?? '';
   const ledgerTasks = parseLedger(ledgerText);
-  const planRef = ledgerPlanRef(ledgerText);
-  const planText = planRef ? await readMaybe(resolve(cwd, planRef)) : null;
-  const planFiles = extractPlanFiles(planText ?? '');
+  // #76: resolve the plan from the ledger ref first, else the ticket's committed plan doc.
+  const plan = resolvePlan({ ledgerText, ticket: parsed.ticket, plans: await readPlanDocs(cwd) });
 
   const diff = await execFn('git', ['-C', cwd, 'diff', '--name-only', `${base}...HEAD`]);
   const touchedFiles = diff.ok ? diff.stdout.split(/\r?\n/).filter(Boolean) : [];
 
   const journal = await readJournal(cwd);
   const prMatch = /\bpr[-\s]?#?(\d+)/i.exec(ledgerText) ?? null; // best-effort PR from ledger notes
-  const trace = buildTrace({ branch, ledgerTasks, ledgerPlan: planRef, touchedFiles, journalEvents: journal.events, prNumber: prMatch ? Number(prMatch[1]) : null });
+  const trace = buildTrace({ branch, ledgerTasks, ledgerPlan: plan.ref, touchedFiles, journalEvents: journal.events, prNumber: prMatch ? Number(prMatch[1]) : null });
 
   const phasesSeen = online ? await trailPhases(parsed.ticket, execFn) : null;
-  const badge = conformance({ branch, ledgerText, planExists: planText != null, touchedFiles, planFiles, phasesSeen });
+  const badge = conformance({ branch, ledgerText, planExists: plan.found, planSource: plan.source, planRef: plan.ref, touchedFiles, planFiles: plan.files, phasesSeen });
 
   // ---- render ----
   const glyph = badge.level === 'green' ? '🟢' : '🟡';
