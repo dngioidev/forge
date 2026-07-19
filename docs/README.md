@@ -32,6 +32,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 ## Decisions (ADRs)
 
 - [ADR-0001 — Status field options](decisions/0001-status-field-options.md) — built-in Status options are GraphQL-mutable but replacement mints new IDs; init replaces on fresh (empty) projects only, maps-as-is on live boards.
+- [ADR-0002 — Console/control distribution](decisions/0002-console-control-distribution.md) — the console + control plane ship as repo tooling run from a checkout, not in the packaged plugin; it's a machine-global operator tool, not a per-project artifact (#91).
 
 ## Guides
 
