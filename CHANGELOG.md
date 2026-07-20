@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.0 — 2026-07-20
+
+### Features
+
+- forge:execute-agents — subagent fan-out mode for execute (#118) ([#118](https://github.com/dngioidev/forge/issues/118))
+- "Won't do" status + board/close.mjs for special-reason closures (#117) ([#117](https://github.com/dngioidev/forge/issues/117))
+- findItemByIssue lag-fallback + optional Phase field (#114) ([#114](https://github.com/dngioidev/forge/issues/114))
+
 ## v0.6.0 — 2026-07-19
 
 ### Features
