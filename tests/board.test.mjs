@@ -8,6 +8,7 @@ import { buildAddSubIssue, addSubIssue } from '../plugin/scripts/lib/issues.mjs'
 import { runReparent, parseArgs as reparentArgs } from '../plugin/scripts/board/reparent.mjs';
 import { runMove, parseArgs as moveArgs } from '../plugin/scripts/board/move.mjs';
 import { runComment, parseArgs as commentArgs } from '../plugin/scripts/board/comment.mjs';
+import { runClose, parseArgs as closeArgs } from '../plugin/scripts/board/close.mjs';
 import { runReceipt } from '../plugin/scripts/board/receipt.mjs';
 import { runLog } from '../plugin/scripts/board/log.mjs';
 import { runDigest, renderChildTable, computeFlowMetrics, renderFlow, cycleDays } from '../plugin/scripts/board/digest.mjs';
@@ -21,7 +22,7 @@ const CFG = {
     projectNumber: 8,
     projectId: 'PVT_test',
     fields: {
-      status: { id: 'PVTSSF_s', options: { backlog: 'sb', ready: 'sr', inProgress: 'sp', inReview: 'sv', blocked: 'sk', done: 'sd' } },
+      status: { id: 'PVTSSF_s', options: { backlog: 'sb', ready: 'sr', inProgress: 'sp', inReview: 'sv', blocked: 'sk', done: 'sd', wontDo: 'sw' } },
       priority: { id: 'PVTSSF_p', options: { p0: 'a', p1: 'b', p2: 'c' } },
       size: { id: 'PVTSSF_z', options: { xs: '1', s: '2', m: '3', l: '4', xl: '5' } },
       type: { id: 'PVTSSF_t', options: { epic: 'e', item: 'i', bug: 'g', test: 't' } },
@@ -299,6 +300,50 @@ describe('comment (AC-2.3)', () => {
     const res = await runComment(ctx, commentArgs(['--issue', '2', '--phase', 'vibes', '--body', 'x']), noop);
     expect(res.ok).toBe(false);
     expect(res.error).toContain('valid:');
+  });
+});
+
+describe('close (AC-117)', () => {
+  const commentRoutes = (ref) => [
+    [(j) => j.startsWith('api repos/') && j.includes('/comments?'), () => ({ stdout: JSON.stringify(ref.comments) })],
+    [(j) => j.startsWith('api repos/') && j.endsWith('/comments') === false && j.includes('-f'), () => { ref.comments = [{ id: 5, body: '<!-- forge:trail:closed -->' }]; return { stdout: JSON.stringify({ id: 5 }) }; }],
+  ];
+
+  it('AC-117.1: --reason not-planned closes NOT_PLANNED, sets Won\'t do, trails (#117)', async () => {
+    const ref = { comments: [] };
+    const { ctx, calls } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 12 }, status: 'Done' }])],
+      ['project item-edit', { stdout: '' }],
+      ...commentRoutes(ref),
+    ]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned', '--note', 'superseded by ADR-0003']), noop);
+    expect(res).toMatchObject({ ok: true, status: 'wontDo' });
+    expect(calls.some((c) => c.startsWith('issue close') && c.includes('not planned'))).toBe(true);
+    expect(calls.some((c) => c.startsWith('project item-edit') && c.includes('sw'))).toBe(true); // wontDo option id
+    expect(calls.some((c) => c.includes('closed — not planned'))).toBe(true);
+  });
+
+  it('AC-117.2: already-closed issue reconciles the board without re-closing; completed -> Done (#117)', async () => {
+    const ref = { comments: [] };
+    const { ctx, calls } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'CLOSED' }) }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 33 }, status: 'Ready' }])],
+      ['project item-edit', { stdout: '' }],
+      ...commentRoutes(ref),
+    ]);
+    const res = await runClose(ctx, closeArgs(['--issue', '33', '--reason', 'completed']), noop);
+    expect(res).toMatchObject({ ok: true, status: 'done' });
+    expect(calls.some((c) => c.startsWith('issue close'))).toBe(false); // already closed → no re-close
+    expect(calls.some((c) => c.startsWith('project item-edit') && c.includes('sd'))).toBe(true); // done option id
+  });
+
+  it('rejects an unknown --reason', async () => {
+    const { ctx } = await ctxWith([]);
+    const res = await runClose(ctx, closeArgs(['--issue', '1', '--reason', 'bogus']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/--reason must be one of/);
   });
 });
 

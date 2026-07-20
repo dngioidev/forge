@@ -13,9 +13,9 @@ const BOARD8 = {
   projectId: 'PVT_kwHOCkJQ784BdZrh',
   fields: [
     { id: 'PVTSSF_lAHOCkJQ784BdZrhzhX7emI', name: 'Status', options: [
-      // six-status set since the #32 migration (ids re-minted by replaceStatusOptions)
+      // six-status set since the #32 migration; Won't do appended in #117 (ids preserved)
       { id: '8a1e2226', name: 'Backlog' }, { id: 'e90d0eb6', name: 'Ready' }, { id: '2a209b69', name: 'In progress' },
-      { id: 'a9159ac9', name: 'In review' }, { id: '5b1d391c', name: 'Blocked / Needs decision' }, { id: '7c5d9faa', name: 'Done' }] },
+      { id: 'a9159ac9', name: 'In review' }, { id: '5b1d391c', name: 'Blocked / Needs decision' }, { id: '7c5d9faa', name: 'Done' }, { id: '68b3526e', name: "Won't do" }] },
     { id: 'PVTSSF_lAHOCkJQ784BdZrhzhX7esI', name: 'Priority', options: [
       { id: '66c7f4b7', name: 'P0' }, { id: '23a624d0', name: 'P1' }, { id: 'd9b45a49', name: 'P2' }] },
     { id: 'PVTSSF_lAHOCkJQ784BdZrhzhX7esU', name: 'Size', options: [
@@ -28,7 +28,7 @@ const BOARD8 = {
 const FRESH_FULL_FIELDS = [
   { id: 'PVTSSF_new1', name: 'Status', options: [
     { id: 's1', name: 'Backlog' }, { id: 's2', name: 'Ready' }, { id: 's3', name: 'In progress' },
-    { id: 's4', name: 'In review' }, { id: 's5', name: 'Blocked / Needs decision' }, { id: 's6', name: 'Done' }] },
+    { id: 's4', name: 'In review' }, { id: 's5', name: 'Blocked / Needs decision' }, { id: 's6', name: 'Done' }, { id: 's7', name: "Won't do" }] },
   { id: 'PVTSSF_new2', name: 'Priority', options: [{ id: 'p1', name: 'P0' }, { id: 'p2', name: 'P1' }, { id: 'p3', name: 'P2' }] },
   { id: 'PVTSSF_new3', name: 'Size', options: [{ id: 'z1', name: 'XS' }, { id: 'z2', name: 'S' }] },
   { id: 'PVTSSF_new4', name: 'Type', options: [{ id: 't1', name: 'Epic' }, { id: 't2', name: 'Item' }] },
