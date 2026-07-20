@@ -25,6 +25,15 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [SP11 — Maintain](plans/2026-07-17-sp11-maintain.md) — tasks T1–T5 for epic #14: outdated scan, patch/minor batch plan, majors bundled, CVE triage with SLA.
 - [Local web console](plans/2026-07-17-local-web-console.md) — tasks T1–T4 for #37: localhost serve, state + decide APIs, self-contained page.
 - [Console UI v2](plans/2026-07-17-console-ui-v2.md) — tasks T1–T5 for #39: decision-flow defect fixes, a11y floor, identity variants + owner pick.
+- [C1 — Control queue](plans/2026-07-18-c1-control-queue.md) — control queue + machine registry + CLI (forge-control epic; see the forge-control spec).
+- [C2 — Control runner](plans/2026-07-19-c2-control-runner.md) — the forge-control runner that spawns + supervises headless sessions.
+- [C3 — Console control tab](plans/2026-07-19-c3-console-control-tab.md) — the console's control tab: sessions, queue, command audit.
+- [C4 — situationgate paused flag](plans/2026-07-19-c4-situationgate-paused.md) — situationgate reads the machine-level paused flag (global kill switch).
+- [C5 — Dogfood end-to-end](plans/2026-07-19-c5-dogfood-end-to-end.md) — one real ticket end-to-end through the control queue.
+- [C6 — Trace + conformance](plans/2026-07-19-c6-trace-conformance.md) — agent-work trace + structure-conformance badge.
+- [C7 — Alerts](plans/2026-07-19-c7-alerts.md) — alerts on session/queue events.
+- [C8 — Quota panel](plans/2026-07-19-c8-quota-panel.md) — Claude Code quota panel in the console.
+- [Batch close](plans/2026-07-20-batch-close.md) — tasks for #123: comma-separated `--issue` in `board/close.mjs`.
 
 ## Design specs
 
@@ -35,6 +44,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [ADR-0001 — Status field options](decisions/0001-status-field-options.md) — built-in Status options are GraphQL-mutable but replacement mints new IDs; init replaces on fresh (empty) projects only, maps-as-is on live boards.
 - [ADR-0002 — Console/control distribution](decisions/0002-console-control-distribution.md) — *(superseded by ADR-0003)* the console + control plane ship as repo tooling run from a checkout, not in the packaged plugin (#91).
 - [ADR-0003 — Remove forge-control + console](decisions/0003-remove-control-console.md) — the local control plane + console are removed (unused for a solo interactive workflow; token/scope reduction). Preserved in the v0.5.0 tag; the pipeline (skills/board/gates/care) is unaffected (#95).
+- [ADR-0004 — Remove the multi-backend plane](decisions/0004-remove-multi-backend-plane.md) — the CLI role-swap / multi-backend plane (Plane B) is removed as unwired dead weight; role subagents stay Claude-native. Preserved in the v0.5.0 tag (#99).
 
 ## Guides
 
@@ -43,3 +53,8 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, environment.
 - [Rollback runbook](guides/rollback-runbook.md) — find the previous digest, redeploy it (one command), verify, record; forward-only-migration exception.
 - [Data-recovery runbook](guides/data-recovery-runbook.md) — restore → verify → postmortem; never debug against the only copy.
+
+## Feedback
+
+- [iomanage feedback 0.1.0→0.3.0](feedback/iomanage-feedback-forge-0.3.0.md) — observed usage feedback across the early versions.
+- [iomanage feedback ~0.5.0](feedback/iomanage-feedback-forge-0.5.0.md) — session feedback on forge ~0.5.0.
