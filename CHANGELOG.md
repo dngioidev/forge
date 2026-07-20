@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.0 — 2026-07-20
+
+### Features
+
+- docsync gate + autopilot context/cost bounding (#136, #137) (#138) ([#136](https://github.com/dngioidev/forge/issues/136) [#137](https://github.com/dngioidev/forge/issues/137) [#138](https://github.com/dngioidev/forge/issues/138))
+
+### Docs
+
+- add to handbook + route index (#134) (#135) ([#134](https://github.com/dngioidev/forge/issues/134) [#135](https://github.com/dngioidev/forge/issues/135))
+
 ## v0.9.0 — 2026-07-20
 
 ### Features
