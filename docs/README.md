@@ -6,6 +6,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 - [Platform design spec](specs/2026-07-15-forge-platform-design.md) — the whole platform: pipeline skills, agent roster + backends, board automation, team model, escalation, learning loop, graph RAG, console. Start here.
 - [forge-control spec](specs/2026-07-18-forge-control.md) — local agent management & control plane (SP9b local-first): orchestration mechanics, guardrails, epics C1–C5 on board #12.
+- [forge:autopilot spec](specs/2026-07-21-forge-autopilot.md) — continuous autonomous board-clearing engine (epic #125, v0.9.0): the loop, selection order, the auto-merge bar that replaces the human PR gate, the only-pauses escalation model, run ledger + safety rails.
 
 ## Plans
 

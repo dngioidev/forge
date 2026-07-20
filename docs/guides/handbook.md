@@ -41,10 +41,12 @@ The normal path, with your touch-points marked **[you]**:
 
 **Autonomous variant:** **`forge:deliver`** runs steps 5→7 (plan → execute → ship) end-to-end on subagents for one triaged ticket — a `planner` drafts the plan, `execute-agents` does the per-task loop, ship opens the PR — with a **single human gate: the PR review** (step 8). It still halts on spec §7 safety escalations (security-critical, denylist, deadlock, gate-fail ×2).
 
+**Board-clearing variant:** **`forge:autopilot`** (v0.9.0) runs `deliver` in a **continuous loop over the whole board**, one ticket at a time, until nothing actionable remains — and it **removes even the PR gate**. Two additions over deliver: an **auto-triage front door** (a `backlog` ticket is triaged before delivery; one that stays under-specified is escalated and skipped, never guessed) and **auto-merge on green**. The trust reversal is deliberate — in place of your review, a strict **automated merge bar**: `ship` green + all mechanical gates + `reviewer`/`security` subagents pass with zero critical/high + **CI green** → squash-merge to main. It is **fail-closed: nothing merges on red** — any red is a fix wave, a repeated failure escalates. The **only** pauses are real escalations (product broken with no safe fix · a design/behaviour decision that isn't the engine's to make · under-specified ticket · critical security · deliver's §7 triggers), and each **parks one ticket while the loop continues**. It can **file new bugs/spikes/follow-ups** mid-run (linked + trail-noted) so surfaced work is tracked, not dropped. Safe-by-default opt-out: `features.autopilotAutoMerge: false` stops at the open PR instead of merging. One ticket at a time in v1; parallel via a worktree pool is designed-for but deferred. Spec: `docs/specs/2026-07-21-forge-autopilot.md`.
+
 ## 4. Your interaction points (the complete list)
 
 - **Decision comments** (`🚩 Decision needed` on an issue): reply with the option number or free text — on the GitHub issue or in-session. Both resume the pipeline identically.
-- **PR merges** — every one.
+- **PR merges** — every one (**except under `forge:autopilot`**, which auto-merges on a green bar; there your only touch-points are the escalations it parks).
 - **Spec/design/brainstorm approvals** — decision comments like any other.
 - **Environment-branch merges** — merging main into `staging` *is* the deploy authorization; nothing deploys without it. Production promote is a decision-gated human act.
 - **`terraform apply`** — never automatic, ever.
