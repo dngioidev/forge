@@ -17,6 +17,7 @@ export const AGENTS_DIR = join(PLUGIN_ROOT, 'agents');
 export const ROLES = [
   'implementer', 'reviewer', 'security', 'design-reviewer', 'scoper',
   'test-architect', 'devops', 'designer', 'investigator', 'librarian', 'second-opinion',
+  'planner',
 ];
 
 /**
@@ -37,6 +38,7 @@ export const MODELS = {
   'design-reviewer': 'sonnet',
   devops: 'sonnet',
   'second-opinion': 'opus',
+  planner: 'sonnet', // decomposition + AC mapping needs real reasoning
 };
 
 /** Read-only roles (spec §13 blast-radius control). Reviewer-shaped roles get Bash for diffs/tests. */
@@ -48,6 +50,7 @@ const TOOLS = {
   investigator: 'Read, Grep, Glob',
   librarian: 'Read, Grep, Glob',
   'second-opinion': 'Read, Grep, Glob',
+  planner: 'Read, Grep, Glob', // drafts the plan read-only; the orchestrator writes + commits it
   // write-capable roles (implementer, test-architect, devops, designer) inherit all tools
 };
 

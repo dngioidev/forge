@@ -39,6 +39,8 @@ The normal path, with your touch-points marked **[you]**:
 8. **Merge** — **[you] review and merge.** The agent then runs the post-merge ritual: receipt comment, delivery-log row, board → Done, branch cleanup, digest refresh.
 9. **Release** — `forge:release` when you want a named version: computed readiness checklist → semver from conventional commits → changelog → tag → GitHub Release. In deploy repos it names the staging-verified image digest — release never builds.
 
+**Autonomous variant:** **`forge:deliver`** runs steps 5→7 (plan → execute → ship) end-to-end on subagents for one triaged ticket — a `planner` drafts the plan, `execute-agents` does the per-task loop, ship opens the PR — with a **single human gate: the PR review** (step 8). It still halts on spec §7 safety escalations (security-critical, denylist, deadlock, gate-fail ×2).
+
 ## 4. Your interaction points (the complete list)
 
 - **Decision comments** (`🚩 Decision needed` on an issue): reply with the option number or free text — on the GitHub issue or in-session. Both resume the pipeline identically.

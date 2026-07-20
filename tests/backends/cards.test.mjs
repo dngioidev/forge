@@ -4,7 +4,7 @@ import { join, basename } from 'node:path';
 import { CARDS_DIR, AGENTS_DIR, compileCard, ROLES, MODELS } from '../../plugin/scripts/backends/compile.mjs';
 
 describe('role cards (AC-4.1)', () => {
-  it('all 11 roles have a card and only those', async () => {
+  it('all 12 roles have a card and only those', async () => {
     const cards = (await readdir(CARDS_DIR)).filter((f) => f.endsWith('.md')).map((f) => basename(f, '.md'));
     expect(cards.sort()).toEqual([...ROLES].sort());
   });
