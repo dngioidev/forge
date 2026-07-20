@@ -89,6 +89,17 @@ When delivery surfaces a need out of the current ticket's scope, file it rather 
 
 The loop owns `.forge/autopilot/run.json`: the queue, and per ticket `merged | escalated | skipped | filed` with the PR/decision ref. A fresh session reads it to resume. At stop, print the report: how many merged, which parked (with why), which skipped, what new tickets were filed — and summarise the run on the delivery-log issue.
 
+## Driver scripts (the executable spine)
+
+The loop is prose the orchestrator runs, but its mechanical decisions are real, tested scripts under `${CLAUDE_PLUGIN_ROOT}/scripts/autopilot/`:
+
+- `select.mjs` — `selectNext(tickets)` / `--dry-run`: the selection order + the triage/deliver/resume decision (§ selection). Pure, so the order is testable.
+- `merge.mjs` — `evaluateMergeBar(signals)` + `runMerge(ctx,{issue,pr,signals})`: the auto-merge bar. Fail-closed — a missing signal is red; `features.autopilotAutoMerge:false` parks at the PR. This is where "nothing merges on red" lives.
+- `ledger.mjs` — the run ledger (`.forge/autopilot/run.json`): `applyOutcome`/`applyFiled`/`guardTripped`/`renderReport`, plus `ledger.mjs report`. The loop backstop and the resume point.
+- `newwork.mjs` — `fileWork(ctx,{title,kind,from})`: files a linked follow-up (bug/spike/item) mid-run.
+
+The orchestrator holds the ship/gate/reviewer/security verdicts and passes them to the merge bar; the scripts never spawn subagents or drive the loop themselves.
+
 ## Resume protocol
 
 Fresh session: read `.forge/autopilot/run.json` for run state → `escalate.mjs --check` to pick up any decisions the human answered → re-select per the selection order (which naturally resumes a mid-flight ticket first) → continue the loop.
