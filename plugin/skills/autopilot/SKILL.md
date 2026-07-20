@@ -15,6 +15,7 @@ Spec: `docs/specs/2026-07-21-forge-autopilot.md`.
 - **The only pauses are real escalations.** Product broken with no safe fix · a design/behaviour decision that isn't the engine's to make · an under-specified ticket · critical security · plus deliver's existing §7 triggers. Everything routine — role choice, UI variant, which regression test, filing a follow-up — autopilot decides and proceeds.
 - **One ticket at a time (v1).** Finish and merge one before starting the next — no worktree machinery, no cross-ticket conflicts. (Parallel via a bounded worktree pool is designed-for but deferred; see spec §9.)
 - **The loop owns the run; deliver owns each ticket.** Autopilot owns the run ledger and the stop condition; each ticket's branch/ledger/gates/trail stay inside `forge:deliver`.
+- **Each ticket is delivered in a discardable context.** `forge:deliver` for a ticket runs as its **own spawned agent**; its heavy tokens (reading/writing/reviewing code) die with that context. The outer loop keeps only `run.json` + git + a one-line outcome per ticket — so loop overhead stays ~O(1) per ticket no matter how long the run (spec §11).
 
 ## The loop
 
@@ -99,6 +100,15 @@ The loop is prose the orchestrator runs, but its mechanical decisions are real, 
 - `newwork.mjs` — `fileWork(ctx,{title,kind,from})`: files a linked follow-up (bug/spike/item) mid-run.
 
 The orchestrator holds the ship/gate/reviewer/security verdicts and passes them to the merge bar; the scripts never spawn subagents or drive the loop themselves.
+
+## Cost & context on long runs (spec §11)
+
+A long run stays bounded by construction — not by luck:
+
+- **Delegate, don't inline.** Deliver each ticket as a spawned agent; its context (and its own subagents' contexts) is discarded when the ticket ends. The outer loop never ingests code — only the terminal outcome.
+- **Checkpoint + reset is free.** Every ticket is written to `run.json`; the resume protocol reconstructs from disk, so the orchestrator can be compacted or restarted between tickets at near-zero reload cost.
+- **Cheap where it can be.** `select.mjs` + the ledger are plain scripts (zero model cost); model tiering already applies inside delivery (haiku lookup / sonnet default / opus only for second-opinion).
+- **Intrinsic vs. overhead.** Per-ticket delivery cost is the real work and can't be optimised away; what autopilot keeps ~constant is the *loop overhead*. The host OS is irrelevant to cost/context — only PATH/shell handling is platform-specific.
 
 ## Resume protocol
 

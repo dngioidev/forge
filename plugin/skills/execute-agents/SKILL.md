@@ -36,6 +36,7 @@ Independent read-only briefs (e.g. scoping several tasks up front) may be spawne
    - `gates/plandrift.mjs --plan <plan>` — off-plan files ⇒ escalate or extend `scope.json` with a reviewer-visible note.
    - `gates/testintent.mjs` — weakened existing assertions ⇒ reviewer sign-off in the PR or revert.
    - `vitest run --reporter=json --outputFile=.forge/results.json` then `gates/acgate.mjs --plan <plan> --ticket <n> --results .forge/results.json`.
+   - `gates/docsync.mjs` — docs kept in step with what ships: an unindexed doc or an undocumented new skill ⇒ fix the route index / handbook before shipping.
 3. Hand to `forge:ship`.
 
 ## Report contract (what the orchestrator relies on)

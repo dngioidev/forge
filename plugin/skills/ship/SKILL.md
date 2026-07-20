@@ -18,6 +18,7 @@ Branch → PR with gates, then the post-merge ritual. Since SP5 the core gates a
    - `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/testintent.mjs"` — weakened existing assertions ⇒ explicit reviewer sign-off in the PR body, or revert
    - `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/depguard.mjs"` — new-dependency violations ⇒ remove or escalate
    - **AC gate**: `vitest run --reporter=json --outputFile=.forge/results.json` then `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/acgate.mjs" --plan <plan> --ticket <n> --results .forge/results.json` — every AC id in a passing test, machine evidence only
+   - `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/docsync.mjs"` — a doc that isn't in the `docs/README.md` route index, or a newly-added skill not mentioned in `docs/guides/handbook.md` ⇒ update the index/handbook before shipping (keeps docs in step with what ships)
 6. **Security pass** (`security` role card on the full branch diff): findings journaled; criticals escalate.
 7. **Review pass** (`reviewer` role card; `design-reviewer` for UI when `features.designReview`).
 8. **Honest verification statement** for the PR body: what ran, what passed, what was NOT verified. Never overstate.

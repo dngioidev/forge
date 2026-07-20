@@ -48,6 +48,19 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/parks? one ticket|continue.*next|does not stop the whole run/i);
   });
 
+  it('#137: documents context/cost bounding — spawned per-ticket delivery + O(1) outer loop', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/discardable context|spawned agent/i);
+    expect(s).toMatch(/own spawned agent|delivered in a discardable/i);
+    // outer loop keeps only file-backed state
+    expect(s).toMatch(/run\.json.*outcome|one-line outcome/i);
+    expect(s).toMatch(/O\(1\) per ticket/);
+    // a dedicated cost/context section, incl. the OS-irrelevant note
+    expect(s).toMatch(/Cost & context on long runs/);
+    expect(s).toMatch(/checkpoint|resume protocol reconstructs/i);
+    expect(s).toMatch(/host OS is irrelevant|OS.*irrelevant/i);
+  });
+
   it('AC-2 front door + AC-5 files new work + AC-6 safety are all specified', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // auto-triage front door, under-specified => escalate + skip

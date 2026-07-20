@@ -72,6 +72,7 @@ The normal path, with your touch-points marked **[you]**:
 | testintent | weakened pre-existing assertions | reviewer sign-off in the PR body, or revert |
 | depguard | new deps exist, are ≥90d old, ≥500 downloads | remove or escalate |
 | acgate | every AC-ID in a passing test (runner JSON only) | write the missing test |
+| docsync | every doc is in the route index; a new skill is in the handbook | update `docs/README.md` / `docs/guides/handbook.md` |
 | security/review passes | role-card review of the diff | fix findings; criticals escalate |
 | CI green | never ask for merge on red | fix, trail `gate-fail` with cause |
 
