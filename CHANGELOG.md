@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 — 2026-07-20
+
+### Features
+
+- board/close.mjs accepts a comma-separated --issue list (#123) ([#123](https://github.com/dngioidev/forge/issues/123))
+- make forge:deliver kind-aware (classify + route + typed tasks) (#121) ([#121](https://github.com/dngioidev/forge/issues/121))
+- forge:deliver — plan→execute→ship on subagents, single MR gate (#121) ([#121](https://github.com/dngioidev/forge/issues/121))
+
+### Docs
+
+- batch close for board/close.mjs (#123) ([#123](https://github.com/dngioidev/forge/issues/123))
+
 ## v0.7.0 — 2026-07-20
 
 ### Features
