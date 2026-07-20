@@ -8,7 +8,7 @@ import { buildAddSubIssue, addSubIssue } from '../plugin/scripts/lib/issues.mjs'
 import { runReparent, parseArgs as reparentArgs } from '../plugin/scripts/board/reparent.mjs';
 import { runMove, parseArgs as moveArgs } from '../plugin/scripts/board/move.mjs';
 import { runComment, parseArgs as commentArgs } from '../plugin/scripts/board/comment.mjs';
-import { runClose, parseArgs as closeArgs } from '../plugin/scripts/board/close.mjs';
+import { runClose, runCloseBatch, parseArgs as closeArgs } from '../plugin/scripts/board/close.mjs';
 import { runReceipt } from '../plugin/scripts/board/receipt.mjs';
 import { runLog } from '../plugin/scripts/board/log.mjs';
 import { runDigest, renderChildTable, computeFlowMetrics, renderFlow, cycleDays } from '../plugin/scripts/board/digest.mjs';
@@ -344,6 +344,116 @@ describe('close (AC-117)', () => {
     const res = await runClose(ctx, closeArgs(['--issue', '1', '--reason', 'bogus']), noop);
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/--reason must be one of/);
+  });
+});
+
+describe('batch close (AC-123)', () => {
+  // Per-issue trail comment routes, mirroring AC-117.1's commentRoutes but keyed
+  // by issue number so each issue keeps its own trail ledger (no cross-talk).
+  // list (GET, has `?`) → returns the current ledger; create (POST, has `-f`) →
+  // seeds a trail:closed marker so a re-run PATCHes rather than stacking.
+  const commentRoutes = (ref, num) => [
+    [(j) => j.includes(`/issues/${num}/comments?`), () => ({ stdout: JSON.stringify(ref.comments) })],
+    [(j) => j.includes(`/issues/${num}/comments`) && j.endsWith('/comments') === false && j.includes('-f'), () => { ref.comments = [{ id: num, body: '<!-- forge:trail:closed -->' }]; return { stdout: JSON.stringify({ id: num }) }; }],
+  ];
+
+  // runCloseBatch's parsed-args contract: `issue` is a comma-separated string
+  // (or a single number-as-string), plus the same `reason`/`note` runClose reads.
+  it('AC-123.1: --issue 12,13 closes each, one result per issue, note in every trail, idempotent', async () => {
+    const ref12 = { comments: [] };
+    const ref13 = { comments: [] };
+    const { ctx, calls } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), itemList([
+        { id: 'ITEM_9', content: { number: 12 }, status: 'Done' },
+        { id: 'ITEM_10', content: { number: 13 }, status: 'Done' },
+      ])],
+      ['project item-edit', { stdout: '' }],
+      [(j) => j.startsWith('api -X PATCH'), { stdout: '{}' }], // re-run PATCHes the existing trail
+      ...commentRoutes(ref12, 12),
+      ...commentRoutes(ref13, 13),
+    ]);
+    const args = { issue: '12,13', reason: 'not-planned', note: 'superseded by ADR-0003' };
+    const res = await runCloseBatch(ctx, args, noop);
+
+    expect(res).toMatchObject({ ok: true, closed: 2, failed: 0 });
+    expect(Array.isArray(res.results)).toBe(true);
+    expect(res.results.length).toBe(2); // one entry per issue
+
+    // BOTH issues get a NOT_PLANNED GitHub close ("not planned")
+    expect(calls.filter((c) => c.startsWith('issue close') && c.includes('not planned')).length).toBe(2);
+    // the note reaches EACH issue's trail body (one create per issue)
+    expect(calls.filter((c) => c.includes('/issues/12/comments') && c.includes('superseded by ADR-0003')).length).toBe(1);
+    expect(calls.filter((c) => c.includes('/issues/13/comments') && c.includes('superseded by ADR-0003')).length).toBe(1);
+
+    // idempotent: re-running yields the same summary and does not stack trail
+    // comments (the marker exists now → PATCH, not a second POST to /issues/N/comments)
+    const res2 = await runCloseBatch(ctx, args, noop);
+    expect(res2).toMatchObject({ ok: true, closed: 2, failed: 0 });
+    expect(calls.filter((c) => c.includes('/issues/12/comments') && c.includes('-f')).length).toBe(1);
+    expect(calls.filter((c) => c.includes('/issues/13/comments') && c.includes('-f')).length).toBe(1);
+  });
+
+  it('AC-123.1: partial failure — one issue view fails → ok:false closed:1 failed:1, naming the failure', async () => {
+    const ref12 = { comments: [] };
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('issue view 13'), { ok: false, stderr: 'issue view failed for #13' }], // must precede the generic route
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), itemList([
+        { id: 'ITEM_9', content: { number: 12 }, status: 'Done' },
+        { id: 'ITEM_10', content: { number: 13 }, status: 'Done' },
+      ])],
+      ['project item-edit', { stdout: '' }],
+      ...commentRoutes(ref12, 12),
+    ]);
+    const res = await runCloseBatch(ctx, { issue: '12,13', reason: 'not-planned' }, noop);
+
+    expect(res).toMatchObject({ ok: false, closed: 1, failed: 1 });
+    const r12 = res.results.find((r) => r.issue === 12);
+    const r13 = res.results.find((r) => r.issue === 13);
+    expect(r12).toMatchObject({ ok: true });   // the good one still closed
+    expect(r13).toMatchObject({ ok: false });  // results name which issue failed
+  });
+
+  it('AC-123.2: a single --issue 12 returns the unchanged single-issue shape, not a batch summary', async () => {
+    const ref12 = { comments: [] };
+    const { ctx } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 12 }, status: 'Done' }])],
+      ['project item-edit', { stdout: '' }],
+      ...commentRoutes(ref12, 12),
+    ]);
+    const res = await runCloseBatch(ctx, { issue: '12', reason: 'not-planned' }, noop);
+
+    expect(res).toMatchObject({ ok: true, issue: 12, reason: 'not-planned', status: 'wontDo' });
+    expect(res.results).toBeUndefined(); // NOT a batch summary
+    expect('closed' in res).toBe(false);
+  });
+
+  it('AC-123.3: bogus --reason fails fast — no view/close/item-edit call is made', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runCloseBatch(ctx, { issue: '12,13', reason: 'bogus' }, noop);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/--reason must be one of/);
+    expect(calls.some((c) => c.startsWith('issue view'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('issue close'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('project item-edit'))).toBe(false);
+  });
+
+  it('AC-123.4: non-numeric --issue fails fast — no view/close/item-edit call is made', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runCloseBatch(ctx, { issue: 'abc', reason: 'not-planned' }, noop);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/--issue must be one or more positive integers/);
+    expect(res.error).toContain('abc'); // names the bad input
+    expect(calls.some((c) => c.startsWith('issue view'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('issue close'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('project item-edit'))).toBe(false);
   });
 });
 
