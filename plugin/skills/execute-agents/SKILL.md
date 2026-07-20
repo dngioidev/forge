@@ -23,7 +23,7 @@ For each task, spawn in order and act on each report before the next:
 
 1. **Scope** — spawn `scoper` (read-only) with a brief: ticket ref, the task's declared Files list, the plan section. It returns the touched surface + blast radius. Legitimate extra surface → the orchestrator writes `.forge/scope.json` (never the subagent, never silently).
 2. **Failing tests first** — spawn `test-architect` with a brief: the task's AC ids + test plan. It writes AC-ID-titled tests and confirms each fails for the expected reason. Bug fixes: regression test first, no exceptions. The orchestrator verifies red before proceeding.
-3. **Implement** — spawn `implementer` with a brief: the failing tests, the task's Files list, repo conventions. It makes the tests pass with the smallest correct change and nothing beyond the task. Orchestrator runs the scoped tests + full verify green.
+3. **Implement** — spawn the role matching the task's `kind` (from the planner's typed plan): `code`→`implementer`, `ui`→`designer` (then a `design-reviewer` pass in step 4), `infra`→`devops`, `test`→the `test-architect` from step 2 carries it. Brief: the failing tests, the task's Files list, repo conventions. It makes the tests pass with the smallest correct change and nothing beyond the task. Orchestrator runs the scoped tests + full verify green.
 4. **Per-task review** — spawn `reviewer` (and `design-reviewer` on UI tasks when `features.designReview`) on the task diff. Findings come back severity-tagged; the orchestrator fixes them (a fresh `implementer` spawn) or tickets them **before** marking the task done.
 5. New dependency introduced? Run the dep guard now, not at ship: `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/depguard.mjs"`.
 

@@ -1,41 +1,43 @@
 ---
 name: deliver
-description: End-to-end plan → execute → ship for one triaged ticket, driven by subagents, with a single human gate — the PR review. Auto-plans, runs the execute-agents subagent loop, ships to a PR, and stops. Halts only on spec §7 safety escalations. Use when a ticket is ready to become a merge-ready PR without step-by-step human approval.
+description: End-to-end delivery of one triaged ticket, driven by subagents, with a single human gate — the PR review. Classifies the ticket (spike/bug/ui/feature/test/chore) and routes to the flow that fits, auto-plans with typed tasks, runs the execute-agents subagent loop, ships to a PR, and stops. Halts only on spec §7 safety escalations. Use when a ticket is ready to become a merge-ready PR without step-by-step approval.
 ---
 
 # forge:deliver
 
-One triaged ticket → a merge-ready PR, unattended, with **exactly one human gate: reviewing the PR**. The plan-approval and inline checkpoints of the normal pipeline are collapsed into that final review. This is the autonomous wrapper around `forge:plan` + `forge:execute-agents` + `forge:ship` — every phase runs on subagents; the main loop orchestrates and owns all state.
+One triaged ticket → a merge-ready PR (or, for a spike, an ADR), unattended, with **exactly one human gate: reviewing the PR**. `deliver` is **kind-aware** — it doesn't assume plain implementation. It classifies the ticket and routes to the right flow, running every phase on subagents while the main loop orchestrates and owns all state.
 
 ## The one-gate contract
 
 - **The human is consulted once — at the PR.** Nothing between kickoff and PR asks for approval.
-- **The pipeline still HALTS on genuine blockers (spec §7), never on routine choices:** a critical security finding, a denylist-blocked action, a reviewer/implementer deadlock across re-spawns, or the same gate failing twice → `escalate.mjs`, then stop. These are safety valves, not approvals.
-- **Preconditions:** the ticket is already triaged (clear ask + acceptance). If it isn't, the planner returns `verdict: fail` — escalate rather than guess. `deliver` does not do discovery/spec work; run `forge:triage`/`forge:brainstorm` first.
-- **Orchestrator owns state, subagents own work:** branch, ledger, `scope.json`, gates, trail, and every escalation decision stay with the main loop; subagents return their terminal JSON report and nothing more.
+- **Still HALTS on genuine blockers (spec §7), never on routine choices:** critical security finding · denylist-blocked action · reviewer/implementer deadlock across re-spawns · same gate failing twice · planner `verdict: fail`. → `escalate.mjs`, stop.
+- **Preconditions:** the ticket is triaged (clear ask + acceptance). Otherwise the planner returns `verdict: fail` — escalate, don't guess. `deliver` doesn't do discovery/spec work.
+- **Orchestrator owns state, subagents own work:** branch, ledger, `scope.json`, gates, trail, escalations stay with the main loop; subagents return their terminal JSON report only.
 
-## Phase 1 — Plan (subagent)
+## Phase 0 — Classify
 
-1. Spawn `planner` (Task tool, `subagent_type: planner`) with a brief: the ticket ref + body, any linked spec/design/ADR. It returns an ordered task plan — each task with a **Files:** list, **AC-IDs** (`AC-<ticket>.<n>`), and a test plan — plus findings (risks/open questions).
-2. `verdict: fail` (unplannable without a human decision) → escalate, stop.
-3. Otherwise the **orchestrator** writes the plan to `docs/plans/<date>-<slug>.md` and commits it to main (no plan-approval gate — this is the collapsed step). Trail `--phase plan`.
+Spawn `planner` (`subagent_type: planner`) with the ticket ref + body + any linked spec/design/ADR. It returns the **ticket kind** (`spike | bug | ui | feature | test | chore`) and a **typed task plan** (each task tagged `code | test | ui | infra`, with Files + AC-IDs + test plan). `verdict: fail` → escalate, stop. The orchestrator picks the route from the kind:
 
-## Phase 2 — Execute (subagent loop)
+## Route table (kind → pipeline)
 
-Run the **`forge:execute-agents`** loop against that plan: branch, ledger, and per task `scoper → test-architect → implementer → reviewer` spawned as subagents, with the per-task gates. The orchestrator marks the ledger and consumes each report. All of that skill's rules apply here unchanged.
+- **feature / chore** — write + commit the plan → **Execute** → **Ship**. (The baseline flow.)
+- **bug** — spawn `investigator` to reproduce + root-cause first (attached to the ticket); the plan's **first task is a regression test**; then Execute → Ship. If an incident is open, ship under hotfix rules (situation gate).
+- **ui** — plan → **Design**: spawn `designer` for token-grounded, a11y-first variants; the orchestrator **auto-selects the best against the visual spec + design tokens + a11y contract** (no human variant-pick — the choice is shown at the PR). Execute includes a `design-reviewer` pass per UI task. Then Ship.
+- **test** — plan is `test-architect`-led (coverage/intent); Execute → Ship.
+- **spike** — **does not ship code** (spec §4 item 12). Run the spike flow (investigate/prototype on subagents) → write findings as an **ADR** (`docs/decisions/`) → **auto-file a follow-up implementation ticket** (`board/create.mjs`, linking the ADR) → **stop**. Report the ADR + the new ticket; the human decides whether to `deliver` that. No code PR.
 
-## Phase 3 — Ship (gates + subagents → PR)
+## Execute (all shippable kinds)
 
-Run `forge:ship`:
-1. Situation gate, conventions lint, rebase + verify green.
-2. Mechanical gates: `plandrift.mjs --plan <plan>`, `testintent.mjs`, `depguard.mjs`, and the AC gate (`vitest --reporter=json` → `acgate.mjs --plan <plan> --ticket <n>`).
-3. Full-branch `security` + `reviewer` subagents; criticals escalate (that's a §7 halt).
-4. Open the PR: `Closes #<n>`, commits→issues map, AC checklist, and an **honest verification statement** (what ran, what passed, what was NOT verified). Trail `--phase pr` → `ci-green`.
+Run the **`forge:execute-agents`** loop against the plan. Per task, the executor spawns the role matching the task's `kind` — `code`→implementer, `test`→test-architect, `ui`→designer + design-reviewer, `infra`→devops — around the scoper/reviewer bookends, with the per-task gates. Orchestrator marks the ledger and consumes each report.
+
+## Ship (all shippable kinds)
+
+Run `forge:ship`: situation gate · conventions lint · rebase + verify · mechanical gates (`plandrift`, `testintent`, `depguard`, `acgate`) · full-branch `security` + `reviewer` subagents (criticals escalate) · open the PR with `Closes #<n>`, the AC checklist, and an **honest verification statement**. Trail `--phase pr` → `ci-green`.
 
 ## Stop — the human gate
 
-Report the PR link and the honest verification, then **stop**. The human reviews and merges the MR. The post-merge ritual (`forge:ship`'s receipt → log → move) runs after they merge, as usual.
+Report the PR link (or, for a spike, the ADR + follow-up ticket) and the honest verification, then **stop**. The human reviews and merges; the post-merge ritual runs after they merge.
 
 ## Escalation triggers (the only pauses)
 
-Critical security finding · denylist-blocked action genuinely needed · reviewer/implementer deadlock across re-spawns · same gate failing twice · planner `verdict: fail` · blast radius beyond the plan with no safe `scope.json` extension. `escalate.mjs --issue <n> --reason … --options …`, then stop. Resume via `escalate.mjs --check` after the human replies — the ledger + plan make it seamless.
+Critical security finding · denylist-blocked action genuinely needed · reviewer/implementer deadlock · same gate failing twice · planner `verdict: fail` · blast radius beyond the plan with no safe `scope.json` extension. `escalate.mjs`, then stop; resume via `escalate.mjs --check`.

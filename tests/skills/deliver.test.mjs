@@ -18,6 +18,34 @@ describe('forge:deliver skill (AC-121, #121)', () => {
     expect(s).toMatch(/security/i);                         // security-critical is a halt
   });
 
+  it('AC-121.3: is kind-aware — classifies the ticket and routes per kind (#121)', async () => {
+    const s = await read('plugin/skills/deliver/SKILL.md');
+    expect(s).toMatch(/Classify/i);
+    for (const kind of ['spike', 'bug', 'ui', 'feature', 'test', 'chore']) {
+      expect(s, `route missing kind ${kind}`).toContain(kind);
+    }
+    // spike special-cases: ADR + follow-up ticket, no code PR
+    expect(s).toMatch(/does not ship code|no code PR/i);
+    expect(s).toMatch(/ADR/);
+    expect(s).toMatch(/board\/create\.mjs|follow-up/i);
+    // ui: auto-pick a variant, single gate preserved (no human variant pick)
+    expect(s).toMatch(/auto-select|auto-pick/i);
+    expect(s).toMatch(/visual spec/i);
+    // bug: reproduce / regression test first
+    expect(s).toMatch(/reproduce|regression/i);
+  });
+
+  it('AC-121.4: the planner classifies + types tasks; execute-agents selects role by task kind (#121)', async () => {
+    const card = await read('plugin/cards/planner.md');
+    expect(card).toMatch(/Classify the ticket kind/i);
+    expect(card).toMatch(/spike.*bug.*ui.*feature.*test.*chore|kind/i);
+    expect(card).toMatch(/Type each task|code.*test.*ui.*infra/i);
+    const ea = await read('plugin/skills/execute-agents/SKILL.md');
+    expect(ea).toMatch(/matching the task's `kind`|task's `kind`/);
+    expect(ea).toMatch(/designer/);
+    expect(ea).toMatch(/devops/);
+  });
+
   it('AC-121.2: planner is a compiled, read-only role pinned to a model', async () => {
     const { ROLES, MODELS } = await import('../../plugin/scripts/backends/compile.mjs');
     expect(ROLES).toContain('planner');
