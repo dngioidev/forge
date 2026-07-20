@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.0 — 2026-07-20
+
+### Features
+
+- executable engine — selection, merge bar, run ledger, filing (#127, #128, #129, #130, #131) (#133) ([#127](https://github.com/dngioidev/forge/issues/127) [#128](https://github.com/dngioidev/forge/issues/128) [#129](https://github.com/dngioidev/forge/issues/129) [#130](https://github.com/dngioidev/forge/issues/130) [#131](https://github.com/dngioidev/forge/issues/131) [#133](https://github.com/dngioidev/forge/issues/133))
+- skill loop, selection, escalation model + spec (#126) (#132) ([#126](https://github.com/dngioidev/forge/issues/126) [#132](https://github.com/dngioidev/forge/issues/132))
+
 ## v0.8.0 — 2026-07-20
 
 ### Features
