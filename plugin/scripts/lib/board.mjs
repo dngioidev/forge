@@ -12,6 +12,7 @@ export const STANDARD_STATUS = [
   { key: 'inReview', name: 'In review', color: 'ORANGE' },
   { key: 'blocked', name: 'Blocked / Needs decision', color: 'RED' },
   { key: 'done', name: 'Done', color: 'GREEN' },
+  { key: 'wontDo', name: "Won't do", color: 'GRAY' }, // #117: closed for a special reason (not planned / superseded), not completed
 ];
 
 export const STANDARD_FIELDS = {
@@ -36,10 +37,11 @@ export const STANDARD_FIELDS = {
   ],
 };
 
-/** "In progress" -> inProgress; "Blocked / Needs decision" -> blocked. */
+/** "In progress" -> inProgress; "Blocked / Needs decision" -> blocked; "Won't do" -> wontDo. */
 export function optionKey(name) {
   const lower = name.toLowerCase().trim();
   if (lower.startsWith('blocked')) return 'blocked';
+  if (lower.startsWith("won't") || lower.startsWith('wont')) return 'wontDo';
   return lower
     .replace(/[^a-z0-9]+(.)/g, (_, c) => c.toUpperCase())
     .replace(/[^a-zA-Z0-9]/g, '');
@@ -135,8 +137,11 @@ export async function createSingleSelectField(gh, projectId, name, optionDefs) {
  * express unquoted. Verified live in the #32 migration + SP1 spike (#35).
  */
 export function buildStatusMutation(fieldId, optionDefs) {
+  // Passing an existing option's id PRESERVES it (no re-mint); options without an
+  // id are freshly minted. This lets us append a status without disturbing the
+  // rest (#117) — the API gained `id` on the option input since the ADR-0001 note.
   const opts = optionDefs
-    .map((o) => `{name: ${JSON.stringify(o.name)}, color: ${o.color}, description: ""}`)
+    .map((o) => `{${o.id ? `id: ${JSON.stringify(o.id)}, ` : ''}name: ${JSON.stringify(o.name)}, color: ${o.color}, description: ""}`)
     .join(', ');
   return `mutation {
   updateProjectV2Field(input: { fieldId: ${JSON.stringify(fieldId)}, singleSelectOptions: [${opts}] }) {

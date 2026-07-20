@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS, linkProject } from '../../plugin/scripts/lib/board.mjs';
+import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS, linkProject, optionKey } from '../../plugin/scripts/lib/board.mjs';
 
 describe('linkProject (AC-B64.1, #64)', () => {
   it('AC-B64.1: issues gh project link <n> --owner <o> --repo <slug>', async () => {
@@ -48,6 +48,21 @@ describe('replaceStatusOptions mutation shape (AC-B4.1, #35)', () => {
     expect(seen.filter((a) => a === '-F')).toHaveLength(0);
     expect(seen.filter((a) => a === '-f')).toHaveLength(1);
     expect(seen.find((a) => a.startsWith('query='))).toContain('color: GREEN');
+  });
+});
+
+describe('Won\'t do status (AC-117, #117)', () => {
+  it("AC-117.3: optionKey maps Won't do -> wontDo; STANDARD_STATUS carries it", () => {
+    expect(optionKey("Won't do")).toBe('wontDo');
+    expect(optionKey('Wont do')).toBe('wontDo');
+    const wd = STANDARD_STATUS.find((s) => s.key === 'wontDo');
+    expect(wd?.name).toBe("Won't do");
+  });
+
+  it('AC-117.4: buildStatusMutation preserves an existing option id, mints when absent (safe append)', () => {
+    const m = buildStatusMutation('PVTSSF_x', [{ id: 'keep1', name: 'Done', color: 'GREEN' }, { name: "Won't do", color: 'GRAY' }]);
+    expect(m).toContain('{id: "keep1", name: "Done", color: GREEN, description: ""}'); // preserved
+    expect(m).toContain(`{name: "Won't do", color: GRAY, description: ""}`); // no id → minted
   });
 });
 
