@@ -105,3 +105,13 @@ v1 is sequential by owner choice. The loop is factored so a **bounded worktree p
 - **AC-5 (files new work):** a need surfaced mid-delivery becomes a linked, trail-noted ticket via `board/create.mjs` and re-enters the queue.
 - **AC-6 (safety):** honours the global pause / situation gate; the loop backstop prevents runaway; the run ledger makes an interrupted run resumable.
 - **AC-7 (trail):** every lifecycle moment is trail-commented on the driving ticket (started · delivered · merged · escalated · filed), and the run is summarised on the delivery-log issue.
+
+## 11. Cost & context on long runs (#137)
+
+A long run must not blow the orchestrator's context window or let cost grow with run length. The design bounds both:
+
+- **Delegate, don't inline.** Each ticket's `forge:deliver` runs as its **own spawned agent** with a fresh context that is discarded when the ticket finishes. The heavy tokens — reading code, writing code, review passes — live and die inside that per-ticket context and its own sub-subagents; they never accumulate in the outer loop.
+- **The outer loop holds only file-backed state.** Between tickets the autopilot loop retains just `.forge/autopilot/run.json` + git state + a one-line outcome per ticket. Its growth is **~O(1) per ticket**, not O(work), so a 5-ticket run and a 50-ticket run have about the same loop overhead.
+- **Checkpoint + reset is free.** Every ticket is checkpointed to `run.json`; the resume protocol (§ resume) reconstructs from disk, so the orchestrator can be compacted or fully restarted between tickets at near-zero reload cost. (This session is the proof: it compacted at 67% and continued because state lived on the board + files, not the transcript.)
+- **Cheap where it can be.** Selection (`select.mjs`) and the ledger are plain scripts — **zero model cost**. Model tiering already applies inside delivery (haiku for lookup, sonnet default, opus only for second-opinion).
+- **What's intrinsic vs. overhead.** Per-ticket *delivery* cost is intrinsic — it's the actual engineering and can't be optimised away. What autopilot keeps ~constant is the *loop overhead*. (The host OS — Windows included — has no bearing on tokens, context, or cost; only PATH/shell handling is platform-specific.)
