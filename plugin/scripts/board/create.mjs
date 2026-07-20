@@ -12,10 +12,10 @@ import { getIssueNode, addSubIssue } from '../lib/issues.mjs';
 
 /** Defaults applied to a single ticket spec (flags or a --from JSON entry). */
 export function withDefaults(spec = {}) {
-  return { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', parent: null, assignee: null, ...spec };
+  return { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', phase: null, parent: null, assignee: null, ...spec };
 }
 
-const KNOWN_FLAGS = '--title --body --body-file --type --priority --size --status --parent --assignee --from';
+const KNOWN_FLAGS = '--title --body --body-file --type --priority --size --status --phase --parent --assignee --from';
 
 export function parseArgs(argv) {
   const a = withDefaults();
@@ -31,6 +31,7 @@ export function parseArgs(argv) {
     else if (k === '--priority') a.priority = argv[++i];
     else if (k === '--size') a.size = argv[++i];
     else if (k === '--status') a.status = argv[++i];
+    else if (k === '--phase') a.phase = argv[++i];
     else if (k === '--parent') a.parent = Number(argv[++i]);
     else if (k === '--assignee') a.assignee = argv[++i];
     else if (k === '--from') a.from = argv[++i];
@@ -74,6 +75,12 @@ export async function runCreate(ctx, args, log = console.log) {
   // validate option keys up front so we fail before creating anything
   for (const [f, k] of [['type', args.type], ['priority', args.priority], ['size', args.size], ['status', args.status]]) {
     const r = ctx.resolveOption(f, k);
+    if (!r.ok) return { ok: false, error: r.error };
+  }
+  // #114: optional Phase, only when the consumer configured a Phase field
+  if (args.phase != null) {
+    if (!ctx.fields.phase) return { ok: false, error: '--phase given but no Phase field is configured — forge:init maps it when the project has a "Phase" single-select' };
+    const r = ctx.resolveOption('phase', args.phase);
     if (!r.ok) return { ok: false, error: r.error };
   }
 
@@ -130,7 +137,9 @@ export async function runCreate(ctx, args, log = console.log) {
   }
 
   // 4. fields — set only what differs (resume-friendly)
-  for (const [fieldKey, wanted] of [['type', args.type], ['priority', args.priority], ['size', args.size], ['status', args.status]]) {
+  const fieldSets = [['type', args.type], ['priority', args.priority], ['size', args.size], ['status', args.status]];
+  if (args.phase != null) fieldSets.push(['phase', args.phase]);
+  for (const [fieldKey, wanted] of fieldSets) {
     const current = existing.item ? ctx.itemFieldKey(existing.item, fieldKey) : null;
     if (current === wanted) continue;
     const set = await ctx.setSelect(itemId, fieldKey, wanted);

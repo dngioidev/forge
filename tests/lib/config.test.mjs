@@ -63,6 +63,21 @@ describe('validateConfig', () => {
     expect(r.errors.some((e) => e.includes('features.graph'))).toBe(true);
   });
 
+  it('AC-114.4: an optional phase field is allowed when absent, validated when present (#114)', () => {
+    expect(validateConfig(validCfg()).ok).toBe(true); // absent → fine
+
+    const ok = validCfg();
+    ok.board.fields.phase = { id: 'PVTSSF_ph', options: { alpha: 'p1' } };
+    expect(validateConfig(ok)).toEqual({ ok: true, errors: [] }); // present + valid → fine
+
+    const bad = validCfg();
+    bad.board.fields.phase = { id: 'wrong', options: {} };
+    const r = validateConfig(bad);
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes('board.fields.phase.id'))).toBe(true);
+    expect(r.errors.some((e) => e.includes('board.fields.phase.options'))).toBe(true);
+  });
+
   it('requires at least one maintainer when team.members present', () => {
     const cfg = validCfg();
     cfg.team.members = [{ github: 'alice', roles: ['developer'] }];
