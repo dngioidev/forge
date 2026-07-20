@@ -34,7 +34,7 @@ The normal path, with your touch-points marked **[you]**:
 3. **Shape** (bigger features) — `forge:brainstorm` explores approaches and ends in a spec; **[you] approve the spec via a decision comment** — reply with your choice on the issue or in-session.
 4. **Design** (UI-flagged tickets) — `forge:design` generates 2–3 real-token variants; **[you] pick one via decision comment**; the winner becomes a visual spec (speclint-enforced) that later review validates against.
 5. **Plan** — `forge:plan` writes `docs/plans/…` with tasks and **AC-IDs** (acceptance criteria that must map to passing tests). Committed to main before work starts.
-6. **Execute** — `forge:execute` works the plan task-by-task against a `.forge/progress.md` ledger (resumable mid-task). Tests come with the code.
+6. **Execute** — `forge:execute` works the plan task-by-task against a `.forge/progress.md` ledger (resumable mid-task). Tests come with the code. Variant: **`forge:execute-agents`** runs the same loop but fans each task out to role **subagents** (scoper → test-architect → implementer → reviewer) while the main loop keeps the ledger + gates.
 7. **Ship** — `forge:ship` runs the gate ladder (section 6), opens the PR with the AC checklist + honest verification, waits for CI, posts trail comments throughout.
 8. **Merge** — **[you] review and merge.** The agent then runs the post-merge ritual: receipt comment, delivery-log row, board → Done, branch cleanup, digest refresh.
 9. **Release** — `forge:release` when you want a named version: computed readiness checklist → semver from conventional commits → changelog → tag → GitHub Release. In deploy repos it names the staging-verified image digest — release never builds.
