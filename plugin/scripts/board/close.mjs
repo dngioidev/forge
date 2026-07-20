@@ -70,12 +70,53 @@ export async function runClose(ctx, args, log = console.log) {
   return { ok: true, issue: args.issue, reason: args.reason, status: spec.status };
 }
 
+/**
+ * Batch wrapper over runClose. `args.issue` may be a comma-separated string
+ * (`'12,13'`) or a single value. Validates `--reason` ONCE up front so a bad
+ * reason fails fast with no GitHub call. A single issue delegates to runClose
+ * and returns its shape verbatim; two or more loop per-issue, continuing past
+ * failures, and return a `{ ok, closed, failed, results }` summary.
+ */
+export async function runCloseBatch(ctx, args, log = console.log) {
+  if (!REASONS[args.reason]) {
+    return { ok: false, error: `--reason must be one of: ${Object.keys(REASONS).join(', ')}` };
+  }
+  // strict per-token parsing: split on ',', trim, require positive integers.
+  // no silent drops — an empty list or ANY bad token fails before any GitHub call
+  // (a lax parse would let '--issue abc' collapse to [] → a no-op reported as
+  // success, and empty/whitespace tokens would become issue 0 via Number('')).
+  const tokens = String(args.issue ?? '').split(',').map((s) => s.trim());
+  const bad = tokens.find((t) => !/^\d+$/.test(t));
+  if (bad !== undefined) {
+    return { ok: false, error: `--issue must be one or more positive integers, got '${bad}'` };
+  }
+  const issues = tokens.map((t) => Number(t));
+
+  if (issues.length === 1) return runClose(ctx, { ...args, issue: issues[0] }, log);
+
+  const results = [];
+  let closed = 0; let failed = 0;
+  for (const n of issues) {
+    const r = await runClose(ctx, { ...args, issue: n }, log);
+    if (r.ok) closed++; else { failed++; log(`  ✗ #${n}: ${r.error}`); }
+    results.push({ ...r, issue: n });
+  }
+  log(`batch: ${closed} closed, ${failed} failed of ${issues.length}`);
+  return { ok: failed === 0, closed, failed, results };
+}
+
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isMain) {
   const gh = makeGh(run);
   makeBoardCtx({ gh, cwd: process.cwd() }).then(async (ctx) => {
     if (!ctx.ok) { console.error(ctx.error); process.exit(1); }
-    const res = await runClose(ctx, parseArgs(process.argv.slice(2)));
+    const raw = process.argv.slice(2);
+    // keep --issue usable for both single and batch: pull the raw string here so
+    // runCloseBatch can split on ',' (parseArgs coerces to a single Number).
+    const idx = raw.indexOf('--issue');
+    const args = parseArgs(raw);
+    if (idx !== -1 && raw[idx + 1] !== undefined) args.issue = raw[idx + 1];
+    const res = await runCloseBatch(ctx, args);
     if (!res.ok) { console.error(`close failed: ${res.error}`); process.exit(1); }
   });
 }
