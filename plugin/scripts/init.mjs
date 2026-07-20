@@ -124,15 +124,22 @@ export async function runInit(ctx) {
   }
 
   // 6. Write forge.json (merge — never clobber consumer customizations)
+  const fields = {
+    status: toConfigField(pf.fields['status']),
+    priority: toConfigField(pf.fields['priority']),
+    size: toConfigField(pf.fields['size']),
+    type: toConfigField(pf.fields['type']),
+  };
+  // #114: map an optional consumer-defined Phase single-select when present
+  // (forge never creates it — it's opt-in roadmap tracking).
+  if (pf.fields['phase']) {
+    fields.phase = toConfigField(pf.fields['phase']);
+    say('fields: mapped optional Phase field');
+  }
   const board = {
     projectNumber: project.number,
     projectId: project.id,
-    fields: {
-      status: toConfigField(pf.fields['status']),
-      priority: toConfigField(pf.fields['priority']),
-      size: toConfigField(pf.fields['size']),
-      type: toConfigField(pf.fields['type']),
-    },
+    fields,
     ...(deliveryLogIssue != null ? { deliveryLogIssue } : {}),
   };
   const defaults = adopt ? {} : {

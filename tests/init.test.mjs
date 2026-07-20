@@ -93,6 +93,32 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
     expect(ga).toMatch(/^\* text=auto eol=lf$/m);
   });
 
+  it('AC-114.5: maps an optional Phase field into forge.json when the project has one (#114)', async () => {
+    const cwd = await tmpCwd();
+    const withPhase = [...FRESH_FULL_FIELDS, { id: 'PVTSSF_ph', name: 'Phase', options: [{ id: 'ph1', name: 'Alpha' }, { id: 'ph2', name: 'Beta' }] }];
+    let fieldsCall = 0;
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 9, title: 'forge' }) }],
+      ['project link', { stdout: '' }],
+      [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
+        fieldsCall += 1;
+        return fieldsCall === 1
+          ? fieldsResponse(0, [{ id: 'PVTSSF_new1', name: 'Status', options: [{ id: 'a', name: 'Todo' }, { id: 'b', name: 'In Progress' }, { id: 'c', name: 'Done' }] }])
+          : fieldsResponse(0, withPhase);
+      }],
+      [(j) => j.includes('updateProjectV2Field'), { stdout: JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: { id: 'PVTSSF_new1', options: [] } } } }) }],
+      [(j) => j.includes('createProjectV2Field'), { stdout: JSON.stringify({ data: { createProjectV2Field: { projectV2Field: { id: 'PVTSSF_x', options: [] } } } }) }],
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/42\n' }],
+    ]);
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
+    expect(cfg.board.fields.phase).toEqual({ id: 'PVTSSF_ph', options: { alpha: 'ph1', beta: 'ph2' } });
+  });
+
   it('AC-B64.2: fresh create links the new board to the repo (#64)', async () => {
     const cwd = await tmpCwd();
     const { gh, calls } = fakeGh(freshRoutes());

@@ -46,7 +46,28 @@ export async function makeBoardCtx({ gh, cwd }) {
     async findItemByIssue(issueNumber) {
       const list = await this.listItems();
       if (!list.ok) return list;
-      return { ok: true, item: list.items.find((i) => i.content?.number === issueNumber) ?? null };
+      const fromList = list.items.find((i) => i.content?.number === issueNumber);
+      if (fromList) return { ok: true, item: fromList };
+      // Fallback (#114): `gh project item-list` indexes lag behind item creation,
+      // so a freshly-added item (e.g. from a batch) can be absent for a while and
+      // move/receipt would wrongly report "not on board". The issue side is
+      // consistent immediately — ask it for membership + the item id.
+      return this.findItemViaIssue(issueNumber);
+    },
+
+    /** Issue-side lookup: parameterized GraphQL (inline-literal law), returns a minimal item or null. */
+    async findItemViaIssue(issueNumber) {
+      const res = await gh([
+        'api', 'graphql',
+        '-F', `number=${issueNumber}`,
+        '-f', `owner=${repo.owner}`,
+        '-f', `name=${repo.name}`,
+        '-f', 'query=query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ issue(number:$number){ projectItems(first:20){ nodes { id project { number } } } } } }',
+      ], { parseJson: true });
+      if (!res.ok) return { ok: true, item: null }; // best-effort: no fallback item
+      const nodes = res.json?.data?.repository?.issue?.projectItems?.nodes ?? [];
+      const node = nodes.find((n) => n.project?.number === board.projectNumber);
+      return { ok: true, item: node ? { id: node.id, content: { number: issueNumber }, viaFallback: true } : null };
     },
 
     async addItemByUrl(url) {

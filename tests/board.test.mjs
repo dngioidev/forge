@@ -25,6 +25,7 @@ const CFG = {
       priority: { id: 'PVTSSF_p', options: { p0: 'a', p1: 'b', p2: 'c' } },
       size: { id: 'PVTSSF_z', options: { xs: '1', s: '2', m: '3', l: '4', xl: '5' } },
       type: { id: 'PVTSSF_t', options: { epic: 'e', item: 'i', bug: 'g', test: 't' } },
+      phase: { id: 'PVTSSF_ph', options: { alpha: 'ph1', beta: 'ph2' } }, // #114 optional Phase
     },
     deliveryLogIssue: 15,
   },
@@ -56,6 +57,24 @@ describe('boardctx', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain('backlog');
     expect(r.error).toContain('done');
+  });
+
+  it('AC-114.1: findItemByIssue falls back to the issue side when item-list lags (#114)', async () => {
+    // item-list index lag: empty, but the issue is attached on the project
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
+        { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [{ id: 'ITEM_X', project: { number: 8 } }] } } } } }) }],
+    ]);
+    expect(await ctx.findItemByIssue(5)).toMatchObject({ ok: true, item: { id: 'ITEM_X', viaFallback: true } });
+
+    // genuinely absent → null (not on this project)
+    const { ctx: ctx2 } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
+        { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
+    ]);
+    expect((await ctx2.findItemByIssue(9)).item).toBe(null);
   });
 });
 
@@ -130,6 +149,27 @@ describe('create (AC-2.1)', () => {
     const res = await runCreate(ctx, createArgs(['--title', 'X', '--body-file', bf]), noop);
     expect(res.ok).toBe(true);
     expect(calls.some((c) => c.includes('Body loaded from file, not empty.'))).toBe(true);
+  });
+
+  it('AC-114.2: --phase sets the configured Phase field (#114)', async () => {
+    const { ctx, calls } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: createdIssueUrl }],
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
+      ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--phase', 'alpha']), noop);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('PVTSSF_ph') && c.includes('ph1'))).toBe(true); // phase field set to alpha
+  });
+
+  it('AC-114.3: --phase without a configured Phase field errors clearly (#114)', async () => {
+    const ctx = { fields: {}, resolveOption: () => ({ ok: true }) }; // no phase configured
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--phase', 'alpha']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/no Phase field is configured/);
   });
 });
 

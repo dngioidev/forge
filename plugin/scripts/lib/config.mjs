@@ -4,6 +4,7 @@ import { join } from 'node:path';
 export const CONFIG_RELPATH = join('.claude', 'forge.json');
 
 const FIELD_KEYS = ['status', 'priority', 'size', 'type'];
+const OPTIONAL_FIELD_KEYS = ['phase']; // #114: consumer-defined single-selects, mapped by init when the project has them
 
 /**
  * Structural validation of .claude/forge.json — plain checks, no schema
@@ -31,12 +32,7 @@ export function validateConfig(cfg) {
     if (!board.fields || typeof board.fields !== 'object') {
       push('board.fields: missing block');
     } else {
-      for (const key of FIELD_KEYS) {
-        const f = board.fields[key];
-        if (!f || typeof f !== 'object') {
-          push(`board.fields.${key}: missing`);
-          continue;
-        }
+      const checkFieldShape = (key, f) => {
         if (typeof f.id !== 'string' || !/^PVTSSF_/.test(f.id)) {
           push(`board.fields.${key}.id: must be a single-select field id (PVTSSF_…)`);
         }
@@ -47,6 +43,17 @@ export function validateConfig(cfg) {
             if (typeof id !== 'string' || id.length === 0) push(`board.fields.${key}.options.${name}: empty option id`);
           }
         }
+      };
+      for (const key of FIELD_KEYS) {
+        const f = board.fields[key];
+        if (!f || typeof f !== 'object') { push(`board.fields.${key}: missing`); continue; }
+        checkFieldShape(key, f);
+      }
+      for (const key of OPTIONAL_FIELD_KEYS) {
+        const f = board.fields[key];
+        if (f === undefined) continue; // optional — only validated when present
+        if (typeof f !== 'object') { push(`board.fields.${key}: must be an object when present`); continue; }
+        checkFieldShape(key, f);
       }
     }
     if (board.deliveryLogIssue !== undefined && (!Number.isInteger(board.deliveryLogIssue) || board.deliveryLogIssue <= 0)) {
