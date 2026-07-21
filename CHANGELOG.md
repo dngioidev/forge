@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.15.0 — 2026-07-21
+
+### Features
+
+- inline-output fix + shared core + read-only ask helper + features.agy (#162) (#163) ([#162](https://github.com/dngioidev/forge/issues/162) [#163](https://github.com/dngioidev/forge/issues/163))
+
 ## v0.14.0 — 2026-07-21
 
 ### Features
