@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.12.0 — 2026-07-21
+
+### Features
+
+- bin/forge dispatcher, autopilot monitors, theme + polish (#150, #151, #153) (#155) ([#150](https://github.com/dngioidev/forge/issues/150) [#151](https://github.com/dngioidev/forge/issues/151) [#153](https://github.com/dngioidev/forge/issues/153) [#155](https://github.com/dngioidev/forge/issues/155))
+- fulfill missing ticket fields — area (fix --area), labels, milestone (#146) (#147) ([#146](https://github.com/dngioidev/forge/issues/146) [#147](https://github.com/dngioidev/forge/issues/147))
+
+### Fixes
+
+- quote compiled descriptions — unquoted colons dropped all metadata (#149) (#154) ([#149](https://github.com/dngioidev/forge/issues/149) [#154](https://github.com/dngioidev/forge/issues/154))
+
 ## v0.11.0 — 2026-07-21
 
 ### Features
