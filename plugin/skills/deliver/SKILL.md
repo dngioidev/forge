@@ -7,6 +7,10 @@ description: End-to-end delivery of one triaged ticket, driven by subagents, wit
 
 One triaged ticket → a merge-ready PR (or, for a spike, an ADR), unattended, with **exactly one human gate: reviewing the PR**. `deliver` is **kind-aware** — it doesn't assume plain implementation. It classifies the ticket and routes to the right flow, running every phase on subagents while the main loop orchestrates and owns all state.
 
+## Output discipline (quiet run)
+
+The trail, ledger, and journal are the record — don't re-narrate them in chat. Emit **at most one terse status line per phase** (`plan committed`, `PR #145 opened`, `merged`), never a paragraph, preamble, or recap. Don't announce a subagent spawn — spawn it, consume its JSON report, surface only its **verdict + one-line note**, not its working. Reserve prose for **escalations** (the decision + options) and the **final result** (the PR/ADR link + honest verification).
+
 ## The one-gate contract
 
 - **The human is consulted once — at the PR.** Nothing between kickoff and PR asks for approval.

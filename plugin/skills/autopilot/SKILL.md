@@ -9,6 +9,10 @@ Clear the board, unattended. Autopilot is **`forge:deliver` in a continuous loop
 
 Spec: `docs/specs/2026-07-21-forge-autopilot.md`.
 
+## Output discipline (quiet run)
+
+The trail, ledger (`run.json`), and journal are the record — don't re-narrate them in chat. Emit **at most one terse status line per ticket** (`#123 → merged · PR #145`, `#130 → escalated (needs decision)`), never a paragraph, preamble, or recap. The delivery subagents work silently in their own contexts — surface only each returned **outcome**, not its working. Reserve prose for what the human must act on: **escalations** (the decision + options) and the **final run report**.
+
 ## The contract (what changes, what doesn't)
 
 - **The human PR gate is gone.** In its place, a strict **automated merge bar** (below). This is the deliberate trust reversal — the quality guarantee rests entirely on the mechanical gates + adversarial subagents + CI.
