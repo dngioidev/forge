@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 /** Read a JSON file; returns null when missing, throws on broken JSON. */
 export async function readJson(path) {
@@ -20,7 +21,9 @@ export async function readJson(path) {
  */
 export async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  // Random suffix: unique per write (no collision on unawaited concurrent writes)
+  // and unpredictable (no pre-planted-symlink target to guess).
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   await writeFile(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
   try {
     await rename(tmp, path);

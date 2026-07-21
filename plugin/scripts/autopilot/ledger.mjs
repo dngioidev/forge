@@ -24,8 +24,13 @@ export function freshRun(startedAt = null) {
 async function readRun(cwd) {
   try {
     return await readJson(join(cwd, RUN_RELPATH));
-  } catch {
-    return null; // corrupt/truncated run.json — fall back to a fresh run
+  } catch (err) {
+    // readJson already maps a missing/unreadable file to null, so the only thing
+    // that reaches here is JSON.parse choking on a truncated/corrupt file — treat
+    // that as a fresh run. A real I/O error must surface, not silently overwrite
+    // an in-flight run.json with a fresh one.
+    if (err instanceof SyntaxError) return null;
+    throw err;
   }
 }
 
