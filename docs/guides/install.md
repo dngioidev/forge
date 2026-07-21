@@ -47,6 +47,10 @@ Run it after init and any time something feels off. ✗ items block work and say
 | graph | `features.graph: true` + `npm i -D ts-morph` + `node <plugin>/scripts/graph/graphctl.mjs rebuild` | structural index: find_component / who_uses / blast_radius / reuse_candidates MCP tools (TypeScript repos only — grep-first is the permanent fallback otherwise) |
 | design review | `features.designReview: true` | design-reviewer validates UI work against visual specs |
 
+**Code intelligence (LSP, optional):** forge's graph MCP gives structural reuse/blast-radius answers; for real-time diagnostics and go-to-definition, install Anthropic's official LSP plugin for your language rather than one from forge — search `lsp` in the `/plugin` Discover tab (e.g. `typescript-lsp`, `pyright-lsp`, `rust-analyzer-lsp`). Install the language server binary first, then the plugin. forge deliberately doesn't bundle an LSP — the binary is yours to install.
+
+**Theme (optional):** `/theme` → **Forge (smithy)** for forge's ember-on-steel identity.
+
 ## 5. Working in it
 
 Everything is ticket-first: `/forge:ticket` for quick triage, then the lane skills (ideate → brainstorm → design → plan → execute → ship → release; hotfix/respond/maintain for care). `forge board status` (or the status line) is the one-glance catch-up. The owner merges every PR — agents never do.

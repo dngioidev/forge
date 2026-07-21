@@ -1,5 +1,6 @@
 ---
 description: Install the deploy scaffold — digest-pinned Dockerfile, compose, terraform skeleton, environment-branch workflows, smoke script — and wire forge.json
+disable-model-invocation: true
 ---
 
 Install the deploy layer into this repo (spec §10). Ask the user for the app name (default: repo name) and healthcheck path (default: `/healthz`) if not obvious, then run:

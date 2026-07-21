@@ -1,5 +1,6 @@
 ---
 description: Bootstrap or adopt this repo's forge setup — GitHub Project, fields, delivery log, forge.json, gitignore, status line
+disable-model-invocation: true
 ---
 
 Bootstrap forge for this repository (adopt-or-create, idempotent — safe to re-run).

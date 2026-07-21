@@ -1,6 +1,7 @@
 ---
 name: release
 description: Cut a named release — semver from conventional commits, CHANGELOG, annotated tag, GitHub Release, artifact naming. Use after merges when the owner wants a release, or before promoting deploy repos to production.
+disable-model-invocation: true
 ---
 
 # forge:release

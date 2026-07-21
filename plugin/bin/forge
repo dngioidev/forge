@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# forge — one dispatcher for forge's node CLIs (#150). Added to the Bash tool
+# PATH while the plugin is enabled, so skills and manual use can run
+#   forge board create --title "…"
+# instead of  node "${CLAUDE_PLUGIN_ROOT}/scripts/board/create.mjs" …
+# Note: this shortens the command; it still needs `node` resolvable on PATH.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+S="$ROOT/scripts"
+
+usage() {
+  cat >&2 <<'USAGE'
+forge — dispatcher for forge's node CLIs
+  forge init|doctor|release [args…]
+  forge <area> <command> [args…]
+      areas: board, gate, autopilot, care, deploy, design, graph, learn, backends
+examples:
+  forge board create --title "…" --type item
+  forge gate docsync --base main
+  forge autopilot select --dry-run
+  forge release --dry-run
+USAGE
+}
+
+[ $# -eq 0 ] && { usage; exit 2; }
+area="$1"; shift
+
+case "$area" in
+  -h|--help|help) usage; exit 0 ;;
+  init|doctor)    target="$S/$area.mjs" ;;
+  release)        target="$S/release/release.mjs" ;;
+  gate|gates)
+    [ $# -ge 1 ] || { echo "forge $area: missing <command>" >&2; usage; exit 2; }
+    sub="$1"; shift; target="$S/gates/$sub.mjs" ;;
+  board|autopilot|care|deploy|design|graph|learn|backends)
+    [ $# -ge 1 ] || { echo "forge $area: missing <command>" >&2; usage; exit 2; }
+    sub="$1"; shift; target="$S/$area/$sub.mjs" ;;
+  *) echo "forge: unknown area '$area'" >&2; usage; exit 2 ;;
+esac
+
+if [ ! -f "$target" ]; then echo "forge: no such command → $target" >&2; exit 2; fi
+
+# FORGE_DRY=1 prints the resolved invocation instead of running it (used in tests).
+if [ "${FORGE_DRY:-}" = "1" ]; then echo "node $target $*"; exit 0; fi
+exec node "$target" "$@"
