@@ -6,6 +6,7 @@ import { selectNext, actionFor, actionableQueue } from '../../plugin/scripts/aut
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
+import { isShaped } from '../../plugin/scripts/autopilot/readiness.mjs';
 
 const t = (number, status, priority = 'p1') => ({ number, status, priority, title: `#${number}` });
 
@@ -38,6 +39,29 @@ describe('autopilot selection (#128, AC-1/AC-2)', () => {
     const tickets = [{ ...t(1, 'ready'), area: 'ui' }, { ...t(2, 'ready'), area: 'api' }];
     expect(selectNext(tickets, { area: 'api' }).ticket.number).toBe(2);
     expect(actionableQueue(tickets).map((q) => q.ticket.number)).toEqual([1, 2]);
+  });
+});
+
+describe('crazy-mode readiness routing (#142, AC-1)', () => {
+  it('isShaped detects acceptance criteria (Acceptance section or AC-ids)', () => {
+    expect(isShaped('## Acceptance\n- AC-1: does X')).toBe(true);
+    expect(isShaped('blah\n### acceptance criteria\n...')).toBe(true);
+    expect(isShaped('needs AC-12 to hold')).toBe(true);
+    expect(isShaped('just a one-line idea, no shape')).toBe(false);
+    expect(isShaped('')).toBe(false);
+    expect(isShaped(undefined)).toBe(false);
+  });
+
+  it('an UNSHAPED backlog ticket → shape under --shape, escalate without it', () => {
+    const unshaped = { ...t(1, 'backlog'), ready: false };
+    expect(selectNext([unshaped], { shape: true }).action).toBe('shape');
+    expect(selectNext([unshaped], { shape: false }).action).toBe('escalate');
+  });
+
+  it('a SHAPED (or unknown) backlog ticket keeps the triage front door — default unchanged', () => {
+    expect(selectNext([{ ...t(1, 'backlog'), ready: true }], { shape: true }).action).toBe('triage');
+    expect(selectNext([t(1, 'backlog')], { shape: true }).action).toBe('triage'); // ready unknown → triage
+    expect(actionFor('backlog')).toBe('triage'); // back-compat: no opts
   });
 });
 

@@ -46,11 +46,17 @@ Priority-ordered, FIFO within a priority. Read the board fresh each iteration (t
 3. `backlog` — **auto-triaged** first (the front door), then delivered.
 4. **Never selected:** `blocked` (has a pending decision), `done`, `wontDo`, or any ticket with an unresolved escalation.
 
-Flags: `--limit N` stop after N merges · `--area <a>` restrict to one area · `--dry-run` print the selection + per-ticket classification and change nothing.
+Flags: `--limit N` stop after N merges · `--area <a>` restrict to one area · `--dry-run` print the selection + per-ticket classification and change nothing · `--shape` **crazy mode** (below).
+
+A `backlog` ticket routes on its **readiness** (`readiness.mjs` → does it carry acceptance criteria): shaped → the triage front door; **not shaped** → `shape` under `--shape`, else escalate-and-skip (the default).
+
+## Crazy mode — shaping the backlog (`--shape`, spec: forge-autopilot-crazy-mode)
+
+Off by default. With `--shape`, a `backlog` ticket that isn't shaped (no acceptance criteria) is sent to **`forge:shape`** instead of being escalated: it gathers the product context, classifies why it isn't ready, runs the right front-of-pipeline skill (`ideate`/`brainstorm`/`spike`/`design`), and — **grounded-only** — either promotes it Backlog→Ready (then the loop delivers it) or **escalates** the exact open question and skips. The **ground gate** (`gates/groundgate.mjs`) enforces that every shaped product decision cites a real source, so the engine never invents product direction. Without `--shape`, this whole stage is off and an unshaped ticket escalates as before.
 
 ## Auto-triage front door
 
-A `backlog` ticket is run through `forge:triage` to become deliverable *before* `deliver` sees it. If it still can't be specified (planner or triage returns `verdict: fail` — the ask or acceptance is unclear), **escalate it and skip** — the loop moves to the next ticket. Autopilot never guesses a product decision to keep moving.
+A `backlog` ticket that is already shaped is run through `forge:triage` to become deliverable *before* `deliver` sees it. If it still can't be specified (planner or triage returns `verdict: fail` — the ask or acceptance is unclear), **escalate it and skip** — the loop moves to the next ticket. Autopilot never guesses a product decision to keep moving.
 
 ## Auto-merge — the bar that replaces human review
 
