@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.13.0 — 2026-07-21
+
+### Features
+
+- quiet output discipline for orchestration runs (#158) (#159) ([#158](https://github.com/dngioidev/forge/issues/158) [#159](https://github.com/dngioidev/forge/issues/159))
+
 ## v0.12.1 — 2026-07-21
 
 ### Fixes
