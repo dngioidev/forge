@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.0 — 2026-07-21
+
+### Features
+
+- opt-in Gemini second opinion via agy/Antigravity (#160) (#161) ([#160](https://github.com/dngioidev/forge/issues/160) [#161](https://github.com/dngioidev/forge/issues/161))
+
 ## v0.13.0 — 2026-07-21
 
 ### Features
