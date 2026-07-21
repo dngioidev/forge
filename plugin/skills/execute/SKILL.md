@@ -7,6 +7,10 @@ description: Plan → branch, task by task — scoper → failing tests → impl
 
 Plan → working branch. Order is law (spec §4 item 5); the ledger makes any session resumable.
 
+## Output discipline (quiet run)
+
+The ledger, trail, and journal are the record — don't re-narrate them in chat. Emit **at most one terse status line per task** (`T2 tests green`, `T3 done`), never a paragraph, preamble, or recap. Don't announce what a subagent will do — spawn it, consume its JSON report, surface only its **verdict + one-line note**, not its working. Reserve prose for what the human must act on: **escalations** (the decision + options) and the **final summary**.
+
 ## Setup
 
 1. Branch per git conventions: `<type>/<issue#>-<slug>` cut from up-to-date main.

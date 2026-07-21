@@ -7,6 +7,10 @@ description: Like forge:execute, but each plan task is driven by real subagents 
 
 The subagent-fan-out variant of `forge:execute`. Same order-is-law loop and the same ledger — the difference is **who does the work**: every role step is a **Task-tool subagent spawn**, not inline main-loop work. Use this when you want each task's scope/test/implement/review done by a fresh-context specialist; use plain `forge:execute` when inline is enough.
 
+## Output discipline (quiet run)
+
+The ledger, trail, and journal are the record — don't re-narrate them in chat. Emit **at most one terse status line per task** (`T2 tests green`, `T3 reviewed`), never a paragraph, preamble, or recap. Don't announce a subagent spawn — spawn it, consume its JSON report, surface only its **verdict + one-line note**, not its working. Reserve prose for **escalations** (the decision + options) and the **final summary**.
+
 ## Division of labour (the rule that makes this worth it)
 
 - **The orchestrator (this main loop) owns state and never writes task code itself:** branch, `.forge/progress.md` ledger, `.forge/scope.json`, the gates, trail comments, the resume protocol, and every escalation decision.
