@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.11.0 — 2026-07-21
+
+### Features
+
+- crazy mode — grounded autonomous backlog shaping (#140, #141, #142, #143, #144) (#145) ([#140](https://github.com/dngioidev/forge/issues/140) [#141](https://github.com/dngioidev/forge/issues/141) [#142](https://github.com/dngioidev/forge/issues/142) [#143](https://github.com/dngioidev/forge/issues/143) [#144](https://github.com/dngioidev/forge/issues/144) [#145](https://github.com/dngioidev/forge/issues/145))
+
 ## v0.10.0 — 2026-07-20
 
 ### Features

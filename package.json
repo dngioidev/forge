@@ -1,6 +1,6 @@
 {
   "name": "forge",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "Portable AI-dev-platform Claude Code plugin: pipeline skills, agent roster, board automation, learning loop, graph RAG",
   "type": "module",
