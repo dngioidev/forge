@@ -46,7 +46,7 @@ Run it after init and any time something feels off. ✗ items block work and say
 | deploy | `/forge:deploy-init` (sets `features.deploy`) | Dockerfile/compose/terraform scaffold, staging/production env-branch workflows, deploy-readiness gate, smoke script |
 | graph | `features.graph: true` + `npm i -D ts-morph` + `node <plugin>/scripts/graph/graphctl.mjs rebuild` | structural index: find_component / who_uses / blast_radius / reuse_candidates MCP tools (TypeScript repos only — grep-first is the permanent fallback otherwise) |
 | design review | `features.designReview: true` | design-reviewer validates UI work against visual specs |
-| Gemini second opinion | `features.geminiSecondOpinion: true` + `agy` (Antigravity) on PATH | opt-in cross-model review via `agy --print` (Gemini) — advisory, non-gating, zero Claude cost; optional `agy: { command, model }` config |
+| Gemini (agy) offload | `features.agy: true` + `agy` (Antigravity) on PATH | opt-in cross-model help via `agy --print` (Gemini), zero Claude cost — a **second opinion** (`scripts/review/agy-opinion.mjs`) and read-only **codebase Q&A** (`scripts/agy/ask.mjs`). Advisory, non-gating, read-only; optional `agy: { command, model }` config. (`features.geminiSecondOpinion` still accepted.) |
 
 **Code intelligence (LSP, optional):** forge's graph MCP gives structural reuse/blast-radius answers; for real-time diagnostics and go-to-definition, install Anthropic's official LSP plugin for your language rather than one from forge — search `lsp` in the `/plugin` Discover tab (e.g. `typescript-lsp`, `pyright-lsp`, `rust-analyzer-lsp`). Install the language server binary first, then the plugin. forge deliberately doesn't bundle an LSP — the binary is yours to install.
 

@@ -7,6 +7,8 @@ description: Time-boxed research — throwaway exploration on a spike branch tha
 
 Finding out, not building (spec §4 item 12). Opposite rules from the Build lane, on purpose.
 
+**Optional Gemini offload (opt-in):** a spike is exploratory and non-gating, so when `features.agy` is on it's a natural place to spend the shared Gemini quota — `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy/ask.mjs" --question "…"` for read-only codebase Q&A, or the second-opinion helper for a cross-model take. Advisory; the ADR still records *your* verified findings, not the model's raw output.
+
 ## Rules
 
 - **Time-boxed**: agree the box up front (default: half a day). When it expires, write up what you have — "inconclusive, here's what we learned" is a legitimate finding.
