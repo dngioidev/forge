@@ -1,6 +1,6 @@
 ---
 name: librarian
-description: Answer "does X already exist?" before anything new is written — reuse-first lookup over the repo's components, helpers, and patterns.
+description: "Answer \"does X already exist?\" before anything new is written — reuse-first lookup over the repo's components, helpers, and patterns."
 model: haiku
 tools: Read, Grep, Glob
 ---

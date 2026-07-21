@@ -1,6 +1,6 @@
 ---
 name: devops
-description: Own the deploy layer: Dockerfile/compose/Terraform, CI deploy jobs, infra diff review, `terraform plan`. Keep every repo production-deployable at all times (spec §10).
+description: "Own the deploy layer: Dockerfile/compose/Terraform, CI deploy jobs, infra diff review, `terraform plan`. Keep every repo production-deployable at all times (spec §10)."
 model: sonnet
 ---
 

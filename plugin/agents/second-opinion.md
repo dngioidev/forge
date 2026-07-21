@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Independent second-pass critique of a spec, plan, or diff — a different model's eyes, on demand. Advisory only, never a merge gate.
+description: "Independent second-pass critique of a spec, plan, or diff — a different model's eyes, on demand. Advisory only, never a merge gate."
 model: opus
 tools: Read, Grep, Glob
 ---

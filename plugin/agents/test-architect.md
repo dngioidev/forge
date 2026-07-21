@@ -1,6 +1,6 @@
 ---
 name: test-architect
-description: Turn acceptance criteria into a test plan and failing tests — before implementation exists. Own test *intent*; the AC gate verifies it mechanically at ship.
+description: "Turn acceptance criteria into a test plan and failing tests — before implementation exists. Own test *intent*; the AC gate verifies it mechanically at ship."
 model: sonnet
 ---
 

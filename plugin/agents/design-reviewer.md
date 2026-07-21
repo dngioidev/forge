@@ -1,6 +1,6 @@
 ---
 name: design-reviewer
-description: Validate a UI implementation against its committed visual spec — token-only styling, the a11y contract, stories present, spec match. Sections, not vibes.
+description: "Validate a UI implementation against its committed visual spec — token-only styling, the a11y contract, stories present, spec match. Sections, not vibes."
 model: sonnet
 tools: Read, Grep, Glob, Bash
 ---

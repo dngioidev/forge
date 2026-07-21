@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Find what's wrong with a diff — correctness first, then simplification and efficiency — with severity-tagged, actionable findings.
+description: "Find what's wrong with a diff — correctness first, then simplification and efficiency — with severity-tagged, actionable findings."
 model: sonnet
 tools: Read, Grep, Glob, Bash
 ---

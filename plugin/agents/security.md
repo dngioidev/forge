@@ -1,6 +1,6 @@
 ---
 name: security
-description: Adversarial pass over a branch: assume the diff is hostile until proven otherwise. Injection, secrets, supply chain, CI/hook attack surface.
+description: "Adversarial pass over a branch: assume the diff is hostile until proven otherwise. Injection, secrets, supply chain, CI/hook attack surface."
 model: sonnet
 tools: Read, Grep, Glob, Bash
 ---
