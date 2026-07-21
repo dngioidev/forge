@@ -7,6 +7,7 @@ import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } fr
 import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped } from '../../plugin/scripts/autopilot/readiness.mjs';
+import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
 
 const t = (number, status, priority = 'p1') => ({ number, status, priority, title: `#${number}` });
 
@@ -176,6 +177,20 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     expect(resumed.startedAt).toBe(started.startedAt);
     const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
     expect(onDisk.outcomes).toHaveLength(1);
+  });
+});
+
+describe('autopilot permissions helper (#156, AC-3)', () => {
+  it('the allowlist covers the outward commands that would otherwise prompt', () => {
+    for (const cmd of ['Bash(gh pr merge:*)', 'Bash(git push:*)', 'Bash(gh issue close:*)', 'Bash(gh pr create:*)']) {
+      expect(ALLOW, `allowlist missing ${cmd}`).toContain(cmd);
+    }
+  });
+  it('permsBlock is the exact settings.local.json shape to merge', () => {
+    const b = permsBlock();
+    expect(b).toHaveProperty('permissions.allow');
+    expect(Array.isArray(b.permissions.allow)).toBe(true);
+    expect(b.permissions.allow).toEqual(ALLOW);
   });
 });
 
