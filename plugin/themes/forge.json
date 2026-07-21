@@ -1,0 +1,9 @@
+{
+  "name": "Forge (smithy)",
+  "base": "dark",
+  "overrides": {
+    "claude": "#f0813f",
+    "error": "#e5484d",
+    "success": "#46a758"
+  }
+}

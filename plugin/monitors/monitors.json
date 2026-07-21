@@ -1,0 +1,14 @@
+[
+  {
+    "name": "forge-ci",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitors/ci-watch.mjs\"",
+    "description": "CI status on the current branch's PR (autopilot merge bar)",
+    "when": "on-skill-invoke:autopilot"
+  },
+  {
+    "name": "forge-decisions",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitors/decisions-watch.mjs\"",
+    "description": "Answered escalation decisions (.forge/decisions)",
+    "when": "on-skill-invoke:autopilot"
+  }
+]

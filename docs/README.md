@@ -36,6 +36,10 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [C8 — Quota panel](plans/2026-07-19-c8-quota-panel.md) — Claude Code quota panel in the console.
 - [Batch close](plans/2026-07-20-batch-close.md) — tasks for #123: comma-separated `--issue` in `board/close.mjs`.
 
+## Spikes
+
+- [Plugin capabilities](spikes/2026-07-21-plugin-capabilities.md) — research on the full Claude Code plugin surface vs. forge's usage; the tiered enhancement plan behind epic #148 (monitors, bin/, themes, LSP, manifest, `${CLAUDE_PLUGIN_DATA}`).
+
 ## Design specs
 
 - [Console — heat identity](design/2026-07-17-console.md) — visual spec for the local web console: situation-as-heat token system, states matrix, a11y contract.
