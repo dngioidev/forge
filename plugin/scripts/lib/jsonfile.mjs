@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /** Read a JSON file; returns null when missing, throws on broken JSON. */
@@ -12,9 +12,22 @@ export async function readJson(path) {
   return JSON.parse(raw);
 }
 
+/**
+ * Write JSON atomically: stage the bytes in a sibling temp file, then rename it
+ * onto the target. The rename is the only mutation of `path`, so a crash mid-write
+ * can never leave a truncated/half-written JSON file — the next reader sees either
+ * the old complete file or the new one, never a corrupt one (#164).
+ */
 export async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(value, null, 2) + '\n', 'utf8');
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
+  try {
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {}); // don't leave a temp turd behind
+    throw err;
+  }
 }
 
 /**

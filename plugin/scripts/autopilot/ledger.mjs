@@ -16,8 +16,21 @@ export function freshRun(startedAt = null) {
   return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [] };
 }
 
+/**
+ * Read the on-disk run, tolerating a truncated/corrupt file. `writeJson` is atomic,
+ * but a run.json left half-written by an older build (or hand-edited) must not wedge
+ * the loop with an unhandled SyntaxError — a corrupt ledger is treated as absent (#164).
+ */
+async function readRun(cwd) {
+  try {
+    return await readJson(join(cwd, RUN_RELPATH));
+  } catch {
+    return null; // corrupt/truncated run.json — fall back to a fresh run
+  }
+}
+
 export async function loadRun(cwd) {
-  return (await readJson(join(cwd, RUN_RELPATH))) ?? freshRun();
+  return (await readRun(cwd)) ?? freshRun();
 }
 
 /**
@@ -73,7 +86,7 @@ export async function recordFiled(cwd, entry) {
   return run;
 }
 export async function startRun(cwd) {
-  const existing = await readJson(join(cwd, RUN_RELPATH));
+  const existing = await readRun(cwd);
   if (existing?.startedAt) return existing; // resume — keep the original start
   const run = freshRun(new Date().toISOString());
   await writeJson(join(cwd, RUN_RELPATH), run);
