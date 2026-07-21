@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.12.1 — 2026-07-21
+
+### Fixes
+
+- orchestrate-only loop + per-ticket delivery subagent + perms allowlist (#156) (#157) ([#156](https://github.com/dngioidev/forge/issues/156) [#157](https://github.com/dngioidev/forge/issues/157))
+
 ## v0.12.0 — 2026-07-21
 
 ### Features
