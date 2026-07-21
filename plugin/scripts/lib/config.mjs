@@ -4,7 +4,7 @@ import { join } from 'node:path';
 export const CONFIG_RELPATH = join('.claude', 'forge.json');
 
 const FIELD_KEYS = ['status', 'priority', 'size', 'type'];
-const OPTIONAL_FIELD_KEYS = ['phase']; // #114: consumer-defined single-selects, mapped by init when the project has them
+const OPTIONAL_FIELD_KEYS = ['phase', 'area']; // #114/#146: consumer-defined single-selects, mapped by init when the project has them
 
 /**
  * Structural validation of .claude/forge.json — plain checks, no schema

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { selectNext, actionFor, actionableQueue } from '../../plugin/scripts/autopilot/select.mjs';
+import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
@@ -39,6 +39,14 @@ describe('autopilot selection (#128, AC-1/AC-2)', () => {
     const tickets = [{ ...t(1, 'ready'), area: 'ui' }, { ...t(2, 'ready'), area: 'api' }];
     expect(selectNext(tickets, { area: 'api' }).ticket.number).toBe(2);
     expect(actionableQueue(tickets).map((q) => q.ticket.number)).toEqual([1, 2]);
+  });
+
+  it('#146: normalize populates area so --area actually filters (was a no-op)', () => {
+    const ctx = { itemFieldKey: (item, key) => item[key] ?? null };
+    const item = { content: { number: 5, title: 't' }, status: 'ready', priority: 'p1', area: 'api' };
+    expect(normalize(ctx, item)).toMatchObject({ number: 5, status: 'ready', area: 'api' });
+    // no Area field on the board → area is null, not undefined
+    expect(normalize({ itemFieldKey: () => null }, { content: { number: 6 } }).area).toBe(null);
   });
 });
 

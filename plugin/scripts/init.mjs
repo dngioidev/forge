@@ -136,6 +136,13 @@ export async function runInit(ctx) {
     fields.phase = toConfigField(pf.fields['phase']);
     say('fields: mapped optional Phase field');
   }
+  // #146: map an optional consumer-defined Area single-select when present, so
+  // create --area and autopilot --area work. Areas are the consumer's own
+  // (frontend/api/…), so forge maps but never invents them.
+  if (pf.fields['area']) {
+    fields.area = toConfigField(pf.fields['area']);
+    say('fields: mapped optional Area field');
+  }
   const board = {
     projectNumber: project.number,
     projectId: project.id,
