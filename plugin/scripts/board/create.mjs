@@ -12,10 +12,10 @@ import { getIssueNode, addSubIssue } from '../lib/issues.mjs';
 
 /** Defaults applied to a single ticket spec (flags or a --from JSON entry). */
 export function withDefaults(spec = {}) {
-  return { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', phase: null, parent: null, assignee: null, ...spec };
+  return { title: null, body: '', type: 'item', priority: 'p1', size: 'm', status: 'backlog', phase: null, area: null, parent: null, assignee: null, labels: [], milestone: null, ...spec };
 }
 
-const KNOWN_FLAGS = '--title --body --body-file --type --priority --size --status --phase --parent --assignee --from';
+const KNOWN_FLAGS = '--title --body --body-file --type --priority --size --status --phase --area --parent --assignee --label --milestone --from';
 
 export function parseArgs(argv) {
   const a = withDefaults();
@@ -32,8 +32,11 @@ export function parseArgs(argv) {
     else if (k === '--size') a.size = argv[++i];
     else if (k === '--status') a.status = argv[++i];
     else if (k === '--phase') a.phase = argv[++i];
+    else if (k === '--area') a.area = argv[++i];
     else if (k === '--parent') a.parent = Number(argv[++i]);
     else if (k === '--assignee') a.assignee = argv[++i];
+    else if (k === '--label') a.labels.push(argv[++i]);
+    else if (k === '--milestone') a.milestone = argv[++i];
     else if (k === '--from') a.from = argv[++i];
     else a.unknownFlags.push(k); // #104: never silently drop — a swallowed --body-file made empty-body tickets
   }
@@ -83,6 +86,12 @@ export async function runCreate(ctx, args, log = console.log) {
     const r = ctx.resolveOption('phase', args.phase);
     if (!r.ok) return { ok: false, error: r.error };
   }
+  // #146: optional Area, same rule — only when the consumer configured an Area field
+  if (args.area != null) {
+    if (!ctx.fields.area) return { ok: false, error: '--area given but no Area field is configured — forge:init maps it when the project has an "Area" single-select' };
+    const r = ctx.resolveOption('area', args.area);
+    if (!r.ok) return { ok: false, error: r.error };
+  }
 
   // 1. issue: find by exact title first (never duplicate)
   const found = await ctx.gh(
@@ -103,6 +112,17 @@ export async function runCreate(ctx, args, log = console.log) {
     const num = Number((/\/issues\/(\d+)/.exec(url) ?? [])[1]);
     issue = { number: num, url };
     log(`issue: created #${num}`);
+  }
+
+  // 1b. #146: labels + milestone via one idempotent edit (works for both the
+  // just-created and the resumed issue; --add-label + --milestone are idempotent).
+  if ((args.labels && args.labels.length) || args.milestone) {
+    const editArgs = ['issue', 'edit', String(issue.number)];
+    for (const l of args.labels ?? []) editArgs.push('--add-label', l);
+    if (args.milestone) editArgs.push('--milestone', args.milestone);
+    const edited = await ctx.gh(editArgs);
+    if (!edited.ok) return { ok: false, error: edited.stderr || 'issue edit (labels/milestone) failed — do the label/milestone exist in the repo?' };
+    log(`meta: ${[args.labels?.length ? `label ${args.labels.join(',')}` : null, args.milestone ? `milestone ${args.milestone}` : null].filter(Boolean).join(' · ')}`);
   }
 
   // 2. parent sub-issue link (skip when already parented)
@@ -139,6 +159,7 @@ export async function runCreate(ctx, args, log = console.log) {
   // 4. fields — set only what differs (resume-friendly)
   const fieldSets = [['type', args.type], ['priority', args.priority], ['size', args.size], ['status', args.status]];
   if (args.phase != null) fieldSets.push(['phase', args.phase]);
+  if (args.area != null) fieldSets.push(['area', args.area]);
   for (const [fieldKey, wanted] of fieldSets) {
     const current = existing.item ? ctx.itemFieldKey(existing.item, fieldKey) : null;
     if (current === wanted) continue;

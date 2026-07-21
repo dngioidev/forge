@@ -27,6 +27,7 @@ const CFG = {
       size: { id: 'PVTSSF_z', options: { xs: '1', s: '2', m: '3', l: '4', xl: '5' } },
       type: { id: 'PVTSSF_t', options: { epic: 'e', item: 'i', bug: 'g', test: 't' } },
       phase: { id: 'PVTSSF_ph', options: { alpha: 'ph1', beta: 'ph2' } }, // #114 optional Phase
+      area: { id: 'PVTSSF_ar', options: { frontend: 'ar1', api: 'ar2' } }, // #146 optional Area
     },
     deliveryLogIssue: 15,
   },
@@ -171,6 +172,55 @@ describe('create (AC-2.1)', () => {
     const res = await runCreate(ctx, createArgs(['--title', 'X', '--phase', 'alpha']), noop);
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/no Phase field is configured/);
+  });
+
+  it('AC-146.2: --area sets the configured Area field (#146)', async () => {
+    const { ctx, calls } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: createdIssueUrl }],
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
+      ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--area', 'api']), noop);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('PVTSSF_ar') && c.includes('ar2'))).toBe(true); // Area set to api
+  });
+
+  it('AC-146.2: --area without a configured Area field errors clearly (#146)', async () => {
+    const ctx = { fields: {}, resolveOption: () => ({ ok: true }) }; // no area configured
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--area', 'api']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/no Area field is configured/);
+  });
+
+  it('AC-146.4/5: --label (repeatable) + --milestone reconcile via one idempotent issue edit (#146)', async () => {
+    const { ctx, calls } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: createdIssueUrl }],
+      ['issue edit', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--label', 'bug', '--label', 'p0', '--milestone', 'v1']), noop);
+    expect(res.ok).toBe(true);
+    const edit = calls.find((c) => c.startsWith('issue edit'));
+    expect(edit).toContain('--add-label bug');
+    expect(edit).toContain('--add-label p0');
+    expect(edit).toContain('--milestone v1');
+  });
+
+  it('AC-146.4: a failed label/milestone edit surfaces clearly (missing label)', async () => {
+    const { ctx } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: createdIssueUrl }],
+      ['issue edit', { ok: false, stderr: "could not add label: 'ghost' not found" }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'X', '--label', 'ghost']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/issue edit|not found/);
   });
 });
 

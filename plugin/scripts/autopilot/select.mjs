@@ -77,6 +77,7 @@ export function normalize(ctx, item) {
     status: ctx.itemFieldKey(item, 'status'),
     priority: ctx.itemFieldKey(item, 'priority'),
     type: ctx.itemFieldKey(item, 'type'),
+    area: ctx.itemFieldKey(item, 'area'), // #146: null when the board has no Area field
   };
 }
 
@@ -86,6 +87,7 @@ if (isMain) {
   makeBoardCtx({ gh, cwd: process.cwd() }).then(async (ctx) => {
     if (!ctx.ok) { console.error(ctx.error); process.exit(1); }
     const area = process.argv.includes('--area') ? process.argv[process.argv.indexOf('--area') + 1] : null;
+    if (area && !ctx.fields.area) console.warn(`autopilot: --area ${area} given but this board has no Area field — forge:init maps one when the project has an "Area" single-select; nothing will match until then.`);
     const shape = process.argv.includes('--shape'); // crazy mode
     const list = await ctx.listItems();
     if (!list.ok) { console.error(list.error); process.exit(1); }

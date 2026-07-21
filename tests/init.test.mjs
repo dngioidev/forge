@@ -119,6 +119,32 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
     expect(cfg.board.fields.phase).toEqual({ id: 'PVTSSF_ph', options: { alpha: 'ph1', beta: 'ph2' } });
   });
 
+  it('AC-146.1: maps an optional Area field into forge.json when the project has one (#146)', async () => {
+    const cwd = await tmpCwd();
+    const withArea = [...FRESH_FULL_FIELDS, { id: 'PVTSSF_ar', name: 'Area', options: [{ id: 'ar1', name: 'Frontend' }, { id: 'ar2', name: 'API' }] }];
+    let fieldsCall = 0;
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 9, title: 'forge' }) }],
+      ['project link', { stdout: '' }],
+      [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
+        fieldsCall += 1;
+        return fieldsCall === 1
+          ? fieldsResponse(0, [{ id: 'PVTSSF_new1', name: 'Status', options: [{ id: 'a', name: 'Todo' }, { id: 'b', name: 'In Progress' }, { id: 'c', name: 'Done' }] }])
+          : fieldsResponse(0, withArea);
+      }],
+      [(j) => j.includes('updateProjectV2Field'), { stdout: JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: { id: 'PVTSSF_new1', options: [] } } } }) }],
+      [(j) => j.includes('createProjectV2Field'), { stdout: JSON.stringify({ data: { createProjectV2Field: { projectV2Field: { id: 'PVTSSF_x', options: [] } } } }) }],
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/42\n' }],
+    ]);
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
+    expect(cfg.board.fields.area).toEqual({ id: 'PVTSSF_ar', options: { frontend: 'ar1', api: 'ar2' } });
+  });
+
   it('AC-B64.2: fresh create links the new board to the repo (#64)', async () => {
     const cwd = await tmpCwd();
     const { gh, calls } = fakeGh(freshRoutes());
