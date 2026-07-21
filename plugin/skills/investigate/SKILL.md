@@ -7,6 +7,8 @@ description: Unknown-cause bug → root cause + fix proposal on the ticket. Use 
 
 Debugging as a discipline, separate from building (spec §4 item 13). The deliverable is a **root cause + fix proposal on the ticket** — not a fix. The fix goes through execute (planned) or hotfix (urgent).
 
+**Optional Gemini offload (opt-in):** when `features.agy` is on, read-only "where does X happen / what calls Y" lookups can be offloaded to Gemini to save Claude quota — `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy/ask.mjs" --question "…"`. Advisory + read-only; verify anything it claims against the code before acting.
+
 ## Steps
 
 1. **Ticket check**: the bug must have a ticket (triage first). Trail: `comment.mjs --phase started --body "investigating: <hypothesis>"`.
