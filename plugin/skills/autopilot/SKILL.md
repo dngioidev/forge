@@ -14,8 +14,8 @@ Spec: `docs/specs/2026-07-21-forge-autopilot.md`.
 - **The human PR gate is gone.** In its place, a strict **automated merge bar** (below). This is the deliberate trust reversal — the quality guarantee rests entirely on the mechanical gates + adversarial subagents + CI.
 - **The only pauses are real escalations.** Product broken with no safe fix · a design/behaviour decision that isn't the engine's to make · an under-specified ticket · critical security · plus deliver's existing §7 triggers. Everything routine — role choice, UI variant, which regression test, filing a follow-up — autopilot decides and proceeds.
 - **One ticket at a time (v1).** Finish and merge one before starting the next — no worktree machinery, no cross-ticket conflicts. (Parallel via a bounded worktree pool is designed-for but deferred; see spec §9.)
-- **The loop owns the run; deliver owns each ticket.** Autopilot owns the run ledger and the stop condition; each ticket's branch/ledger/gates/trail stay inside `forge:deliver`.
-- **Each ticket is delivered in a discardable context.** `forge:deliver` for a ticket runs as its **own spawned agent**; its heavy tokens (reading/writing/reviewing code) die with that context. The outer loop keeps only `run.json` + git + a one-line outcome per ticket — so loop overhead stays ~O(1) per ticket no matter how long the run (spec §11).
+- **The loop owns the run; the delivery subagent owns each ticket.** Autopilot owns the run ledger and the stop condition; each ticket's branch/ledger/gates/trail/merge happen **inside a spawned delivery subagent**, not in the main loop.
+- **The main loop NEVER delivers inline.** It must not read code, run `forge:deliver`, edit files, or merge in its own context. Doing so fills the main window (forcing compaction mid-run) and surfaces every permission prompt in the orchestrator. The main loop's only tools are selection, the ledger, trail comments, and spawning the delivery subagent (§ Orchestration).
 
 ## The loop
 
@@ -23,19 +23,38 @@ Spec: `docs/specs/2026-07-21-forge-autopilot.md`.
 select next actionable ticket (§ selection)
   ├─ none left ────────────────────────────▶ STOP + run report
   ▼
-triaged?  ── no ──▶ forge:triage
-                      └─ still under-specified (verdict: fail) ─▶ ESCALATE + skip, continue
-  ▼ yes
-forge:deliver  (planner → execute-agents → ship, up to the open PR)
+SPAWN a delivery subagent (Task tool) for this ticket ─────────┐   § Orchestration
+  brief: deliver #N end-to-end (triage/shape → plan →          │   runs in its OWN context
+  execute → ship → open PR → wait CI → auto-merge on green),    │
+  return {issue, outcome, pr, notes}                            │
+  ▼                                                             │
+main loop reads ONLY that terminal report ◀────────────────────┘
+  ├─ outcome=escalated / awaiting-human ─▶ record + park, continue with next ticket
+  ├─ outcome=merged ─────────────────────▶ record to run.json · trail --phase merged
+  └─ subagent filed new work ────────────▶ already on the board — re-enters the queue
   ▼
-merge bar (§ auto-merge)  ── any red ──▶ fix wave; repeat failure ─▶ ESCALATE + park, continue
-  ▼ all green
-squash-merge to main · post-merge ritual · trail --phase merged
-  ▼
-surfaced new work? ─▶ board/create.mjs it (linked, trail-noted) — re-enters the queue
-  ▼
-loop
+loop  (main context unchanged — ~O(1) per ticket)
 ```
+
+## Orchestration — the main loop only orchestrates
+
+Per ticket, the main loop does exactly three things: **spawn**, **record**, **continue**.
+
+1. **Spawn a delivery subagent** with the Task tool — `subagent_type: general-purpose` (or a dedicated delivery agent if the roster has one). The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the route (deliver, or shape-first under `--shape`), the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, wait for CI, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
+2. **Read only the terminal report** — `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}`. The main loop consumes that JSON, writes it to `run.json`, trails the ticket, and never re-reads the subagent's work.
+3. **Continue** to the next ticket. Because the delivery context is discarded, the main window is unchanged between tickets — a 5-ticket and a 50-ticket run cost the same orchestration overhead, and the run never compacts mid-loop.
+
+A subagent that can't finish (deadlock, a gate failing twice, an ungrounded shape) returns `outcome: escalated` with the reason; the loop parks that one ticket and moves on. Never fall back to delivering inline — a missing/broken delivery subagent is itself an escalation.
+
+## Permissions — required for a continuous run
+
+Autopilot is autonomous, so its **outward commands must be pre-authorized** — otherwise `gh pr merge`, `git push`, `gh issue close`, etc. each raise a permission prompt and the loop stalls (it is *not* continuous). Print the exact allowlist and merge it into `.claude/settings.local.json` once:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot/perms.mjs"
+```
+
+This grants unattended **auto-merge and push** authority — review it before adding; it's opt-in and forge never writes it for you. Approving the first prompt as *"always allow"* achieves the same thing incrementally. Without it, autopilot still works but pauses at each outward command for your approval.
 
 ## Selection — "next actionable"
 
@@ -104,6 +123,7 @@ The loop is prose the orchestrator runs, but its mechanical decisions are real, 
 - `merge.mjs` — `evaluateMergeBar(signals)` + `runMerge(ctx,{issue,pr,signals})`: the auto-merge bar. Fail-closed — a missing signal is red; `features.autopilotAutoMerge:false` parks at the PR. This is where "nothing merges on red" lives.
 - `ledger.mjs` — the run ledger (`.forge/autopilot/run.json`): `applyOutcome`/`applyFiled`/`guardTripped`/`renderReport`, plus `ledger.mjs report`. The loop backstop and the resume point.
 - `newwork.mjs` — `fileWork(ctx,{title,kind,from})`: files a linked follow-up (bug/spike/item) mid-run.
+- `perms.mjs` — prints the `.claude/settings.local.json` allowlist autopilot needs to run continuously (non-destructive; opt-in).
 
 The orchestrator holds the ship/gate/reviewer/security verdicts and passes them to the merge bar; the scripts never spawn subagents or drive the loop themselves.
 
@@ -111,7 +131,7 @@ The orchestrator holds the ship/gate/reviewer/security verdicts and passes them 
 
 A long run stays bounded by construction — not by luck:
 
-- **Delegate, don't inline.** Deliver each ticket as a spawned agent; its context (and its own subagents' contexts) is discarded when the ticket ends. The outer loop never ingests code — only the terminal outcome.
+- **Delegate, don't inline (mandatory — see § Orchestration).** Each ticket is delivered in a discardable context — its **own spawned agent** — whose tokens die when the ticket ends. The outer loop never ingests code; it keeps only `run.json` + git + a **one-line outcome** per ticket, so overhead stays **~O(1) per ticket** no matter how long the run.
 - **Checkpoint + reset is free.** Every ticket is written to `run.json`; the resume protocol reconstructs from disk, so the orchestrator can be compacted or restarted between tickets at near-zero reload cost.
 - **Cheap where it can be.** `select.mjs` + the ledger are plain scripts (zero model cost); model tiering already applies inside delivery (haiku lookup / sonnet default / opus only for second-opinion).
 - **Intrinsic vs. overhead.** Per-ticket delivery cost is the real work and can't be optimised away; what autopilot keeps ~constant is the *loop overhead*. The host OS is irrelevant to cost/context — only PATH/shell handling is platform-specific.
