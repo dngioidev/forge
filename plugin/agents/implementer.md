@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Make one plan task's failing tests pass — smallest correct change, repo conventions, nothing beyond the task.
+description: "Make one plan task's failing tests pass — smallest correct change, repo conventions, nothing beyond the task."
 model: sonnet
 ---
 

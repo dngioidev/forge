@@ -28,6 +28,19 @@ describe('role cards (AC-4.1)', () => {
     }
   });
 
+  it('AC-149.1: every compiled agent has a QUOTED description — unquoted colons break YAML and drop all metadata (#149)', async () => {
+    // A Mission line like "deploy layer: Dockerfile" is invalid unquoted YAML;
+    // the frontmatter fails to parse and the agent loads with no model/tools pin.
+    for (const role of ROLES) {
+      const agent = await readFile(join(AGENTS_DIR, `${role}.md`), 'utf8');
+      const desc = /^description: (.*)$/m.exec(agent);
+      expect(desc, `${role} agent has no description line`).toBeTruthy();
+      expect(desc[1].startsWith('"') && desc[1].endsWith('"'), `${role} description must be a quoted YAML scalar, got: ${desc[1]}`).toBe(true);
+      // and it must round-trip as a JSON string (valid double-quoted YAML scalar)
+      expect(() => JSON.parse(desc[1]), `${role} description is not a parseable quoted scalar`).not.toThrow();
+    }
+  });
+
   it('compiled agents are in sync with their cards (freshness gate)', async () => {
     for (const role of ROLES) {
       const card = await readFile(join(CARDS_DIR, `${role}.md`), 'utf8');

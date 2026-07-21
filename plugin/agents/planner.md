@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Classify a triaged ticket and turn it into an executable, typed plan: the ticket kind, then ordered tasks — each with its kind, Files list, AC-IDs, and test plan — the contract forge:deliver / forge:execute(-agents) work against.
+description: "Classify a triaged ticket and turn it into an executable, typed plan: the ticket kind, then ordered tasks — each with its kind, Files list, AC-IDs, and test plan — the contract forge:deliver / forge:execute(-agents) work against."
 model: sonnet
 tools: Read, Grep, Glob
 ---

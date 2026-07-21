@@ -35,3 +35,15 @@ jobs:
       - uses: docker://rhysd/actionlint@sha256:1d74bfc9fd1963af8f89a7c22afaaafd42f49aad711a09951d02cb996398f61d # 1.7.7
         with:
           args: -color
+
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # #149: guard the plugin manifest + component frontmatter. Catches the
+      # unquoted-description YAML break that silently drops agent model/tool pins.
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude plugin validate ./plugin --strict

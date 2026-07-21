@@ -59,7 +59,12 @@ export function compileCard(role, cardBody) {
   const description = (missionMatch?.[1] ?? role).trim();
   const model = MODELS[role] ? `\nmodel: ${MODELS[role]}` : '';
   const tools = TOOLS[role] ? `\ntools: ${TOOLS[role]}` : '';
-  return `---\nname: ${role}\ndescription: ${description}${model}${tools}\n---\n\n<!-- generated from plugin/cards/${role}.md by scripts/backends/compile.mjs — edit the card, not this file -->\n\n${cardBody}`;
+  // #149: quote the description. A Mission line with a colon-space (e.g. "deploy
+  // layer: Dockerfile") is invalid unquoted YAML — the whole frontmatter fails to
+  // parse and the agent loads with EMPTY metadata (model/tools pins silently
+  // dropped). JSON.stringify yields a valid YAML double-quoted scalar.
+  const desc = JSON.stringify(description);
+  return `---\nname: ${role}\ndescription: ${desc}${model}${tools}\n---\n\n<!-- generated from plugin/cards/${role}.md by scripts/backends/compile.mjs — edit the card, not this file -->\n\n${cardBody}`;
 }
 
 export async function compileAll({ cardsDir = CARDS_DIR, agentsDir = AGENTS_DIR } = {}) {
