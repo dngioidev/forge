@@ -163,9 +163,27 @@ export async function replaceStatusOptions(gh, fieldId, optionDefs) {
   return { ok: true, field: res.json.data.updateProjectV2Field.projectV2Field };
 }
 
+/**
+ * Build the `--search` value for finding an issue by its title (#173).
+ *
+ * A raw `"${title}" in:title` breaks when the title itself contains a double
+ * quote: the interpolated quote terminates the phrase early, GitHub parses a
+ * malformed query, and the target issue can drop out of the returned set —
+ * making the idempotency lookup miss and create a DUPLICATE (spec §6). We strip
+ * double quotes (GitHub tokenization ignores punctuation anyway) and use the
+ * remainder as a coarse phrase prefilter. Correctness of the resume never rests
+ * on the search precision — callers still confirm with an exact
+ * `candidate.title === title` comparison against the returned list. This is
+ * also injection-safe: no interpolated `"` can escape the phrase.
+ */
+export function titleSearchQuery(title) {
+  const cleaned = String(title ?? '').replace(/"/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned ? `"${cleaned}" in:title` : 'in:title';
+}
+
 export async function findIssueByTitle(gh, title) {
   const res = await gh(
-    ['issue', 'list', '--state', 'all', '--limit', '100', '--search', `"${title}" in:title`, '--json', 'number,title,state'],
+    ['issue', 'list', '--state', 'all', '--limit', '100', '--search', titleSearchQuery(title), '--json', 'number,title,state'],
     { parseJson: true },
   );
   if (!res.ok) return { ok: false, error: res.stderr || 'issue list failed' };

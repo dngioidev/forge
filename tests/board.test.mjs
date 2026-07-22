@@ -13,6 +13,7 @@ import { runReceipt } from '../plugin/scripts/board/receipt.mjs';
 import { runLog } from '../plugin/scripts/board/log.mjs';
 import { runDigest, renderChildTable, computeFlowMetrics, renderFlow, cycleDays } from '../plugin/scripts/board/digest.mjs';
 import { runStatus } from '../plugin/scripts/board/status.mjs';
+import { findIssueByTitle, titleSearchQuery } from '../plugin/scripts/lib/board.mjs';
 import { fakeGh, REPO_VIEW } from './helpers/fakegh.mjs';
 
 const noop = () => {};
@@ -221,6 +222,84 @@ describe('create (AC-2.1)', () => {
     const res = await runCreate(ctx, createArgs(['--title', 'X', '--label', 'ghost']), noop);
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/issue edit|not found/);
+  });
+});
+
+describe('quoted-title idempotency (AC-173, #173)', () => {
+  // The exact repro from the ticket: a title carrying a literal double-quote.
+  const QT = 'Remove stale "Console daemon" section from troubleshooting.md (ADR-0003)';
+  const CLEANED = '"Remove stale Console daemon section from troubleshooting.md (ADR-0003)" in:title';
+
+  // A STATEFUL gh registry so the round-trip is real: `issue create` appends to
+  // `issues` and the idempotency search reads it back, so a SECOND runCreate can
+  // resume. The search route returns the WHOLE registry (a superset) on purpose
+  // — it proves the resume is decided by the code's exact `title ===` match, not
+  // by the fragile search string.
+  function statefulRoutes() {
+    const issues = [];
+    const items = [];
+    let nextIssue = 40;
+    let nextItem = 1;
+    return [
+      [(j) => j.startsWith('issue list'), () => ({ stdout: JSON.stringify(issues.map((i) => ({ number: i.number, title: i.title, url: i.url }))) })],
+      [(j) => j.startsWith('issue create'), (j, args) => {
+        const title = args[args.indexOf('--title') + 1];
+        const number = nextIssue++;
+        const url = `https://github.com/dngioidev/forge/issues/${number}`;
+        issues.push({ number, title, url });
+        return { stdout: `${url}\n` };
+      }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: items.slice() }) })],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
+      [(j) => j.startsWith('project item-add'), (j, args) => {
+        const number = Number((/\/issues\/(\d+)/.exec(args[args.indexOf('--url') + 1]) ?? [])[1]);
+        const id = `ITEM_${nextItem++}`;
+        items.push({ id, content: { number }, type: null, priority: null, size: null, status: null });
+        return { stdout: JSON.stringify({ id }) };
+      }],
+      ['project item-edit', { stdout: '' }],
+    ];
+  }
+
+  it('AC1/AC2: creating twice from a quoted title resumes the SAME issue — no duplicate', async () => {
+    const { ctx, calls } = await ctxWith(statefulRoutes());
+    const flags = ['--title', QT, '--type', 'bug', '--priority', 'p2', '--size', 's'];
+
+    const first = await runCreate(ctx, createArgs(flags), noop);
+    expect(first).toMatchObject({ ok: true, number: 40, resumed: false });
+
+    const second = await runCreate(ctx, createArgs(flags), noop);
+    expect(second).toMatchObject({ ok: true, number: 40, resumed: true }); // resumed #40, not a duplicate
+
+    // the crux: exactly one create + one board-add across BOTH runs
+    expect(calls.filter((c) => c.startsWith('issue create')).length).toBe(1);
+    expect(calls.filter((c) => c.startsWith('project item-add')).length).toBe(1);
+
+    // the search reaching gh is well-formed and quote-safe — the malformed
+    // `"…"Console daemon"…" in:title` form (the #173 bug) never appears
+    expect(calls.some((c) => c.includes(`--search ${CLEANED}`))).toBe(true);
+    expect(calls.some((c) => c.includes(`"${QT}" in:title`))).toBe(false);
+  });
+
+  it('AC2: titleSearchQuery strips embedded quotes into a coarse, well-formed phrase', () => {
+    expect(titleSearchQuery(QT)).toBe(CLEANED);
+    expect(titleSearchQuery('Plain title')).toBe('"Plain title" in:title'); // quote-free is unchanged
+    expect(titleSearchQuery('  a   b  ')).toBe('"a b" in:title');           // whitespace collapsed
+    expect(titleSearchQuery('""')).toBe('in:title');                        // degenerate → no phrase, still valid
+  });
+
+  it('AC3: findIssueByTitle (lib/board.mjs) resolves a quoted title too — same-class fix', async () => {
+    let searchArg = null;
+    const f = fakeGh([
+      [(j) => j.startsWith('issue list'), (j, args) => {
+        searchArg = args[args.indexOf('--search') + 1];
+        return { stdout: JSON.stringify([{ number: 40, title: QT, state: 'OPEN' }]) };
+      }],
+    ]);
+    const res = await findIssueByTitle(f.gh, QT);
+    expect(res).toMatchObject({ ok: true, issue: { number: 40 } });
+    expect(searchArg).toBe(CLEANED);
+    expect(searchArg).not.toContain('"Console daemon"'); // no raw embedded quote leaked into the query
   });
 });
 
