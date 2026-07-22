@@ -22,7 +22,7 @@ In a Claude Code session inside the target repo:
 
 (or from the terminal: `claude plugin marketplace add dngioidev/forge` then `claude plugin install forge@forge`.)
 
-This brings the 18 skills, the `/forge:*` commands, the safety + learning hooks, and the graph MCP server. Nothing runs against your repo yet.
+This brings the 20 skills, the `/forge:*` commands, the safety + learning hooks, and the graph MCP server. Nothing runs against your repo yet.
 
 ## 2. Bootstrap: `/forge:init`
 
@@ -62,7 +62,7 @@ forge replaces ship / plan+execute / brainstorm one-for-one. Once installed and 
 
 ## Troubleshooting
 
-- **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the shell profile; portable installs to `%LOCALAPPDATA%` work (see [shell notes template](../../plugin/templates/shell-windows.md) on Windows).
+- **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the shell profile. On Windows, a portable install to `%LOCALAPPDATA%` works: add the gh `bin` directory (e.g. `%LOCALAPPDATA%\GitHub CLI`) to your user `Path` via System Settings → Environment Variables, then restart the shell so spawned scripts inherit it.
 - **`token lacks the 'project' scope`** — `gh auth refresh -s project`.
 - **Board writes fail with dangling ids** — someone edited field options in the UI; re-run `/forge:init` to re-map, then `/forge:doctor`.
 - **Anything else** — `/forge:doctor` first; its hints are the supported fixes.
