@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { upsertMarkedComment } from '../lib/issues.mjs';
+import { verifyStatusMoved } from './move.mjs';
 
 /** reason → GitHub close reason + board status key + human label. */
 export const REASONS = {
@@ -57,6 +58,13 @@ export async function runClose(ctx, args, log = console.log) {
   if (found.item) {
     const set = await ctx.setSelect(found.item.id, 'status', spec.status);
     if (!set.ok) return { ok: false, error: set.error };
+    // #201: the close path is exactly where the #73 silent-drop was observed —
+    // a Projects single-select mutation can return ok yet never persist. Re-read
+    // and confirm via the #178 helper: FAIL LOUDLY on a confirmed stuck status
+    // (don't report a board reconcile that didn't take), WARN-and-proceed on an
+    // unreadable re-read (item-list lag) so lag alone never false-fails a close.
+    const verified = await verifyStatusMoved(ctx, args.issue, found.item.id, spec.status, log);
+    if (!verified.ok) return { ok: false, error: verified.error };
     log(`#${args.issue}: board status -> ${spec.status}`);
   } else {
     log(`#${args.issue}: not on the board (status not set)`);
