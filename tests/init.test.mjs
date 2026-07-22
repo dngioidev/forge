@@ -252,6 +252,76 @@ describe('runInit — adopt mode (AC-1.3)', () => {
   });
 });
 
+describe('runInit — statusline wiring (#181)', () => {
+  // A fresh-bootstrap route set (mirrors the fresh-bootstrap describe) so runInit
+  // reaches the statusline step and writes .claude/settings.local.json.
+  function bootstrapRoutes() {
+    let fieldsCall = 0;
+    return [
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 9, title: 'forge' }) }],
+      ['project link', { stdout: '' }],
+      [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
+        fieldsCall += 1;
+        return fieldsCall === 1
+          ? fieldsResponse(0, [{ id: 'PVTSSF_new1', name: 'Status', options: [{ id: 'a', name: 'Todo' }, { id: 'b', name: 'In Progress' }, { id: 'c', name: 'Done' }] }])
+          : fieldsResponse(0, FRESH_FULL_FIELDS);
+      }],
+      [(j) => j.includes('updateProjectV2Field'), { stdout: JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: { id: 'PVTSSF_new1', options: [] } } } }) }],
+      [(j) => j.includes('createProjectV2Field'), { stdout: JSON.stringify({ data: { createProjectV2Field: { projectV2Field: { id: 'PVTSSF_x', options: [] } } } }) }],
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/42\n' }],
+    ];
+  }
+
+  // AC-1 / AC-4: the wired statusLine.command embeds the absolute node binary
+  // (process.execPath), never a bare `node`, and both paths are quoted so a
+  // space in the path (e.g. C:\Program Files\nodejs\node.exe) survives.
+  it('AC-181.1/AC-181.4: wires the absolute process.execPath, quoted, not a bare `node`', async () => {
+    const cwd = await tmpCwd();
+    const { gh } = fakeGh(bootstrapRoutes());
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--statusline', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+
+    const settings = await readJson(join(cwd, '.claude', 'settings.local.json'));
+    const cmd = settings.statusLine.command;
+    expect(settings.statusLine.type).toBe('command');
+    // AC-1: the absolute node binary currently running the test is embedded.
+    expect(cmd).toContain(process.execPath);
+    // AC-2 (unit-checkable slice): it is NOT a bare `node` invocation — that is
+    // exactly the wiring that renders blank when node is off the spawned PATH.
+    expect(cmd).not.toMatch(/^node\s/);
+    // AC-4: the node binary is quoted, so a space in the path cannot split the arg.
+    expect(cmd).toContain(`"${process.execPath}"`);
+    // the script argument is also quoted.
+    expect(cmd).toMatch(/"[^"]*statusline\.mjs"$/);
+  });
+
+  // AC-3: re-running --statusline heals a pre-existing bare-`node` wiring — the
+  // statusLine.command key is idempotently overwritten with the absolute path.
+  it('AC-181.3: re-init overwrites a stale bare-`node` command in place', async () => {
+    const cwd = await tmpCwd();
+    // seed a settings.local.json carrying the OLD broken bare-`node` wiring
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(
+      join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: 'node "C:/old/statusline.mjs"' }, other: { keep: true } }, null, 2),
+      'utf8',
+    );
+
+    const { gh } = fakeGh(bootstrapRoutes());
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--statusline', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+
+    const settings = await readJson(join(cwd, '.claude', 'settings.local.json'));
+    expect(settings.statusLine.command).toContain(`"${process.execPath}"`);
+    expect(settings.statusLine.command).not.toContain('node "C:/old/statusline.mjs"');
+    // unrelated keys survive the merge (no-clobber rule)
+    expect(settings.other).toEqual({ keep: true });
+  });
+});
+
 describe('runInit — failure modes', () => {
   it('fails with a clear message when gh is unauthenticated', async () => {
     const cwd = await tmpCwd();
