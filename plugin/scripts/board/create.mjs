@@ -18,6 +18,14 @@ export function withDefaults(spec = {}) {
 
 const KNOWN_FLAGS = '--title --body --body-file --type --priority --size --status --phase --area --parent --assignee --label --milestone --from';
 
+/**
+ * #178 (AC3): the board hierarchy law — ONLY these types live at the top level;
+ * every other ticket (item/bug/test/…) must be a child of an epic. A non-epic
+ * created WITHOUT a parent is the parentless-follow-up smell (real: follow-ups
+ * #185 and #192 were filed orphan during the autopilot run).
+ */
+const TOP_LEVEL_TYPES = new Set(['epic', 'program']);
+
 export function parseArgs(argv) {
   const a = withDefaults();
   a.from = null;
@@ -172,7 +180,23 @@ export async function runCreate(ctx, args, log = console.log) {
     log(`field: ${fieldKey}=${wanted}`);
   }
 
-  return { ok: true, number: issue.number, itemId, resumed };
+  // #178 (AC3): warn loudly when a non-top-level ticket is left orphaned, so a
+  // follow-up gets reparented under its epic instead of stranded on the board.
+  // Warning-only path (auto-parenting needs epic resolution the caller holds) —
+  // the hint names the exact reparent command. Reconcile against the issue's
+  // ACTUAL parent (like every other step here), not just this call's --parent
+  // flag, so a resumed create of an already-reparented ticket doesn't false-warn.
+  let parentless = false;
+  if (args.parent == null && !TOP_LEVEL_TYPES.has(args.type)) {
+    const node = await getIssueNode(ctx.gh, ctx.owner, ctx.repo, issue.number);
+    if (!node.ok) return { ok: false, error: node.error };
+    parentless = node.parentNumber == null;
+    if (parentless) {
+      log(`⚠ #${issue.number} created parentless — a '${args.type}' should be a child of an epic (board hierarchy). Link it: forge board reparent --issue ${issue.number} --parent <epic#>`);
+    }
+  }
+
+  return { ok: true, number: issue.number, itemId, resumed, parentless };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;

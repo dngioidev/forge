@@ -31,10 +31,12 @@ async function cwdWithConfig() {
 
 describe('escalate (AC-3.2)', () => {
   it('open: moves to blocked, posts decision comment, journals, writes pending file', async () => {
+    // stateful board so the #178 verify-after-move re-read sees the mutation land
+    let status = 'In progress';
     const f = fakeGh([
       ['repo view', REPO_VIEW],
-      [(j) => j.startsWith('project item-list'), { stdout: JSON.stringify({ items: [{ id: 'IT3', content: { number: 3 }, status: 'In progress' }] }) }],
-      ['project item-edit', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT3', content: { number: 3 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Blocked / Needs decision'; return { stdout: '' }; }],
       [(j) => j.includes('/comments?'), { stdout: '[]' }],
       [(j) => j.includes('/issues/3/comments'), { stdout: JSON.stringify({ id: 501 }) }],
     ]);
