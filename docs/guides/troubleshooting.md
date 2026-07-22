@@ -32,18 +32,12 @@ Still stale? Check you're not shadowed: a repo-local override (a same-named skil
 
 `/reload-plugins` often isn't enough for hooks — restart the session. Verify wiring: the hook runs `node "${CLAUDE_PLUGIN_ROOT}/hooks/…"` — if `node` isn't on the **user** PATH (not just your shell profile), hooks fail open silently. Symptom for capture: `.forge/journal.jsonl` never grows despite failing commands.
 
-## 5. Console daemon
-
-- **Port already in use** — another serve is running: reuse it, or `serve --port 7434`.
-- **Repo missing from the page** — it was never registered; run `register` from that repo's directory. Moved a checkout? Edit `~/.forge/daemon.json` `repos` paths by hand.
-- **Situation shows idle during active work** — collect is offline-by-design (no board API); ticket/branch/decisions still show. Not a bug.
-
-## 6. Environment breaks (Windows portable installs)
+## 5. Environment breaks (Windows portable installs)
 
 - **`gh: command not found` inside scripts** — gh must be on the *user* PATH; in Git Bash sessions export it (see the shell notes template).
 - **`spawn pnpm ENOENT`** — bare `.cmd` shims need the cmd.exe retry that `exec.mjs run()` provides; if you hit this in a consumer repo's verify command, invoke via `pnpm.cmd` or ensure the shim dir is on PATH.
 - **gh auth/scope lost** — `gh auth refresh -s project`.
 
-## 7. When it's really stuck
+## 6. When it's really stuck
 
 Re-run `/forge:init` (idempotent — resumes/repairs, never duplicates), then `/forge:doctor`. If a script errors with GraphQL in the message, don't hand-patch the board — that's what forge exists to remove; file a bug ticket with the exact output instead.
