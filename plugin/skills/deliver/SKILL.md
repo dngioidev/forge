@@ -36,7 +36,7 @@ Run the **`forge:execute-agents`** loop against the plan. Per task, the executor
 
 ## Ship (all shippable kinds)
 
-Run `forge:ship`: situation gate · conventions lint · rebase + verify · mechanical gates (`plandrift`, `testintent`, `depguard`, `acgate`) · full-branch `security` + `reviewer` subagents (criticals escalate) · open the PR with `Closes #<n>`, the AC checklist, and an **honest verification statement**. Trail `--phase pr` → `ci-green`.
+Run `forge:ship`: situation gate · conventions lint · rebase + verify · mechanical gates (`plandrift`, `testintent`, `depguard`, `acgate`) · full-branch `security` + `reviewer` subagents (criticals escalate) · open the PR with `Closes #<n>`, the AC checklist, and an **honest verification statement**. Then **watch CI to green in this same run** with `gh pr checks <pr> --watch` — do **not** open the PR and return awaiting a background/external completion notification: a returned subagent's context is discarded and nothing re-invokes it on green, so the ticket stalls until a manual resume. Trail `--phase pr` → `ci-green`.
 
 ## Stop — the human gate
 

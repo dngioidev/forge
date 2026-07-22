@@ -81,6 +81,18 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/host OS is irrelevant|OS.*irrelevant/i);
   });
 
+  it('#177: the delivery-subagent brief watches CI to green in-run and forbids the return-then-resume stall', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // AC1: brief instructs gh pr checks --watch to conclusion + merge in the same run
+    expect(s).toMatch(/gh pr checks <pr> --watch/);
+    expect(s).toMatch(/watch CI to green in.?run|watch CI to conclusion/i);
+    expect(s).toMatch(/same (run|invocation)/i);
+    // AC2: the open-PR-then-await-external-notification stall is explicitly forbidden
+    expect(s).toMatch(/Forbidden.*return-then-resume|return-then-resume stall/i);
+    expect(s).toMatch(/nothing re-invokes it when CI goes green|isn't re-invoked on green|never return.*re-spawned on green/i);
+    expect(s).toMatch(/await.*(external|background).*notification/i);
+  });
+
   it('AC-2 front door + AC-5 files new work + AC-6 safety are all specified', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // auto-triage front door, under-specified => escalate + skip
