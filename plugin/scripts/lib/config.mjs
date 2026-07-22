@@ -81,6 +81,21 @@ export function validateConfig(cfg) {
     }
   }
 
+  if (cfg.readiness !== undefined) {
+    const r = cfg.readiness;
+    if (typeof r !== 'object' || Array.isArray(r)) {
+      push('readiness: must be an object');
+    } else if (r.acHeadings !== undefined) {
+      if (!Array.isArray(r.acHeadings)) {
+        push('readiness.acHeadings: must be an array of heading strings');
+      } else {
+        r.acHeadings.forEach((h, i) => {
+          if (typeof h !== 'string' || h.trim().length === 0) push(`readiness.acHeadings[${i}]: must be a non-empty string`);
+        });
+      }
+    }
+  }
+
   if (cfg.team !== undefined) {
     const team = cfg.team;
     if (typeof team !== 'object' || Array.isArray(team)) {

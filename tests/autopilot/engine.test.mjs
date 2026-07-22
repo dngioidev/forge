@@ -6,7 +6,7 @@ import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
-import { isShaped } from '../../plugin/scripts/autopilot/readiness.mjs';
+import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
 
 const t = (number, status, priority = 'p1') => ({ number, status, priority, title: `#${number}` });
@@ -88,6 +88,38 @@ describe('crazy-mode readiness routing (#142, AC-1)', () => {
     expect(isShaped('just a one-line idea, no shape')).toBe(false);
     expect(isShaped('')).toBe(false);
     expect(isShaped(undefined)).toBe(false);
+  });
+
+  // #176: localized (non-English) acceptance-criteria headings.
+  it('AC1: a body whose only AC section is under a built-in localized heading is shaped', () => {
+    // Vietnamese built-ins — the iomanage language policy.
+    expect(isShaped('## Tiêu chí nghiệm thu\n- làm X')).toBe(true);
+    expect(isShaped('### Tiêu chí chấp nhận\n...')).toBe(true);
+    // case-insensitive + Unicode-safe (lowercased diacritics still match).
+    expect(isShaped('## tiêu chí nghiệm thu\n...')).toBe(true);
+    // built-in list is exported and carries the Vietnamese headings.
+    expect(DEFAULT_AC_HEADINGS).toEqual(expect.arrayContaining(['Tiêu chí nghiệm thu', 'Tiêu chí chấp nhận']));
+    // no false positive: a heading that merely starts with a built-in word.
+    expect(isShaped('## Acceptances of the plan were noted')).toBe(false);
+    // English + AC-id behavior is unchanged.
+    expect(isShaped('## Acceptance\n- AC-1: does X')).toBe(true);
+    expect(isShaped('needs AC-12 to hold')).toBe(true);
+  });
+
+  it('AC2/AC3: the heading list is extensible via forge.json (readiness.acHeadings) without a code change', () => {
+    const config = { readiness: { acHeadings: ['Критерии приёмки', 'Definition of Done'] } };
+    // a custom config-supplied heading is recognized...
+    expect(isShaped('## Критерии приёмки\n- пункт', config)).toBe(true);
+    expect(isShaped('## Definition of Done\n- item', config)).toBe(true);
+    // ...without disabling the built-ins.
+    expect(isShaped('## Tiêu chí nghiệm thu\n...', config)).toBe(true);
+    expect(isShaped('## Acceptance\n...', config)).toBe(true);
+    // an unknown heading (not built-in, not configured) is still unshaped.
+    expect(isShaped('## Критерии приёмки\n...')).toBe(false);
+    // a malformed/missing readiness block is tolerated, not thrown.
+    expect(isShaped('## Acceptance', { readiness: null })).toBe(true);
+    expect(isShaped('## Acceptance', {})).toBe(true);
+    expect(isShaped('## Acceptance', { readiness: { acHeadings: 'nope' } })).toBe(true);
   });
 
   it('an UNSHAPED backlog ticket → shape under --shape, escalate without it', () => {
