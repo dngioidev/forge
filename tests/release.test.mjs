@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { parseCommit, deriveBump, nextVersion, groupChanges, renderChangelogSection, renderReleaseBody, summarize } from '../plugin/scripts/release/core.mjs';
+import { runRelease, parseArgs } from '../plugin/scripts/release/release.mjs';
 import { computeReadiness } from '../plugin/scripts/release/readiness.mjs';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { append } from '../plugin/scripts/lib/journal.mjs';
@@ -130,5 +131,131 @@ describe('release bumps version files (AC-B10.1, #51)', () => {
     const bumped = manifest.replace(/"version":\s*"[^"]+"/, '"version": "0.2.0"');
     expect(bumped).toContain('"version": "0.2.0"');
     expect(bumped).toContain('version 0.1.0 of things'); // description untouched
+  });
+});
+
+describe('runRelease mutating path (#165)', () => {
+  // Seed a temp repo the mutating path can read/write: two version files + a CHANGELOG.
+  async function seedRepo({ changelog, pkgPrivate = false } = {}) {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-rel-mut-'));
+    await mkdir(join(cwd, 'plugin', '.claude-plugin'), { recursive: true });
+    const pkg = { name: 'forge', version: '0.1.0', ...(pkgPrivate ? { private: true } : {}) };
+    await writeFile(join(cwd, 'package.json'), JSON.stringify(pkg, null, 2), 'utf8');
+    await writeFile(
+      join(cwd, 'plugin', '.claude-plugin', 'plugin.json'),
+      '{\n  "name": "forge",\n  "version": "0.1.0",\n  "description": "version 0.1.0 of things"\n}',
+      'utf8',
+    );
+    if (changelog !== undefined) await writeFile(join(cwd, 'CHANGELOG.md'), changelog, 'utf8');
+    return cwd;
+  }
+
+  // Injected git + gh fakes. Every mutating git subcommand and the gh release
+  // create push a marker onto `order` AND record its full argv on `calls`, so
+  // the test can assert both the exact pipeline sequence and the exact args
+  // (version string / refspec) each mutation is invoked with. At `git add` time
+  // we snapshot the on-disk files to prove the version-file rewrite + CHANGELOG
+  // prepend both happened BEFORE the commit.
+  function makeFakes({ cwd, commitOk = true } = {}) {
+    const order = [];
+    const calls = {};
+    const snapshot = {};
+    const record = (op, args) => { order.push(op); calls[op] = args; };
+    const git = async (_cmd, args) => {
+      const sub = args[0];
+      const ok = { ok: true, code: 0, stdout: '', stderr: '' };
+      switch (sub) {
+        case 'rev-parse': return { ...ok, stdout: 'main\n' }; // readiness: on main
+        case 'status': return ok; // clean worktree
+        case 'fetch': return ok;
+        case 'rev-list': return { ...ok, stdout: '0\n' }; // up to date
+        case 'describe': return { ...ok, stdout: 'v0.1.0\n' }; // last tag
+        case 'log': return { ...ok, stdout: 'feat(release): cover mutating path (#165)\n' };
+        case 'diff': return { ...ok, stdout: 'plugin/scripts/release/release.mjs\n' };
+        case 'add':
+          record('add', args);
+          snapshot.pkg = await readFile(join(cwd, 'package.json'), 'utf8');
+          snapshot.manifest = await readFile(join(cwd, 'plugin', '.claude-plugin', 'plugin.json'), 'utf8');
+          snapshot.changelog = await readFile(join(cwd, 'CHANGELOG.md'), 'utf8');
+          return ok;
+        case 'commit':
+          record('commit', args);
+          return commitOk ? ok : { ok: false, code: 1, stdout: '', stderr: 'nothing staged' };
+        case 'tag': record('tag', args); return ok;
+        case 'push': record('push', args); return ok;
+        default: return ok;
+      }
+    };
+    const gh = async (args) => {
+      if (args[0] === 'repo') return { ok: true, json: { owner: { login: 'o' }, name: 'r', defaultBranchRef: { name: 'main' } } };
+      if (args[0] === 'release') { record('release', args); return { ok: true, stdout: '', stderr: '' }; }
+      return { ok: true, stdout: '', stderr: '' };
+    };
+    return { git, gh, order, calls, snapshot };
+  }
+
+  it('AC1: mutates in order version-files -> changelog -> commit -> tag -> push -> release', async () => {
+    const cwd = await seedRepo({ changelog: '# Changelog\n\n## v0.1.0 — 2026-01-01\n\n- prior entry\n' });
+    const { git, gh, order, calls, snapshot } = makeFakes({ cwd });
+    const res = await runRelease({ cwd, gh, execFn: git }, { dryRun: false }, () => {});
+
+    expect(res).toMatchObject({ ok: true, version: '0.2.0', bump: 'minor' });
+    // full pipeline sequence, exactly once, in order
+    expect(order).toEqual(['add', 'commit', 'tag', 'push', 'release']);
+
+    // each mutation is invoked with the right version string / refspec — a
+    // wrong-ref regression (e.g. pushing the wrong tag) fails here.
+    expect(calls.add).toEqual(['add', 'CHANGELOG.md', 'package.json', join('plugin', '.claude-plugin', 'plugin.json')]);
+    expect(calls.commit).toEqual(['commit', '-m', 'chore(release): v0.2.0']);
+    expect(calls.tag).toEqual(['tag', '-a', 'v0.2.0', '-m', 'v0.2.0']);
+    expect(calls.push).toEqual(['push', 'origin', 'main', 'v0.2.0']);
+    expect(calls.release.slice(0, 3)).toEqual(['release', 'create', 'v0.2.0']);
+
+    // version files + changelog were already rewritten on disk BEFORE the commit
+    // (snapshot captured at `git add`, which the code runs right after writing).
+    expect(snapshot.pkg).toContain('"version": "0.2.0"');
+    expect(snapshot.manifest).toContain('"version": "0.2.0"');
+    expect(snapshot.manifest).toContain('version 0.1.0 of things'); // description untouched — regex hit only the version key
+    // CHANGELOG marker/startsWith branch: new section inserted right after the marker, prior entry retained
+    expect(snapshot.changelog.startsWith('# Changelog\n\n## v0.2.0 — ')).toBe(true);
+    expect(snapshot.changelog).toContain('## v0.1.0 — 2026-01-01');
+    expect(snapshot.changelog).toContain('- prior entry');
+
+    // final on-disk state matches the snapshot (no post-commit rewrite)
+    expect(await readFile(join(cwd, 'package.json'), 'utf8')).toContain('"version": "0.2.0"');
+
+    // npm-publish note derivation (public package)
+    expect(res.notes.some((n) => n.includes('npm publish'))).toBe(true);
+  });
+
+  it('AC1 (else branch): prepends the section when CHANGELOG lacks the marker; private package suppresses the npm note', async () => {
+    // private package also exercises the note-derivation branch at release.mjs:112
+    const cwd = await seedRepo({ changelog: 'legacy changelog without marker\n', pkgPrivate: true });
+    const { git, gh, order } = makeFakes({ cwd });
+    const res = await runRelease({ cwd, gh, execFn: git }, { dryRun: false }, () => {});
+    expect(res.ok).toBe(true);
+    expect(order).toEqual(['add', 'commit', 'tag', 'push', 'release']);
+    const cl = await readFile(join(cwd, 'CHANGELOG.md'), 'utf8');
+    expect(cl.startsWith('## v0.2.0 — ')).toBe(true); // no marker -> section prepended verbatim
+    expect(cl).toContain('legacy changelog without marker');
+    expect(res.notes.some((n) => n.includes('npm publish'))).toBe(false); // private -> no publish note
+  });
+
+  it('AC2: a failed git commit aborts BEFORE tagging/pushing (no dangling tag, no release)', async () => {
+    const cwd = await seedRepo({ changelog: '# Changelog\n\n' });
+    const { git, gh, order } = makeFakes({ cwd, commitOk: false });
+    const res = await runRelease({ cwd, gh, execFn: git }, { dryRun: false }, () => {});
+
+    expect(res).toEqual({ ok: false, error: 'changelog commit failed' });
+    // pipeline stops exactly at the failed commit — no tag ('no dangling local
+    // tag'), no push, no gh release ever run.
+    expect(order).toEqual(['add', 'commit']);
+  });
+
+  it('AC3: parseArgs reads the --dry-run flag directly', () => {
+    expect(parseArgs(['--dry-run'])).toEqual({ dryRun: true });
+    expect(parseArgs([])).toEqual({ dryRun: false });
+    expect(parseArgs(['--other', '--dry-run', 'x'])).toEqual({ dryRun: true });
+    expect(parseArgs(['--notdryrun'])).toEqual({ dryRun: false });
   });
 });
