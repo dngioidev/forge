@@ -120,5 +120,5 @@ if (isMain) {
   const gh = makeGh(run);
   runDeployInit({ gh, cwd: process.cwd() }, parseArgs(process.argv.slice(2))).then((res) => {
     if (!res.ok) { console.error(`deploy-init failed: ${res.error}`); process.exit(1); }
-  });
+  }).catch((err) => { console.error(`deploy-init failed: ${err.message}`); process.exit(1); });
 }
