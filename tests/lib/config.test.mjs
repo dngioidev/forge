@@ -78,6 +78,26 @@ describe('validateConfig', () => {
     expect(r.errors.some((e) => e.includes('board.fields.phase.options'))).toBe(true);
   });
 
+  it('#176: readiness.acHeadings is optional, validated as a string array when present', () => {
+    expect(validateConfig(validCfg()).ok).toBe(true); // absent → fine
+
+    const ok = validCfg();
+    ok.readiness = { acHeadings: ['Tiêu chí nghiệm thu', 'Definition of Done'] };
+    expect(validateConfig(ok)).toEqual({ ok: true, errors: [] });
+
+    const badType = validCfg();
+    badType.readiness = { acHeadings: 'Acceptance' };
+    expect(validateConfig(badType).errors.some((e) => e.includes('readiness.acHeadings'))).toBe(true);
+
+    const badEntry = validCfg();
+    badEntry.readiness = { acHeadings: ['ok', ''] };
+    expect(validateConfig(badEntry).errors.some((e) => e.includes('readiness.acHeadings[1]'))).toBe(true);
+
+    const badBlock = validCfg();
+    badBlock.readiness = [];
+    expect(validateConfig(badBlock).errors.some((e) => e.includes('readiness: must be an object'))).toBe(true);
+  });
+
   it('requires at least one maintainer when team.members present', () => {
     const cfg = validCfg();
     cfg.team.members = [{ github: 'alice', roles: ['developer'] }];

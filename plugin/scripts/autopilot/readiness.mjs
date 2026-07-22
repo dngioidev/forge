@@ -5,12 +5,69 @@
  * door? A shaped ticket is deliverable (triage only); an unshaped one is `shape`
  * under crazy mode (--shape) or `escalate` in plain autopilot. Pure + testable;
  * the loop reads the issue body and passes the result to select's actionFor.
+ *
+ * #176: a project's language policy may write its acceptance section under a
+ * localized heading (iomanage: Vietnamese `## Tiêu chí nghiệm thu` /
+ * `## Tiêu chí chấp nhận`). Matching only the English `## Acceptance` mis-flagged
+ * every shaped ticket as UNSHAPED. Recognition is now driven by a heading list:
+ * built-in English + Vietnamese defaults, extensible via `readiness.acHeadings`
+ * in forge.json (AC2) without a code change. The `AC-\d+` id match is unchanged.
  */
 
-/** True when the body carries acceptance criteria (an Acceptance section or AC-ids). */
-export function isShaped(body) {
-  const text = typeof body === 'string' ? body : '';
-  if (/(^|\n)\s{0,3}#{1,6}\s*Acceptance\b/i.test(text)) return true; // "## Acceptance"
-  if (/\bAC-?\d+\b/.test(text)) return true;                          // AC-1 / AC12 references
+/**
+ * Built-in acceptance-criteria headings, matched case-insensitively. English
+ * plus the common Vietnamese phrasings; a consumer adds more via forge.json.
+ */
+export const DEFAULT_AC_HEADINGS = [
+  'Acceptance',           // en: "Acceptance" / "Acceptance criteria"
+  'Tiêu chí nghiệm thu',  // vi
+  'Tiêu chí chấp nhận',   // vi
+];
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Extra headings from config, tolerating a missing/malformed block: only
+ * non-empty trimmed strings survive. Accepts the whole forge.json config object.
+ */
+function configHeadings(config) {
+  const list = config?.readiness?.acHeadings;
+  if (!Array.isArray(list)) return [];
+  return list.filter((h) => typeof h === 'string' && h.trim().length > 0).map((h) => h.trim());
+}
+
+// The heading list is constant for a run (built-ins + one config), so compile the
+// regex once per distinct list instead of on every per-ticket isShaped() call.
+const _regexCache = new Map();
+
+/** Build (memoized) the case-insensitive, Unicode-safe heading regex. */
+function headingRegex(headings) {
+  const key = headings.join('\n'); // newline can't appear inside a heading string
+  let re = _regexCache.get(key);
+  if (!re) {
+    const alt = headings.map(escapeRegExp).join('|');
+    // "#{1,6} <heading>" at (indented) line start; trailing (?![\p{L}\p{N}_]) is a
+    // Unicode-aware word boundary so "Acceptance criteria" matches but a longer
+    // word like "Acceptances" does not — parity with the old ASCII \b, safe for
+    // diacritic-carrying Vietnamese headings.
+    re = new RegExp(`(^|\\n)\\s{0,3}#{1,6}\\s*(?:${alt})(?![\\p{L}\\p{N}_])`, 'iu');
+    _regexCache.set(key, re);
+  }
+  return re;
+}
+
+/**
+ * True when the body carries acceptance criteria: an acceptance-heading section
+ * (English/Vietnamese built-ins + any `config.readiness.acHeadings`) or AC-ids.
+ * Body and headings are NFC-normalized first so a visually-identical but NFD-
+ * encoded Vietnamese heading (macOS/IME authoring) still matches its NFC literal.
+ * @param {string} body   issue body
+ * @param {object} [config] loaded forge.json config (for extra AC headings)
+ */
+export function isShaped(body, config = null) {
+  const text = (typeof body === 'string' ? body : '').normalize('NFC');
+  const headings = [...DEFAULT_AC_HEADINGS, ...configHeadings(config)].map((h) => h.normalize('NFC'));
+  if (headingRegex(headings).test(text)) return true; // "## Acceptance" / localized
+  if (/\bAC-?\d+\b/.test(text)) return true;           // AC-1 / AC12 references
   return false;
 }

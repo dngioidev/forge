@@ -99,9 +99,11 @@ if (isMain) {
     const tickets = list.items.map((i) => normalize(ctx, i)).filter((t) => t.number != null);
     // Readiness routing (#142): backlog tickets branch on whether they're shaped.
     // Only the backlog set needs a body read — the rest route on status alone.
+    // #176: ctx.config (already-loaded forge.json) can extend the AC-heading list
+    // via readiness.acHeadings, so isShaped honors localized headings.
     for (const t of tickets.filter((x) => x.status === 'backlog')) {
       const view = await ctx.gh(['issue', 'view', String(t.number), '--json', 'body'], { parseJson: true });
-      t.ready = view.ok ? isShaped(view.json?.body) : null;
+      t.ready = view.ok ? isShaped(view.json?.body, ctx.config) : null;
     }
     const next = selectNext(tickets, { area, shape });
     if (!next) { console.log('autopilot: no actionable ticket — board is clear'); process.exit(0); }
