@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
-import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
+import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
@@ -175,6 +175,37 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     await recordOutcome(cwd, { issue: 7, outcome: 'merged', ref: 'PR#7' });
     const resumed = await startRun(cwd); // must NOT reset
     expect(resumed.startedAt).toBe(started.startedAt);
+    const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
+    expect(onDisk.outcomes).toHaveLength(1);
+  });
+
+  // #164 crash-safety: a process killed mid-write of run.json must not wedge the
+  // next run. The guarded reader treats a truncated/corrupt file as a fresh run.
+  async function writeRaw(cwd, text) {
+    const p = join(cwd, RUN_RELPATH);
+    await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, text, 'utf8');
+    return p;
+  }
+
+  it('AC-B164.2: loadRun tolerates a corrupt/absent run.json — fresh-run fallback, never a throw', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    // absent → fresh
+    expect(await loadRun(cwd)).toMatchObject({ version: 1, iterations: 0, outcomes: [] });
+    // truncated mid-write (the R1 failure mode) → fresh, not a SyntaxError
+    await writeRaw(cwd, '{ "version": 1, "startedAt": "2026-07-21T00:00:00Z", "outcom');
+    const run = await loadRun(cwd);
+    expect(run).toMatchObject({ version: 1, iterations: 0, outcomes: [] });
+  });
+
+  it('AC-B164.3: startRun recovers from a truncated run.json and starts a clean run', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    // simulate a crash that left half a JSON object on disk
+    await writeRaw(cwd, '{ "version": 1, "startedAt": "2026-07-21');
+    const started = await startRun(cwd); // must NOT throw — begins a fresh run
+    expect(started.startedAt).toBeTruthy();
+    // and the ledger is usable again from here (round-trips to disk)
+    await recordOutcome(cwd, { issue: 9, outcome: 'merged', ref: 'PR#9' });
     const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
     expect(onDisk.outcomes).toHaveLength(1);
   });
