@@ -19,6 +19,42 @@ export function normalizeStatusKey(s) {
   return String(s ?? '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 }
 
+/**
+ * #178: a Projects single-select mutation can return ok yet silently NOT persist
+ * (observed on iomanage #73 — the issue was CLOSED but the Status field stayed
+ * put, so the post-merge ritual reported "board → Done" while the field sat at
+ * Backlog). After a move we RE-READ the item and confirm the field now equals
+ * the requested status. A concrete mismatch is retried once, then FAILS LOUDLY
+ * rather than reporting a move that never took — a closed issue stuck at a
+ * non-Done status is a reliable tell of a dropped board mutation. An unreadable
+ * status (item-list index lag returning a fallback item with no field, #114)
+ * can be neither confirmed nor disproved — we WARN and proceed unverified so
+ * lag alone never manufactures a false failure.
+ */
+export async function verifyStatusMoved(ctx, issue, itemId, status, log = console.log) {
+  let current = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const re = await ctx.findItemByIssue(issue);
+    if (!re.ok) return { ok: false, error: `verify move failed: ${re.error}` };
+    current = re.item ? ctx.itemFieldKey(re.item, 'status') : null;
+    if (current === status) return { ok: true, verified: true };
+    if (attempt === 1) {
+      log(`#${issue}: status still '${current ?? 'unreadable'}' after move — retrying once`);
+      const redo = await ctx.setSelect(itemId, 'status', status);
+      if (!redo.ok) return { ok: false, error: redo.error };
+    }
+  }
+  // re-read after the retry STILL doesn't match:
+  if (current == null) {
+    log(`#${issue}: could not confirm status moved to ${status} (item not readable on re-read) — proceeding unverified`);
+    return { ok: true, verified: false };
+  }
+  return {
+    ok: false,
+    error: `move to '${status}' did NOT persist — board Status is still '${current}' after re-read (a silently-dropped Projects mutation; a closed issue stuck at '${current}' is the #73 tell). Re-run the move or fix the Status field by hand.`,
+  };
+}
+
 export async function runMove(ctx, args, log = console.log) {
   if (!Number.isInteger(args.issue)) return { ok: false, error: '--issue <number> is required' };
   const status = normalizeStatusKey(args.status);
@@ -35,8 +71,11 @@ export async function runMove(ctx, args, log = console.log) {
   }
   const set = await ctx.setSelect(found.item.id, 'status', status);
   if (!set.ok) return set;
+  // AC1: confirm the mutation actually took before reporting success.
+  const verified = await verifyStatusMoved(ctx, args.issue, found.item.id, status, log);
+  if (!verified.ok) return verified;
   log(`#${args.issue}: status -> ${status}`);
-  return { ok: true, changed: true };
+  return { ok: true, changed: true, verified: verified.verified };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;

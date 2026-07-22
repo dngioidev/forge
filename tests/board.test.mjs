@@ -223,6 +223,47 @@ describe('create (AC-2.1)', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/issue edit|not found/);
   });
+
+  // #178 AC3: parentless follow-ups (real: #185, #192) are the board-hierarchy
+  // smell — a non-epic must be a child of an epic. Warn loudly at create time.
+  const parentlessRoutes = [
+    ['issue list', { stdout: '[]' }],
+    ['issue create', { stdout: createdIssueUrl }],
+    [(j) => j.startsWith('project item-list'), itemList([])],
+    ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+    ['project item-edit', { stdout: '' }],
+  ];
+
+  it('AC-178.3: a non-epic created WITHOUT --parent emits a parentless warning (#178)', async () => {
+    const logs = [];
+    const { ctx } = await ctxWith(parentlessRoutes);
+    const res = await runCreate(ctx, createArgs(['--title', 'Follow-up', '--type', 'bug']), (m) => logs.push(m));
+    expect(res).toMatchObject({ ok: true, parentless: true });
+    expect(logs.some((m) => /parentless/i.test(m) && /reparent/.test(m))).toBe(true);
+  });
+
+  it('AC-178.3: an epic created WITHOUT --parent does NOT warn (top-level is legitimate) (#178)', async () => {
+    const logs = [];
+    const { ctx } = await ctxWith(parentlessRoutes);
+    const res = await runCreate(ctx, createArgs(['--title', 'New epic', '--type', 'epic']), (m) => logs.push(m));
+    expect(res).toMatchObject({ ok: true, parentless: false });
+    expect(logs.some((m) => /parentless/i.test(m))).toBe(false);
+  });
+
+  it('AC-178.3: a child created WITH --parent does NOT warn (#178)', async () => {
+    const logs = [];
+    const { ctx } = await ctxWith([
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: createdIssueUrl }],
+      ...issueNodes('I_child', null),
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'Child', '--type', 'bug', '--parent', '2']), (m) => logs.push(m));
+    expect(res).toMatchObject({ ok: true, parentless: false });
+    expect(logs.some((m) => /parentless/i.test(m))).toBe(false);
+  });
 });
 
 describe('quoted-title idempotency (AC-173, #173)', () => {
@@ -360,16 +401,59 @@ describe('reparent (AC-87.2, AC-87.3, #87)', () => {
 });
 
 describe('move (AC-2.2)', () => {
-  it('moves and is a no-op when already there', async () => {
-    const { ctx, calls } = await ctxWith([
-      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_2', content: { number: 5 }, status: 'In progress' }])],
-      ['project item-edit', { stdout: '' }],
-    ]);
+  // A stateful board so a re-read reflects the mutation (#178 verify-after-move):
+  // item-edit updates `status` by the option id it sets, item-list reads it back.
+  const OPT_TO_NAME = { sb: 'Backlog', sr: 'Ready', sp: 'In progress', sv: 'In review', sk: 'Blocked / Needs decision', sd: 'Done', sw: "Won't do" };
+  function statefulItem(number, initial) {
+    let status = initial;
+    return [
+      [(j) => j.startsWith('project item-list'), () => itemList([{ id: 'ITEM_2', content: { number }, status }])],
+      [(j) => j.startsWith('project item-edit'), (j, args) => {
+        const id = args[args.indexOf('--single-select-option-id') + 1];
+        if (OPT_TO_NAME[id]) status = OPT_TO_NAME[id];
+        return { stdout: '' };
+      }],
+    ];
+  }
+
+  it('moves, verifies the field actually moved, and is a no-op when already there', async () => {
+    const { ctx, calls } = await ctxWith(statefulItem(5, 'In progress'));
     const moved = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
-    expect(moved).toMatchObject({ ok: true, changed: true });
-    const same = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'inProgress']), noop);
+    expect(moved).toMatchObject({ ok: true, changed: true, verified: true });
+    // now genuinely at Done → moving to done again is a no-op (no second edit)
+    const same = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
     expect(same).toMatchObject({ ok: true, changed: false });
     expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(1);
+  });
+
+  it('AC-178.1/AC-178.2: a silently-dropped move (re-read still shows the OLD status) fails loudly (#178)', async () => {
+    // item-list ALWAYS reports the old status; item-edit "succeeds" but never persists.
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_2', content: { number: 5 }, status: 'In review' }])],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/did NOT persist/);
+    expect(res.error).toContain('inReview'); // names the stuck status (resolved key)
+    // it retried the mutation once before giving up (2 edits, not 1)
+    expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(2);
+  });
+
+  it('AC-178.1: an unreadable re-read (item-list lag) warns but does not false-fail (#178)', async () => {
+    // First list has the item (old status) so the move fires; every later list
+    // lags empty AND the issue-side fallback returns no status field → unverifiable.
+    let listCalls = 0;
+    const logs = [];
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), () => itemList(listCalls++ === 0 ? [{ id: 'ITEM_2', content: { number: 5 }, status: 'In review' }] : [])],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
+        { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [{ id: 'ITEM_2', project: { number: 8 } }] } } } } }) }],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), (m) => logs.push(m));
+    expect(res).toMatchObject({ ok: true, changed: true, verified: false });
+    expect(logs.some((m) => /could not confirm/.test(m))).toBe(true);
   });
 
   it('unknown status errors listing valid keys; off-board issue says run create', async () => {
@@ -381,10 +465,7 @@ describe('move (AC-2.2)', () => {
   });
 
   it('AC-108.1: accepts kebab-case status aliases (in-progress -> inProgress) (#108)', async () => {
-    const { ctx, calls } = await ctxWith([
-      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_2', content: { number: 5 }, status: 'Ready' }])],
-      ['project item-edit', { stdout: '' }],
-    ]);
+    const { ctx, calls } = await ctxWith(statefulItem(5, 'Ready'));
     const moved = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'in-progress']), noop);
     expect(moved).toMatchObject({ ok: true, changed: true }); // resolved to inProgress, not rejected as unknown
     expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(1);
