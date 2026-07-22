@@ -209,10 +209,17 @@ export async function runInit(ctx) {
   // 8. Status line (opt-in via --statusline; the command md asks the user first).
   // Written to settings.local.json: the command embeds a machine-specific
   // absolute path, which must never land in the shared committed settings.
+  //
+  // #181: wire the ABSOLUTE node binary (process.execPath), not a bare `node`.
+  // Claude Code spawns the status-line command in a process that may not have
+  // `node` on PATH (e.g. node installed to %LOCALAPPDATA%\node22\current) — a
+  // bare `node` then dies with exit 127 and the bar renders silently blank.
+  // process.execPath is the node currently running init: the portable, absolute
+  // source. Both it and scriptPath are quoted to tolerate spaces in the paths.
   if (args.statusline) {
     const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), 'statusline.mjs');
     await mergeJson(join(cwd, '.claude', 'settings.local.json'), {
-      statusLine: { type: 'command', command: `node "${scriptPath}"` },
+      statusLine: { type: 'command', command: `"${process.execPath}" "${scriptPath}"` },
     });
     say('statusline: wired into .claude/settings.local.json');
   }
