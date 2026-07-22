@@ -51,6 +51,35 @@ describe('autopilot selection (#128, AC-1/AC-2)', () => {
   });
 });
 
+describe('umbrella-type exclusion (#175, AC1/AC2)', () => {
+  const u = (number, status, type) => ({ ...t(number, status), type });
+
+  it('AC1: a program/epic ticket is never selected, in any status', () => {
+    for (const status of ['inProgress', 'ready', 'backlog']) {
+      for (const type of ['program', 'epic']) {
+        expect(selectNext([u(1, status, type)])).toBeNull();
+      }
+    }
+  });
+
+  it('AC2: umbrella items are excluded across tiers while deliverable siblings remain', () => {
+    const tickets = [
+      u(1, 'inProgress', 'program'),
+      u(2, 'ready', 'epic'),
+      u(3, 'backlog', 'program'),
+      { ...t(4, 'ready'), type: 'bug' },
+    ];
+    // only the bug survives — despite the program sitting in the higher resume tier
+    expect(selectNext(tickets).ticket.number).toBe(4);
+    expect(actionableQueue(tickets).map((q) => q.ticket.number)).toEqual([4]);
+  });
+
+  it('a non-umbrella (or untyped) ticket is still selectable', () => {
+    expect(selectNext([{ ...t(1, 'ready'), type: 'feature' }]).ticket.number).toBe(1);
+    expect(selectNext([t(1, 'ready')]).ticket.number).toBe(1); // type undefined → not umbrella
+  });
+});
+
 describe('crazy-mode readiness routing (#142, AC-1)', () => {
   it('isShaped detects acceptance criteria (Acceptance section or AC-ids)', () => {
     expect(isShaped('## Acceptance\n- AC-1: does X')).toBe(true);
