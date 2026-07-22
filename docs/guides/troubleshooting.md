@@ -34,7 +34,7 @@ Still stale? Check you're not shadowed: a repo-local override (a same-named skil
 
 ## 5. Environment breaks (Windows portable installs)
 
-- **`gh: command not found` inside scripts** — gh must be on the *user* PATH; in Git Bash sessions export it (see the shell notes template).
+- **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the current shell. In Git Bash, export it for the session (`export PATH="$PATH:/c/Users/$USER/AppData/Local/GitHub CLI"`) or add gh's `bin` dir to the user `Path` permanently so spawned scripts inherit it.
 - **`spawn pnpm ENOENT`** — bare `.cmd` shims need the cmd.exe retry that `exec.mjs run()` provides; if you hit this in a consumer repo's verify command, invoke via `pnpm.cmd` or ensure the shim dir is on PATH.
 - **gh auth/scope lost** — `gh auth refresh -s project`.
 
