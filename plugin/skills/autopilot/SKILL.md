@@ -131,7 +131,7 @@ When delivery surfaces a need out of the current ticket's scope, file it rather 
 
 - **Natural stop:** no actionable ticket remains → print the run report (merged / escalated / skipped / newly-filed) and exit.
 - **`--limit N`:** stop after N merges.
-- **Kill switch:** honour the forge-control global pause (`.forge-control/paused`) and the per-repo situation gate (open incident / security hold) — spawn nothing while paused. Clearing a pause is always a human, never automated.
+- **Kill switch:** honour the per-repo **situation gate** (`gates/situationgate.mjs`) — while the repo is in an **open incident** or **security-response** (security hold) situation the gate pauses shipping (during an incident, ship proceeds only on a `hotfix/*` branch and release is refused outright; during a security hold only `respond`/`investigate` run), so autopilot spawns no new delivery until it clears. Clearing the situation is always a human action (close the incident / lift the security hold), never automated.
 - **Interrupt:** Ctrl-C between tickets is clean (the run ledger is the resume point); mid-ticket, deliver's own resume protocol recovers.
 - **Loop backstop:** a max-iterations guard (default = board size × 2) prevents a file-a-ticket-per-iteration runaway — hitting it escalates rather than looping forever.
 

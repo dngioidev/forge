@@ -135,6 +135,17 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/PR-only|awaiting-human/i);
   });
 
+  it('#166: the kill switch names only the real situation gate — no removed forge-control pause', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // AC2: forge-control was removed by ADR-0003 — no dead-subsystem reference remains
+    expect(s).not.toMatch(/forge-control/);
+    expect(s).not.toMatch(/\.forge-control/);
+    // AC1: the kill switch describes the real per-repo situation gate (incident / security hold)
+    expect(s).toMatch(/situation gate/i);
+    expect(s).toMatch(/incident/i);
+    expect(s).toMatch(/security.?(response|hold)/i);
+  });
+
   it('AC-2 front door + AC-5 files new work + AC-6 safety are all specified', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // auto-triage front door, under-specified => escalate + skip
