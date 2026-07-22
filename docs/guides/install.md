@@ -62,7 +62,7 @@ forge replaces ship / plan+execute / brainstorm one-for-one. Once installed and 
 
 ## Troubleshooting
 
-- **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the shell profile. On Windows, a portable install to `%LOCALAPPDATA%` works: add the gh `bin` directory to your user `Path` (System Settings → Environment Variables, or `setx PATH "%PATH%;%LOCALAPPDATA%\GitHub CLI"`), then restart the shell so spawned scripts inherit it.
+- **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the shell profile. On Windows, a portable install to `%LOCALAPPDATA%` works: add the gh `bin` directory (e.g. `%LOCALAPPDATA%\GitHub CLI`) to your user `Path` via System Settings → Environment Variables, then restart the shell so spawned scripts inherit it.
 - **`token lacks the 'project' scope`** — `gh auth refresh -s project`.
 - **Board writes fail with dangling ids** — someone edited field options in the UI; re-run `/forge:init` to re-map, then `/forge:doctor`.
 - **Anything else** — `/forge:doctor` first; its hints are the supported fixes.
