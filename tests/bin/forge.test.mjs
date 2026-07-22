@@ -27,10 +27,30 @@ describe('forge dispatcher (#150)', () => {
     expect(dry(['autopilot', 'select', '--dry-run'])).toMatch(/scripts\/autopilot\/select\.mjs --dry-run$/);
   });
 
-  it.runIf(HAS_BASH)('resolves single-level init/doctor/release', () => {
+  // #172 — agy/review are CLI entrypoints reachable via the dispatcher.
+  it.runIf(HAS_BASH)('resolves agy/review areas to scripts/<area>/<cmd>.mjs (#172)', () => {
+    expect(dry(['agy', 'ask', '--question', 'x'])).toMatch(/scripts\/agy\/ask\.mjs --question x$/);
+    expect(dry(['review', 'agy-opinion', '--ticket', '172'])).toMatch(/scripts\/review\/agy-opinion\.mjs --ticket 172$/);
+  });
+
+  it.runIf(HAS_BASH)('resolves single-level init/doctor/statusline/release', () => {
     expect(dry(['init', '--project', '8'])).toMatch(/scripts\/init\.mjs --project 8$/);
     expect(dry(['doctor'])).toMatch(/scripts\/doctor\.mjs$/);
+    expect(dry(['statusline'])).toMatch(/scripts\/statusline\.mjs$/); // #172
     expect(dry(['release', '--dry-run'])).toMatch(/scripts\/release\/release\.mjs --dry-run$/);
+  });
+
+  // #172 — monitors are background watchers (monitors.json, on-skill-invoke:autopilot),
+  // deliberately excluded from the interactive dispatcher and documented as such (AC1).
+  it('documents the monitors exclusion in usage/source (#172)', () => {
+    const s = readFileSync(bin, 'utf8');
+    expect(s).toMatch(/monitors\/\*.*background watchers/i);
+    expect(s).toMatch(/on-skill-invoke:autopilot/);
+  });
+
+  it.runIf(HAS_BASH)('monitors area is deliberately not dispatched — exits non-zero (#172)', () => {
+    expect(() => execFileSync('bash', [bin, 'monitors', 'ci-watch'], { stdio: 'ignore' })).toThrow();
+    expect(() => execFileSync('bash', [bin, 'monitors', 'decisions-watch'], { stdio: 'ignore' })).toThrow();
   });
 
   it.runIf(HAS_BASH)('fails fast: no args, unknown area, missing command, missing script', () => {
