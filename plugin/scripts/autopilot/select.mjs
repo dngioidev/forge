@@ -9,7 +9,6 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
-import { loadConfig } from '../lib/config.mjs';
 import { isShaped } from './readiness.mjs';
 
 // Tier: lower runs first. Resume-in-flight beats fresh work; ready beats backlog.
@@ -98,14 +97,13 @@ if (isMain) {
     const list = await ctx.listItems();
     if (!list.ok) { console.error(list.error); process.exit(1); }
     const tickets = list.items.map((i) => normalize(ctx, i)).filter((t) => t.number != null);
-    // #176: forge.json can extend the acceptance-heading list (localized headings);
-    // load it once and thread it through so isShaped honors readiness.acHeadings.
-    const cfg = await loadConfig(process.cwd());
     // Readiness routing (#142): backlog tickets branch on whether they're shaped.
     // Only the backlog set needs a body read — the rest route on status alone.
+    // #176: ctx.config (already-loaded forge.json) can extend the AC-heading list
+    // via readiness.acHeadings, so isShaped honors localized headings.
     for (const t of tickets.filter((x) => x.status === 'backlog')) {
       const view = await ctx.gh(['issue', 'view', String(t.number), '--json', 'body'], { parseJson: true });
-      t.ready = view.ok ? isShaped(view.json?.body, cfg.config) : null;
+      t.ready = view.ok ? isShaped(view.json?.body, ctx.config) : null;
     }
     const next = selectNext(tickets, { area, shape });
     if (!next) { console.log('autopilot: no actionable ticket — board is clear'); process.exit(0); }

@@ -99,6 +99,8 @@ describe('crazy-mode readiness routing (#142, AC-1)', () => {
     expect(isShaped('## tiêu chí nghiệm thu\n...')).toBe(true);
     // built-in list is exported and carries the Vietnamese headings.
     expect(DEFAULT_AC_HEADINGS).toEqual(expect.arrayContaining(['Tiêu chí nghiệm thu', 'Tiêu chí chấp nhận']));
+    // NFD-encoded body (macOS/IME authoring) matches the same visible heading.
+    expect(isShaped('## Tiêu chí nghiệm thu\n- x'.normalize('NFD'))).toBe(true);
     // no false positive: a heading that merely starts with a built-in word.
     expect(isShaped('## Acceptances of the plan were noted')).toBe(false);
     // English + AC-id behavior is unchanged.
