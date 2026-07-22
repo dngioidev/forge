@@ -145,6 +145,7 @@ describe('create (AC-2.1)', () => {
     const { ctx, calls } = await ctxWith([
       ['issue list', { stdout: '[]' }],
       ['issue create', { stdout: createdIssueUrl }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_c', parent: null } } } }) }],
       [(j) => j.startsWith('project item-list'), itemList([])],
       ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
       ['project item-edit', { stdout: '' }],
@@ -158,6 +159,7 @@ describe('create (AC-2.1)', () => {
     const { ctx, calls } = await ctxWith([
       ['issue list', { stdout: '[]' }],
       ['issue create', { stdout: createdIssueUrl }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_c', parent: null } } } }) }],
       [(j) => j.startsWith('project item-list'), itemList([])],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
       ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
@@ -179,6 +181,7 @@ describe('create (AC-2.1)', () => {
     const { ctx, calls } = await ctxWith([
       ['issue list', { stdout: '[]' }],
       ['issue create', { stdout: createdIssueUrl }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_c', parent: null } } } }) }],
       [(j) => j.startsWith('project item-list'), itemList([])],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
       ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
@@ -201,6 +204,7 @@ describe('create (AC-2.1)', () => {
       ['issue list', { stdout: '[]' }],
       ['issue create', { stdout: createdIssueUrl }],
       ['issue edit', { stdout: '' }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_c', parent: null } } } }) }],
       [(j) => j.startsWith('project item-list'), itemList([])],
       ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
       ['project item-edit', { stdout: '' }],
@@ -226,15 +230,17 @@ describe('create (AC-2.1)', () => {
 
   // #178 AC3: parentless follow-ups (real: #185, #192) are the board-hierarchy
   // smell — a non-epic must be a child of an epic. Warn loudly at create time.
+  // Genuinely-orphaned issue: getIssueNode reports no parent → warning fires.
   const parentlessRoutes = [
     ['issue list', { stdout: '[]' }],
     ['issue create', { stdout: createdIssueUrl }],
+    [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_child', parent: null } } } }) }],
     [(j) => j.startsWith('project item-list'), itemList([])],
     ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
     ['project item-edit', { stdout: '' }],
   ];
 
-  it('AC-178.3: a non-epic created WITHOUT --parent emits a parentless warning (#178)', async () => {
+  it('AC-178.3: a non-epic with no actual parent emits a parentless warning (#178)', async () => {
     const logs = [];
     const { ctx } = await ctxWith(parentlessRoutes);
     const res = await runCreate(ctx, createArgs(['--title', 'Follow-up', '--type', 'bug']), (m) => logs.push(m));
@@ -244,10 +250,12 @@ describe('create (AC-2.1)', () => {
 
   it('AC-178.3: an epic created WITHOUT --parent does NOT warn (top-level is legitimate) (#178)', async () => {
     const logs = [];
-    const { ctx } = await ctxWith(parentlessRoutes);
+    // epics are top-level → the parent state is never even queried
+    const { ctx, calls } = await ctxWith(parentlessRoutes);
     const res = await runCreate(ctx, createArgs(['--title', 'New epic', '--type', 'epic']), (m) => logs.push(m));
     expect(res).toMatchObject({ ok: true, parentless: false });
     expect(logs.some((m) => /parentless/i.test(m))).toBe(false);
+    expect(calls.some((c) => c.includes('parent { number }'))).toBe(false); // no needless lookup
   });
 
   it('AC-178.3: a child created WITH --parent does NOT warn (#178)', async () => {
@@ -261,6 +269,21 @@ describe('create (AC-2.1)', () => {
       ['project item-edit', { stdout: '' }],
     ]);
     const res = await runCreate(ctx, createArgs(['--title', 'Child', '--type', 'bug', '--parent', '2']), (m) => logs.push(m));
+    expect(res).toMatchObject({ ok: true, parentless: false });
+    expect(logs.some((m) => /parentless/i.test(m))).toBe(false);
+  });
+
+  it('AC-178.3: a resumed create without --parent does NOT warn when the ticket is already parented (#178)', async () => {
+    // reviewer catch: reconcile against the ACTUAL parent, not this call's flag —
+    // a follow-up already reparented (via `board reparent`) must not re-warn.
+    const logs = [];
+    const { ctx } = await ctxWith([
+      ['issue list', { stdout: JSON.stringify([{ number: 20, title: 'Follow-up', url: 'https://github.com/dngioidev/forge/issues/20' }]) }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_child', parent: { number: 2 } } } } }) }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_1', content: { number: 20 }, type: 'Bug', priority: 'P1', size: 'M', status: 'Backlog' }])],
+      ['project item-edit', { stdout: '' }],
+    ]);
+    const res = await runCreate(ctx, createArgs(['--title', 'Follow-up', '--type', 'bug']), (m) => logs.push(m));
     expect(res).toMatchObject({ ok: true, parentless: false });
     expect(logs.some((m) => /parentless/i.test(m))).toBe(false);
   });
@@ -290,6 +313,7 @@ describe('quoted-title idempotency (AC-173, #173)', () => {
         issues.push({ number, title, url });
         return { stdout: `${url}\n` };
       }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_c', parent: null } } } }) }],
       [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: items.slice() }) })],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
       [(j) => j.startsWith('project item-add'), (j, args) => {
@@ -349,6 +373,7 @@ describe('batch create --from (AC-87.1, #87)', () => {
     const { ctx } = await ctxWith([
       ['issue list', { stdout: '[]' }],
       ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/20\n' }],
+      [(j) => j.startsWith('api graphql') && j.includes('parent { number }'), { stdout: JSON.stringify({ data: { repository: { issue: { id: 'I_c', parent: null } } } }) }],
       [(j) => j.startsWith('project item-list'), itemList([])],
       ['project item-add', { stdout: JSON.stringify({ id: 'ITEM_1' }) }],
       ['project item-edit', { stdout: '' }],
