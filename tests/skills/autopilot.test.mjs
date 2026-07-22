@@ -100,7 +100,9 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/forge-decisions/);
     expect(s).toMatch(/monitors\.json/);
     expect(s).toMatch(/on-skill-invoke:autopilot/);
-    expect(s).toMatch(/notification|push/i);
+    // AC1: the model is push-notification-driven, replacing inline polling at the loop level
+    expect(s).toMatch(/push a stdout line to the \*\*running main loop\*\* as a notification/);
+    expect(s).toMatch(/without (a polling timer|polling|inline.?poll)|instead of polling|never inline-poll/i);
     // AC1: the merge bar reacts to a CI pass line; a resolved-decision line unblocks the escalated ticket
     expect(s).toMatch(/CI pass/);
     expect(s).toMatch(/unblocks the escalated ticket|resolved-decision line/i);
