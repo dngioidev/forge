@@ -104,7 +104,12 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(proc
 if (isMain) {
   const sub = process.argv[2];
   if (sub === 'report') {
-    loadRun(process.cwd()).then((run) => console.log(renderReport(run)));
+    // A genuine read failure on an existing run.json (EACCES/EBUSY/AV-lock) now
+    // propagates (#185) — catch it so it exits cleanly instead of surfacing as a
+    // raw unhandled-rejection trace (#204).
+    loadRun(process.cwd())
+      .then((run) => console.log(renderReport(run)))
+      .catch((err) => { console.error(`ledger report failed: ${err.message}`); process.exit(1); });
   } else {
     console.error('usage: ledger.mjs report');
     process.exit(1);

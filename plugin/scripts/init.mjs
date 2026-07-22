@@ -238,5 +238,5 @@ if (isMain) {
   runInit(ctx).then((res) => {
     if (!res.ok) { console.error(`init failed: ${res.error}`); process.exit(1); }
     process.exit(res.doctor && !res.doctor.ok ? 1 : 0);
-  });
+  }).catch((err) => { console.error(`init failed: ${err.message}`); process.exit(1); });
 }

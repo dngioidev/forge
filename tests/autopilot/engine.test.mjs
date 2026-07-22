@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
@@ -280,6 +282,31 @@ describe('autopilot run ledger (#129, AC-6)', () => {
       vi.doUnmock('node:fs/promises');
       vi.resetModules();
     }
+  });
+
+  // #204: the `report` CLI entrypoint calls loadRun(...).then(...). Now that loadRun
+  // propagates a real I/O error (#185), the entrypoint must .catch it — a genuine read
+  // failure on an existing run.json must exit cleanly with a one-line message, NOT a
+  // raw Node unhandled-rejection stack trace.
+  const LEDGER_CLI = fileURLToPath(new URL('../../plugin/scripts/autopilot/ledger.mjs', import.meta.url));
+
+  it('AC-204.2: `report` exits non-zero with a clean message when run.json read fails — no unhandled-rejection trace', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    // Force a genuine (non-ENOENT, non-SyntaxError) read error: make run.json a
+    // DIRECTORY, so readFile throws EISDIR — which loadRun propagates rather than
+    // treating as absent/corrupt. Cross-platform (no EACCES/chmod juggling).
+    await mkdir(join(cwd, RUN_RELPATH), { recursive: true });
+    let err;
+    try {
+      execFileSync(process.execPath, [LEDGER_CLI, 'report'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { err = e; }
+    expect(err, 'report should have exited non-zero').toBeTruthy();
+    expect(err.status).not.toBe(0);
+    const stderr = String(err.stderr ?? '');
+    expect(stderr).toMatch(/ledger report failed:/);      // clean, controlled one-liner
+    expect(stderr).not.toMatch(/UnhandledPromiseRejection/); // not a raw rejection
+    expect(stderr).not.toMatch(/node:internal\/process\/promises/);
+    expect(stderr).not.toMatch(/^\s+at .+:\d+:\d+/m);        // no stack frames
   });
 
   it('AC-B164.3: startRun recovers from a truncated run.json and starts a clean run', async () => {
