@@ -15,6 +15,10 @@ import { isShaped } from './readiness.mjs';
 const TIER = { inProgress: 0, inReview: 0, ready: 1, backlog: 2 };
 // Never selected — blocked has a pending decision; the rest are terminal.
 const SKIP = new Set(['blocked', 'done', 'wontDo']);
+// Umbrella types (#175) are containers, not units of work — a program/epic
+// ticket is never itself deliverable, so it must never be selected regardless
+// of status. normalize() already captures `type`; this is the guard that uses it.
+const UMBRELLA_TYPES = new Set(['program', 'epic']);
 const PRIORITY_RANK = { p0: 0, p1: 1, p2: 2 };
 
 /**
@@ -44,6 +48,7 @@ export function actionFor(status, { shape = false, ready = null } = {}) {
 export function selectNext(tickets, { area = null, shape = false } = {}) {
   const actionable = tickets
     .filter((t) => !SKIP.has(t.status) && TIER[t.status] !== undefined)
+    .filter((t) => !UMBRELLA_TYPES.has(t.type)) // #175: umbrella items are containers, never deliverable
     .filter((t) => (area ? t.area === area : true))
     .sort((a, b) =>
       (TIER[a.status] - TIER[b.status]) ||
