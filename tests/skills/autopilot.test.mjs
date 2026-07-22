@@ -93,6 +93,48 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/await.*(external|background).*notification/i);
   });
 
+  it('#179 AC1: SKILL documents that in-session merge authorization is required and config+allowlist alone is insufficient', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // the harness auto-mode classifier requires a live in-session user authorization
+    expect(s).toMatch(/in-session/i);
+    expect(s).toMatch(/auto-mode classifier|harness.*classifier/i);
+    // config + allowlist ALONE do not clear the classifier
+    expect(s).toMatch(/allowlist alone|necessary but not sufficient|not sufficient/i);
+    expect(s).toMatch(/autopilotAutoMerge/);
+    // a grant only in run.json / narration is insufficient
+    expect(s).toMatch(/run\.json.*(narration|not count|does not)|narration.*(not count|does not)/i);
+    // without it the loop stalls at the first merge
+    expect(s).toMatch(/stalls? at (the )?first merge/i);
+  });
+
+  it('#179 AC1: the autopilot spec documents the in-session-authorization requirement and its insufficiency', async () => {
+    const s = await read('docs/specs/2026-07-21-forge-autopilot.md');
+    expect(s).toMatch(/in-session/i);
+    expect(s).toMatch(/auto-mode classifier|harness.*classifier/i);
+    expect(s).toMatch(/necessary but not sufficient|not sufficient/i);
+    expect(s).toMatch(/autopilotAutoMerge/);
+    expect(s).toMatch(/run\.json.*(narration|insufficient|not)|narration.*(insufficient|not)/i);
+    expect(s).toMatch(/stalls? at (the )?first merge/i);
+  });
+
+  it('#179 AC2: SKILL documents a run-start merge-authorization preflight that degrades instead of burning a delivery', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // a documented run-start preflight step
+    expect(s).toMatch(/preflight/i);
+    expect(s).toMatch(/run.?start|before spawning the first delivery|run start/i);
+    // if absent: surface + degrade (PR-only / awaiting-human), not a mid-run stall
+    expect(s).toMatch(/PR-only|awaiting-human/i);
+    expect(s).toMatch(/degrade|surface it/i);
+    expect(s).toMatch(/Merge.?policy/i);
+  });
+
+  it('#179 AC2: the spec documents the run-start merge-authorization preflight', async () => {
+    const s = await read('docs/specs/2026-07-21-forge-autopilot.md');
+    expect(s).toMatch(/preflight/i);
+    expect(s).toMatch(/run.?start|before.*first delivery/i);
+    expect(s).toMatch(/PR-only|awaiting-human/i);
+  });
+
   it('AC-2 front door + AC-5 files new work + AC-6 safety are all specified', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // auto-triage front door, under-specified => escalate + skip
