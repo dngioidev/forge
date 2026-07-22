@@ -4,6 +4,7 @@
   "displayName": "Forge",
   "version": "0.15.0",
   "description": "AI dev platform: pipeline skills, Claude-native agent roster, GitHub Projects board automation, learning loop, graph RAG",
+  "license": "MIT",
   "author": {
     "name": "dngioi.dev"
   },
