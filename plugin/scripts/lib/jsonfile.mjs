@@ -2,13 +2,22 @@ import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-/** Read a JSON file; returns null when missing, throws on broken JSON. */
+/**
+ * Read a JSON file; returns null ONLY when the file is missing (ENOENT).
+ * A genuine read failure on an existing file — EACCES, EIO, EBUSY (AV/lock on
+ * Windows), EMFILE, etc. — propagates rather than masquerading as "absent", so
+ * correctness-critical state (run.json, plan ledgers) can't silently reset to a
+ * fresh value on a transient I/O error (#185). Callers that genuinely want
+ * "treat unreadable as absent" opt in explicitly with `.catch(() => null)`.
+ * A `SyntaxError` from broken JSON still throws (unchanged).
+ */
 export async function readJson(path) {
   let raw;
   try {
     raw = await readFile(path, 'utf8');
-  } catch {
-    return null;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
   }
   return JSON.parse(raw);
 }
