@@ -46,6 +46,25 @@ function itemList(items) {
   return { stdout: JSON.stringify({ items }) };
 }
 
+// Stateful item-list/item-edit pair (#178/#201): item-edit updates each seeded
+// item's status by the option id it sets, and a later item-list reads it back —
+// so a verify-after-mutation re-read reflects what actually persisted. Seed
+// entries are { id, number, status } (status is the display name).
+const OPT_TO_NAME = { sb: 'Backlog', sr: 'Ready', sp: 'In progress', sv: 'In review', sk: 'Blocked / Needs decision', sd: 'Done', sw: "Won't do" };
+function statefulItems(seed) {
+  const state = seed.map((s) => ({ ...s }));
+  return [
+    [(j) => j.startsWith('project item-list'), () => itemList(state.map((s) => ({ id: s.id, content: { number: s.number }, status: s.status })))],
+    [(j) => j.startsWith('project item-edit'), (j, args) => {
+      const id = args[args.indexOf('--id') + 1];
+      const optId = args[args.indexOf('--single-select-option-id') + 1];
+      const it = state.find((s) => s.id === id);
+      if (it && OPT_TO_NAME[optId]) it.status = OPT_TO_NAME[optId];
+      return { stdout: '' };
+    }],
+  ];
+}
+
 async function ctxWith(routes) {
   const f = fakeGh([['repo view', REPO_VIEW], ...routes]);
   const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
@@ -549,8 +568,7 @@ describe('close (AC-117)', () => {
     const { ctx, calls } = await ctxWith([
       ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
       ['issue close', { stdout: '' }],
-      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 12 }, status: 'Done' }])],
-      ['project item-edit', { stdout: '' }],
+      ...statefulItems([{ id: 'ITEM_9', number: 12, status: 'Done' }]),
       ...commentRoutes(ref),
     ]);
     const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned', '--note', 'superseded by ADR-0003']), noop);
@@ -564,14 +582,53 @@ describe('close (AC-117)', () => {
     const ref = { comments: [] };
     const { ctx, calls } = await ctxWith([
       ['issue view', { stdout: JSON.stringify({ state: 'CLOSED' }) }],
-      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 33 }, status: 'Ready' }])],
-      ['project item-edit', { stdout: '' }],
+      ...statefulItems([{ id: 'ITEM_9', number: 33, status: 'Ready' }]),
       ...commentRoutes(ref),
     ]);
     const res = await runClose(ctx, closeArgs(['--issue', '33', '--reason', 'completed']), noop);
     expect(res).toMatchObject({ ok: true, status: 'done' });
     expect(calls.some((c) => c.startsWith('issue close'))).toBe(false); // already closed → no re-close
     expect(calls.some((c) => c.startsWith('project item-edit') && c.includes('sd'))).toBe(true); // done option id
+  });
+
+  it('AC-201.1/AC-201.2: a close whose status re-read still shows the OLD value fails loudly (#201)', async () => {
+    // The #73 silent-drop class on the close path: item-edit "succeeds" but the
+    // Status field never persists, so every re-read still reports the old status.
+    const ref = { comments: [] };
+    const { ctx, calls } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 12 }, status: 'Ready' }])],
+      ['project item-edit', { stdout: '' }], // "ok" but never mutates the static list
+      ...commentRoutes(ref),
+    ]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/did NOT persist/); // does not report a reconcile that never took
+    // it retried the mutation once before giving up (2 edits, not 1)
+    expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(2);
+    // and it did NOT go on to post a trail:closed note on the failed reconcile
+    expect(calls.some((c) => c.includes('closed — not planned'))).toBe(false);
+  });
+
+  it('AC-201.1: an unreadable re-read (item-list lag) warns but does not false-fail (#201)', async () => {
+    // First list has the item so the close-mutation fires; every later list lags
+    // empty AND the issue-side fallback returns no status field → unverifiable.
+    const ref = { comments: [] };
+    let listCalls = 0;
+    const logs = [];
+    const { ctx } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      [(j) => j.startsWith('project item-list'), () => itemList(listCalls++ === 0 ? [{ id: 'ITEM_9', content: { number: 12 }, status: 'Ready' }] : [])],
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
+        { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [{ id: 'ITEM_9', project: { number: 8 } }] } } } } }) }],
+      ['project item-edit', { stdout: '' }],
+      ...commentRoutes(ref),
+    ]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned']), (m) => logs.push(m));
+    expect(res).toMatchObject({ ok: true, status: 'wontDo' }); // proceeds unverified, not a false failure
+    expect(logs.some((m) => /could not confirm/.test(m))).toBe(true);
   });
 
   it('rejects an unknown --reason', async () => {
@@ -600,11 +657,10 @@ describe('batch close (AC-123)', () => {
     const { ctx, calls } = await ctxWith([
       ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
       ['issue close', { stdout: '' }],
-      [(j) => j.startsWith('project item-list'), itemList([
-        { id: 'ITEM_9', content: { number: 12 }, status: 'Done' },
-        { id: 'ITEM_10', content: { number: 13 }, status: 'Done' },
-      ])],
-      ['project item-edit', { stdout: '' }],
+      ...statefulItems([
+        { id: 'ITEM_9', number: 12, status: 'Done' },
+        { id: 'ITEM_10', number: 13, status: 'Done' },
+      ]),
       [(j) => j.startsWith('api -X PATCH'), { stdout: '{}' }], // re-run PATCHes the existing trail
       ...commentRoutes(ref12, 12),
       ...commentRoutes(ref13, 13),
@@ -636,11 +692,10 @@ describe('batch close (AC-123)', () => {
       [(j) => j.startsWith('issue view 13'), { ok: false, stderr: 'issue view failed for #13' }], // must precede the generic route
       ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
       ['issue close', { stdout: '' }],
-      [(j) => j.startsWith('project item-list'), itemList([
-        { id: 'ITEM_9', content: { number: 12 }, status: 'Done' },
-        { id: 'ITEM_10', content: { number: 13 }, status: 'Done' },
-      ])],
-      ['project item-edit', { stdout: '' }],
+      ...statefulItems([
+        { id: 'ITEM_9', number: 12, status: 'Done' },
+        { id: 'ITEM_10', number: 13, status: 'Done' },
+      ]),
       ...commentRoutes(ref12, 12),
     ]);
     const res = await runCloseBatch(ctx, { issue: '12,13', reason: 'not-planned' }, noop);
@@ -657,8 +712,7 @@ describe('batch close (AC-123)', () => {
     const { ctx } = await ctxWith([
       ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
       ['issue close', { stdout: '' }],
-      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_9', content: { number: 12 }, status: 'Done' }])],
-      ['project item-edit', { stdout: '' }],
+      ...statefulItems([{ id: 'ITEM_9', number: 12, status: 'Done' }]),
       ...commentRoutes(ref12, 12),
     ]);
     const res = await runCloseBatch(ctx, { issue: '12', reason: 'not-planned' }, noop);
