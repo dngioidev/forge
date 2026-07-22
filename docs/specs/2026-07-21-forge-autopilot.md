@@ -19,6 +19,9 @@ Autopilot is not a new pipeline — it is an **orchestrator over the pipeline fo
 ```
 [you] /forge:autopilot                         (optionally: --limit N, --area <a>, --dry-run)
         ▼
+run start: confirm in-session merge authorization (§4 preflight)
+        │   absent ⇒ prompt (Merge policy) or degrade to PR-only — never a mid-run merge stall
+        ▼
 loop:  select next actionable ticket  ──────────────┐   selection order §5
         ▼                                           │
    triaged?  ── no ──▶  forge:triage the ticket      │   auto-triage front door
@@ -48,7 +51,6 @@ until: no actionable ticket left  ⇒  STOP + run report
 A ticket merges **only when every one of these is green** — any red routes to a fix wave, and a second failure of the same gate escalates (never a merge on red):
 
 0. **In-session merge authorization is present** (the run-start preflight above). `features.autopilotAutoMerge: true` + the `gh pr merge` allowlist are necessary but not sufficient — the live in-session grant is what actually clears the harness classifier; without it, the merge cannot proceed and the ticket is parked *awaiting-human*, not merged.
-
 1. `ship` completed: situation gate · conventions lint · rebase + full `verify` green.
 2. All mechanical gates pass: `plandrift`, `testintent`, `depguard`, `acgate` (every AC checked).
 3. Full-branch `reviewer` **and** `security` subagents return `verdict: pass` with **zero critical/high** findings. A critical finding is always an escalation, never an auto-merge.
@@ -120,6 +122,6 @@ A long run must not blow the orchestrator's context window or let cost grow with
 - **Delegate, don't inline — mandatory, not aspirational (#156).** The main loop's per-ticket step **is** to spawn a delivery subagent (Task tool) that owns the whole ticket in its own context and returns a compact terminal report. The main loop never runs `forge:deliver` inline, edits files, or merges in its own context — doing so fills the main window (forcing mid-run compaction) and surfaces every permission prompt in the orchestrator. The heavy tokens live and die inside the per-ticket subagent; the outer loop keeps only `run.json` + git + a one-line outcome.
 - **Continuous requires pre-authorized permissions (#156).** Auto-merge/push/close are outward commands; unless they're in the `.claude/settings.local.json` allowlist, each raises a permission prompt and the run stalls. `scripts/autopilot/perms.mjs` prints the exact block; it's opt-in (forge never writes merge authority for you).
 - **The outer loop holds only file-backed state.** Between tickets the autopilot loop retains just `.forge/autopilot/run.json` + git state + a one-line outcome per ticket. Its growth is **~O(1) per ticket**, not O(work), so a 5-ticket run and a 50-ticket run have about the same loop overhead.
-- **Checkpoint + reset is free.** Every ticket is checkpointed to `run.json`; the resume protocol (§ resume) reconstructs from disk, so the orchestrator can be compacted or fully restarted between tickets at near-zero reload cost. (This session is the proof: it compacted at 67% and continued because state lived on the board + files, not the transcript.)
+- **Checkpoint + reset is free.** Every ticket is checkpointed to `run.json`; the resume protocol (§ resume) reconstructs from disk, so the orchestrator can be compacted or fully restarted between tickets at near-zero reload cost. (This session is the proof: it compacted at 67% and continued because state lived on the board + files, not the transcript.) **One thing is *not* file-backed and cannot be:** the in-session merge authorization (§4). Compaction preserves it — it's still the same live session — but a **fully restarted session is a new session and must re-run the run-start preflight** to obtain a fresh live grant; the authorization is deliberately *not* persisted to `run.json` (a stored value would not clear the harness classifier anyway). So re-obtaining the grant is the one non-free step on a cold restart, and it is a single up-front prompt, not per-ticket overhead.
 - **Cheap where it can be.** Selection (`select.mjs`) and the ledger are plain scripts — **zero model cost**. Model tiering already applies inside delivery (haiku for lookup, sonnet default, opus only for second-opinion).
 - **What's intrinsic vs. overhead.** Per-ticket *delivery* cost is intrinsic — it's the actual engineering and can't be optimised away. What autopilot keeps ~constant is the *loop overhead*. (The host OS — Windows included — has no bearing on tokens, context, or cost; only PATH/shell handling is platform-specific.)

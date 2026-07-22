@@ -10,7 +10,12 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 
-/** The five signals of the merge bar (spec §4). All must be true to merge. */
+/**
+ * The five MECHANICAL signals of the merge bar (spec §4 items 1–5). All must be
+ * true to merge. Item 0 — the in-session merge authorization — is a one-time
+ * run-start preflight (§4 preflight, not a per-merge signal): the orchestrator
+ * confirms it up front, so it is not evaluated here.
+ */
 export const BAR_SIGNALS = ['ship', 'gates', 'reviewer', 'security', 'ci'];
 
 /** Owner opt-out: default ON. `features.autopilotAutoMerge: false` parks at the PR. */

@@ -25,7 +25,7 @@ The trail, ledger (`run.json`), and journal are the record — don't re-narrate 
 
 ```
 RUN START: confirm in-session merge authorization (§ Merge-authorization preflight)
-  └─ absent ─▶ ask Merge-policy / degrade to PR-only (awaiting-human)  — NOT a mid-run stall
+  └─ absent ─▶ ask "Merge policy" / degrade to PR-only (awaiting-human)  — NOT a mid-run stall
   ▼
 select next actionable ticket (§ selection)
   ├─ none left ────────────────────────────▶ STOP + run report
@@ -75,7 +75,7 @@ Autopilot's loop is orchestrator prose, so this preflight is a **required run-st
 - **Why up front, not mid-run.** Config + allowlist do not clear the harness auto-mode classifier (§ Permissions). If the grant is missing, every ticket delivers fully and then **wedges at its first merge** — you burn a whole delivery only to stall. This is the observed failure mode this preflight prevents.
 - **What counts as authorization.** A **live user message naming the merge authorization** — e.g. the user answering a run-start **"Merge policy"** question with an explicit grant. *Not* counted: `features.autopilotAutoMerge: true`, the `gh pr merge` allowlist, a value in `run.json`, or anything the agent narrates to itself.
 - **If it is present** → proceed into the loop; delivery subagents may unattended-merge on a green bar.
-- **If it is absent** → do **not** spawn a delivery that will stall. **Surface it and degrade at run start:** either ask the Merge-policy question now and obtain the live grant, or run **PR-only / awaiting-human** — each ticket stops at its open green PR and is recorded *awaiting-human* (as with `features.autopilotAutoMerge: false`), and the loop continues. Escalate rather than guess a merge authorization.
+- **If it is absent** → do **not** spawn a delivery that will stall. **Surface it and degrade at run start:** either ask the "Merge policy" question now and obtain the live grant, or run **PR-only / awaiting-human** — each ticket stops at its open green PR and is recorded *awaiting-human* (as with `features.autopilotAutoMerge: false`), and the loop continues. Escalate rather than guess a merge authorization.
 
 (If a lightweight helper that prints the required-authorization notice is useful, keep it additive; the documented orchestrator step above is the requirement.)
 
@@ -162,4 +162,4 @@ A long run stays bounded by construction — not by luck:
 
 ## Resume protocol
 
-Fresh session: read `.forge/autopilot/run.json` for run state → `escalate.mjs --check` to pick up any decisions the human answered → re-select per the selection order (which naturally resumes a mid-flight ticket first) → continue the loop.
+Fresh session: read `.forge/autopilot/run.json` for run state → `escalate.mjs --check` to pick up any decisions the human answered → **re-run the Merge-authorization preflight** (the in-session grant is *not* file-backed — a restarted session is a new session and must re-obtain a live grant, or degrade to PR-only) → re-select per the selection order (which naturally resumes a mid-flight ticket first) → continue the loop. (Compaction within the *same* session keeps the grant; only a full restart needs a fresh one.)
