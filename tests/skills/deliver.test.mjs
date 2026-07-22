@@ -46,6 +46,17 @@ describe('forge:deliver skill (AC-121, #121)', () => {
     expect(ea).toMatch(/devops/);
   });
 
+  it('#177: ship watches CI to green in-run and forbids the open-PR-then-return stall', async () => {
+    const s = await read('plugin/skills/deliver/SKILL.md');
+    // AC1: watch CI to green in the same run with gh pr checks --watch
+    expect(s).toMatch(/gh pr checks <pr> --watch/);
+    expect(s).toMatch(/watch CI to green in this same run|watch CI to conclusion/i);
+    // AC2: forbid opening the PR and returning to await an external notification
+    expect(s).toMatch(/do \*\*not\*\*|must not|forbid/i);
+    expect(s).toMatch(/await.*(background|external).*notification/i);
+    expect(s).toMatch(/nothing re-invokes it on green|context is discarded/i);
+  });
+
   it('AC-121.2: planner is a compiled, read-only role pinned to a model', async () => {
     const { ROLES, MODELS } = await import('../../plugin/scripts/backends/compile.mjs');
     expect(ROLES).toContain('planner');

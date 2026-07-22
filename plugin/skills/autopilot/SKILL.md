@@ -28,8 +28,9 @@ select next actionable ticket (§ selection)
   ├─ none left ────────────────────────────▶ STOP + run report
   ▼
 SPAWN a delivery subagent (Task tool) for this ticket ─────────┐   § Orchestration
-  brief: deliver #N end-to-end (triage/shape → plan →          │   runs in its OWN context
-  execute → ship → open PR → wait CI → auto-merge on green),    │
+  brief: deliver #N end-to-end (triage/shape → plan → execute   │   runs in its OWN context
+  → ship → open PR → WATCH CI to green in-run                   │
+  (`gh pr checks <pr> --watch`) → auto-merge on green),         │
   return {issue, outcome, pr, notes}                            │
   ▼                                                             │
 main loop reads ONLY that terminal report ◀────────────────────┘
@@ -44,7 +45,9 @@ loop  (main context unchanged — ~O(1) per ticket)
 
 Per ticket, the main loop does exactly three things: **spawn**, **record**, **continue**.
 
-1. **Spawn a delivery subagent** with the Task tool — `subagent_type: general-purpose` (or a dedicated delivery agent if the roster has one). The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the route (deliver, or shape-first under `--shape`), the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, wait for CI, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
+1. **Spawn a delivery subagent** with the Task tool — `subagent_type: general-purpose` (or a dedicated delivery agent if the roster has one). The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the route (deliver, or shape-first under `--shape`), the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, open the PR, **watch CI to green in this same run with `gh pr checks <pr> --watch`**, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
+
+   **Forbidden — the return-then-resume stall:** the brief must NOT tell the subagent to open the PR and then return awaiting an external/background completion notification (e.g. "await the CI watcher's notification"). The subagent's context is discarded on return and **nothing re-invokes it when CI goes green** — that stalls the ticket until a manual resume. The background CI monitor notifies the **main loop**, not a returned subagent. The subagent must therefore watch CI to conclusion **in-run itself** (`gh pr checks <pr> --watch`) and merge within the **same invocation** — never return on the assumption it will be re-spawned on green.
 2. **Read only the terminal report** — `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}`. The main loop consumes that JSON, writes it to `run.json`, trails the ticket, and never re-reads the subagent's work.
 3. **Continue** to the next ticket. Because the delivery context is discarded, the main window is unchanged between tickets — a 5-ticket and a 50-ticket run cost the same orchestration overhead, and the run never compacts mid-loop.
 
@@ -88,7 +91,7 @@ A ticket merges **only when every one of these is green**. Any red routes to a f
 1. `forge:ship` completed clean: situation gate · conventions lint · rebase + full `verify` green.
 2. All mechanical gates pass: `plandrift` · `testintent` · `depguard` · `acgate` (every AC id in a passing test).
 3. Full-branch `reviewer` **and** `security` subagents return `verdict: pass` with **zero critical/high** findings. A critical is always an escalation, never a merge.
-4. **CI on the PR is green.** Open the PR as deliver does (`Closes #n`, AC checklist, honest verification), then wait for checks — never merge before CI.
+4. **CI on the PR is green.** Open the PR as deliver does (`Closes #n`, AC checklist, honest verification), then **watch CI to conclusion in the same run** with `gh pr checks <pr> --watch` — never merge before CI, and never return awaiting an external notification (the delivery subagent isn't re-invoked on green — § Orchestration).
 5. **Squash-merge to main**, delete the branch, `Closes #n` closes the issue.
 
 **Opt-out:** if `features.autopilotAutoMerge` is `false`, autopilot stops at the open PR for that ticket, records it as *awaiting-human*, and continues the loop with other tickets — the safe-by-default door for consumers who adopt autopilot but not its merge policy.
