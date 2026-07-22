@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { getIssueNode, addSubIssue } from '../lib/issues.mjs';
+import { titleSearchQuery } from '../lib/board.mjs';
 
 /** Defaults applied to a single ticket spec (flags or a --from JSON entry). */
 export function withDefaults(spec = {}) {
@@ -93,9 +94,12 @@ export async function runCreate(ctx, args, log = console.log) {
     if (!r.ok) return { ok: false, error: r.error };
   }
 
-  // 1. issue: find by exact title first (never duplicate)
+  // 1. issue: find by exact title first (never duplicate). The search is a
+  // coarse, quote-safe prefilter (#173 — a raw quote in the title used to break
+  // it and spawn a duplicate); the exact `i.title === args.title` below is what
+  // actually decides the resume.
   const found = await ctx.gh(
-    ['issue', 'list', '--state', 'all', '--limit', '100', '--search', `"${args.title}" in:title`, '--json', 'number,title,url'],
+    ['issue', 'list', '--state', 'all', '--limit', '100', '--search', titleSearchQuery(args.title), '--json', 'number,title,url'],
     { parseJson: true },
   );
   if (!found.ok) return { ok: false, error: found.stderr || 'issue list failed' };
