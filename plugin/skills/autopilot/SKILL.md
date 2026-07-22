@@ -108,20 +108,35 @@ A ticket merges **only when every one of these is green**. Any red routes to a f
 1. `forge:ship` completed clean: situation gate · conventions lint · rebase + full `verify` green.
 2. All mechanical gates pass: `plandrift` · `testintent` · `depguard` · `acgate` (every AC id in a passing test).
 3. Full-branch `reviewer` **and** `security` subagents return `verdict: pass` with **zero critical/high** findings. A critical is always an escalation, never a merge.
-4. **CI on the PR is green.** Open the PR as deliver does (`Closes #n`, AC checklist, honest verification), then **watch CI to conclusion in the same run** with `gh pr checks <pr> --watch` — never merge before CI, and never return awaiting an external notification (the delivery subagent isn't re-invoked on green — § Orchestration).
+4. **CI on the PR is green.** Open the PR as deliver does (`Closes #n`, AC checklist, honest verification), then **watch CI to conclusion in the same run** with `gh pr checks <pr> --watch` — never merge before CI, and never return awaiting an external notification (the delivery subagent isn't re-invoked on green — § Orchestration). At the **loop** level the `forge-ci` monitor also pushes each CI transition (`CI pass` / `CI fail`) to the running orchestrator (§ Monitor notifications), so the loop tracks CI status without inline polling — but that push is *not* what merges the ticket in flight; the subagent's own in-run `--watch` is the authoritative green.
 5. **Squash-merge to main**, delete the branch, `Closes #n` closes the issue.
 
 **Opt-out:** if `features.autopilotAutoMerge` is `false`, autopilot stops at the open PR for that ticket, records it as *awaiting-human*, and continues the loop with other tickets — the safe-by-default door for consumers who adopt autopilot but not its merge policy.
 
 ## The human gates — the only pauses (spec §6)
 
-Halt via `escalate.mjs` (ticket → blocked + decision comment + pending file). An escalation **parks one ticket** and the loop continues with the next — a single blocked ticket does not stop the whole run.
+Halt via `escalate.mjs` (ticket → blocked + decision comment + pending file). An escalation **parks one ticket** and the loop continues with the next — a single blocked ticket does not stop the whole run. When the human answers, the `forge-decisions` monitor pushes a `Decision <id> (#<issue>) resolved: …` line to the running loop (§ Monitor notifications): the parked ticket unblocks and re-enters the selection queue on the next iteration, with no polling of `.forge/decisions/`.
 
 - **Product broken, no safe fix** — verify/CI red after a fix wave, or a change breaking unrelated behaviour with a fix beyond the plan's blast radius.
 - **Design deviation needs a decision** — the work can't be done as designed and the choice isn't the engine's (spec/ADR ambiguity, a product-behaviour fork).
 - **Under-specified ticket** — planner/triage `verdict: fail`.
 - **Critical security finding.**
 - **deliver's §7 triggers** — denylist-blocked action genuinely needed · reviewer↔implementer deadlock across re-spawns · the same gate failing twice.
+
+## Monitor notifications — CI and decisions arrive as pushes, not inline polls
+
+Two background **monitors** (`plugin/monitors/monitors.json`, both registered `when: on-skill-invoke:autopilot`) run for the life of an autopilot session and push a stdout line to the **running main loop** as a notification the moment something changes — so the *loop* reacts to events instead of polling for them on a timer. They sit at the **orchestrator layer** and are orthogonal to (never a replacement for) the delivery subagent's own in-run `gh pr checks <pr> --watch` (§ Orchestration).
+
+- **`forge-ci`** (`plugin/scripts/monitors/ci-watch.mjs`) polls the current branch's PR checks and, **only when the rollup transitions**, emits exactly one line. The real shape is `CI <state> on PR #<n> (<branch>)` where `<state>` is one of:
+  - `pass` — every check is `SUCCESS` / `NEUTRAL` / `SKIPPED`
+  - `fail` — any check is `FAILURE` / `ERROR` / `CANCELLED` / `TIMED_OUT` / `ACTION_REQUIRED` / `STARTUP_FAILURE`
+  - `pending` — otherwise (fail-closed on unknowns)
+
+  The **merge bar's CI-green requirement surfaces to the loop as the `CI pass` line** — the loop learns of a CI transition from the push instead of inline-polling `gh`, and a `CI fail` line tells it the watched PR went red. *Reacting* to that transition still belongs to the delivery layer, not the loop: the merge bar (`merge.mjs`) and any fix wave execute **inside the delivery subagent** (§ Orchestration, and the disclaimer in § Auto-merge item 4), whose own in-run `--watch` is the authoritative green for the ticket in flight. The `forge-ci` push is strictly the poll-free way for the **loop** to observe the same transitions (including on a parked or other PR). It stays silent until a PR exists for the branch and on any unchanged rollup.
+
+- **`forge-decisions`** (`plugin/scripts/monitors/decisions-watch.mjs`) polls `.forge/decisions/` and, the moment an escalation the human answered flips to `status: resolved`, emits one line: `Decision <id> (#<issue>) resolved: <first line of the answer>`. A **resolved-decision line unblocks the escalated ticket** — the parked (blocked) ticket named by `#<issue>` re-enters the selection queue on the next iteration (where it runs the full gate pipeline again), so the loop surfaces the reply without polling `.forge/decisions/` itself.
+
+**The delivery subagent never waits on these.** The monitors notify the **main loop**, whose context lives across the whole run; a subagent's context is discarded on return and nothing re-delivers a notification to it (§ Orchestration, "the return-then-resume stall"). So the subagent still watches its **own** PR's CI in-run and merges in the **same invocation** (#177) — the authoritative green for the ticket in flight is the subagent's `--watch`, while the `forge-ci` push is only how the *loop* stays aware of CI transitions (including on a parked or other PR) without a polling timer. Never brief a subagent to open its PR and return awaiting a monitor push.
 
 ## Filing new work as it goes (spec §7)
 

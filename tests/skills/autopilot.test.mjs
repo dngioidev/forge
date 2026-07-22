@@ -93,6 +93,28 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/await.*(external|background).*notification/i);
   });
 
+  it('#169: SKILL wires the forge-ci / forge-decisions monitors and reacts to their notifications instead of inline polling', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // AC1: both monitors are named and the notification model is described
+    expect(s).toMatch(/forge-ci/);
+    expect(s).toMatch(/forge-decisions/);
+    expect(s).toMatch(/monitors\.json/);
+    expect(s).toMatch(/on-skill-invoke:autopilot/);
+    // AC1: the model is push-notification-driven, replacing inline polling at the loop level
+    expect(s).toMatch(/push a stdout line to the \*\*running main loop\*\* as a notification/);
+    expect(s).toMatch(/without (a polling timer|polling|inline.?poll)|instead of polling|never inline-poll/i);
+    // AC1: the merge bar reacts to a CI pass line; a resolved-decision line unblocks the escalated ticket
+    expect(s).toMatch(/CI pass/);
+    expect(s).toMatch(/unblocks the escalated ticket|resolved-decision line/i);
+    // AC2: prose is consistent with what the monitors ACTUALLY emit
+    expect(s).toMatch(/CI <state> on PR #<n> \(<branch>\)/);
+    expect(s).toMatch(/Decision <id> \(#<issue>\) resolved/);
+    // #177 consistency trap: monitors notify the MAIN LOOP, the subagent still watches its own CI in-run
+    expect(s).toMatch(/notif\w*\s+the\s+\*\*main loop\*\*|notify the \*\*main loop\*\*|running main loop/i);
+    expect(s).toMatch(/own\*?\*? PR's CI in-run|watches its \*\*own\*\* PR/i);
+    expect(s).toMatch(/orthogonal/i);
+  });
+
   it('#179 AC1: SKILL documents that in-session merge authorization is required and config+allowlist alone is insufficient', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // the harness auto-mode classifier requires a live in-session user authorization
