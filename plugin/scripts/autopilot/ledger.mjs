@@ -25,10 +25,12 @@ async function readRun(cwd) {
   try {
     return await readJson(join(cwd, RUN_RELPATH));
   } catch (err) {
-    // readJson already maps a missing/unreadable file to null, so the only thing
-    // that reaches here is JSON.parse choking on a truncated/corrupt file — treat
-    // that as a fresh run. A real I/O error must surface, not silently overwrite
-    // an in-flight run.json with a fresh one.
+    // readJson maps a MISSING file (ENOENT) to null, but propagates a real I/O
+    // error (EACCES/EIO/EBUSY/…) and a JSON.parse SyntaxError (#185). A truncated
+    // or hand-corrupted ledger (SyntaxError) is treated as a fresh run; a genuine
+    // read failure must surface here, not silently overwrite an in-flight run.json
+    // with a fresh one. This re-throw branch is now reachable (it was dead while
+    // readJson swallowed every read error as null upstream — the #185 fix).
     if (err instanceof SyntaxError) return null;
     throw err;
   }

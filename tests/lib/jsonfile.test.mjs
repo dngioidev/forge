@@ -6,9 +6,36 @@ import { join } from 'node:path';
 import { readJson, writeJson, mergeJson } from '../../plugin/scripts/lib/jsonfile.mjs';
 
 describe('jsonfile', () => {
-  it('readJson returns null for missing files', async () => {
+  it('AC-185.1: readJson returns null for a MISSING file (ENOENT)', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'forge-json-'));
     expect(await readJson(join(dir, 'nope.json'))).toBe(null);
+  });
+
+  it('AC-185.3: readJson PROPAGATES a non-ENOENT read error (EACCES) — not silently null', async () => {
+    // A genuine I/O error on an EXISTING file (permission denied, lock, AV) must
+    // surface, not be swallowed as "absent" — the silent-data-loss class #185/#164
+    // guards against. Inject a readFile that throws a coded EACCES to hit the branch
+    // (a real EACCES is hard to force portably on Windows).
+    vi.resetModules();
+    vi.doMock('node:fs/promises', async (orig) => {
+      const actual = await orig();
+      const eacces = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return { ...actual, readFile: async () => { throw eacces; } };
+    });
+    try {
+      const { readJson: throwingRead } = await import('../../plugin/scripts/lib/jsonfile.mjs');
+      await expect(throwingRead(join(tmpdir(), 'exists-but-locked.json'))).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
+  });
+
+  it('AC-185.1: readJson still throws a SyntaxError on broken JSON (unchanged)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-json-'));
+    const p = join(dir, 'broken.json');
+    await writeFile(p, '{ not: valid json', 'utf8');
+    await expect(readJson(p)).rejects.toBeInstanceOf(SyntaxError);
   });
 
   it('writeJson creates parent directories and round-trips', async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -259,6 +259,27 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     await writeRaw(cwd, '{ "version": 1, "startedAt": "2026-07-21T00:00:00Z", "outcom');
     const run = await loadRun(cwd);
     expect(run).toMatchObject({ version: 1, iterations: 0, outcomes: [] });
+  });
+
+  it('AC-185.3: loadRun PROPAGATES a real I/O error on run.json — never a silent fresh-run reset', async () => {
+    // The #185 fix makes readJson re-throw non-ENOENT read errors, which makes
+    // readRun's re-throw branch reachable: a transient read failure (EACCES/EIO/
+    // EBUSY — AV lock on Windows) on an in-flight run.json must surface, NOT be
+    // masked as a fresh run that discards the run's merged/escalated progress.
+    vi.resetModules();
+    vi.doMock('node:fs/promises', async (orig) => {
+      const actual = await orig();
+      const eacces = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return { ...actual, readFile: async () => { throw eacces; } };
+    });
+    try {
+      const { loadRun: throwingLoad } = await import('../../plugin/scripts/autopilot/ledger.mjs');
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      await expect(throwingLoad(cwd)).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      vi.doUnmock('node:fs/promises');
+      vi.resetModules();
+    }
   });
 
   it('AC-B164.3: startRun recovers from a truncated run.json and starts a clean run', async () => {
