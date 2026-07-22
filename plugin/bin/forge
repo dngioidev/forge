@@ -12,13 +12,19 @@ S="$ROOT/scripts"
 usage() {
   cat >&2 <<'USAGE'
 forge — dispatcher for forge's node CLIs
-  forge init|doctor|release [args…]
+  forge init|doctor|statusline|release [args…]
   forge <area> <command> [args…]
-      areas: board, gate, autopilot, care, deploy, design, graph, learn, backends
+      areas: board, gate, autopilot, care, deploy, design, graph, learn, backends, agy, review
+  note: monitors/* (ci-watch, decisions-watch) are background watchers registered in
+        plugin/monitors/monitors.json (when: on-skill-invoke:autopilot), launched by the
+        monitor runner — not interactive dispatcher commands, so they are excluded here.
 examples:
   forge board create --title "…" --type item
   forge gate docsync --base main
   forge autopilot select --dry-run
+  forge agy ask --question "where is X handled?"
+  forge review agy-opinion --ticket 172
+  forge statusline
   forge release --dry-run
 USAGE
 }
@@ -27,15 +33,23 @@ USAGE
 area="$1"; shift
 
 case "$area" in
-  -h|--help|help) usage; exit 0 ;;
-  init|doctor)    target="$S/$area.mjs" ;;
-  release)        target="$S/release/release.mjs" ;;
+  -h|--help|help)          usage; exit 0 ;;
+  init|doctor|statusline)  target="$S/$area.mjs" ;;
+  release)                 target="$S/release/release.mjs" ;;
   gate|gates)
     [ $# -ge 1 ] || { echo "forge $area: missing <command>" >&2; usage; exit 2; }
     sub="$1"; shift; target="$S/gates/$sub.mjs" ;;
-  board|autopilot|care|deploy|design|graph|learn|backends)
+  board|autopilot|care|deploy|design|graph|learn|backends|agy|review)
     [ $# -ge 1 ] || { echo "forge $area: missing <command>" >&2; usage; exit 2; }
     sub="$1"; shift; target="$S/$area/$sub.mjs" ;;
+  # monitors/* (ci-watch, decisions-watch) are deliberately NOT dispatched: they are
+  # background watchers registered in plugin/monitors/monitors.json
+  # (when: on-skill-invoke:autopilot) and launched by the monitor runner as long-running
+  # polling loops, not interactive `forge <area> <cmd>` CLIs. Run them via the monitor
+  # runner / their node path, not the dispatcher.
+  monitors)
+    echo "forge: 'monitors' are background watchers (plugin/monitors/monitors.json), not a dispatcher command" >&2
+    usage; exit 2 ;;
   *) echo "forge: unknown area '$area'" >&2; usage; exit 2 ;;
 esac
 
