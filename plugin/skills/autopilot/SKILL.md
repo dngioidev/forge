@@ -24,6 +24,9 @@ The trail, ledger (`run.json`), and journal are the record — don't re-narrate 
 ## The loop
 
 ```
+RUN START: confirm in-session merge authorization (§ Merge-authorization preflight)
+  └─ absent ─▶ ask "Merge policy" / degrade to PR-only (awaiting-human)  — NOT a mid-run stall
+  ▼
 select next actionable ticket (§ selection)
   ├─ none left ────────────────────────────▶ STOP + run report
   ▼
@@ -63,6 +66,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot/perms.mjs"
 
 This grants unattended **auto-merge and push** authority — review it before adding; it's opt-in and forge never writes it for you. Approving the first prompt as *"always allow"* achieves the same thing incrementally. Without it, autopilot still works but pauses at each outward command for your approval.
 
+**The allowlist alone does NOT authorize unattended merge.** The `.claude/settings.local.json` allowlist (and `features.autopilotAutoMerge: true`) are **necessary but not sufficient**: they do **not** clear the harness's **auto-mode classifier**, which blocks a subagent from unattended-merging its own PR unless the **user names the merge authorization in a genuine in-session message** (a live user turn — e.g. answering the run-start "Merge policy" prompt below). A grant recorded only in `run.json` or in agent narration does **not** count. With the allowlist but no in-session authorization, the loop still **stalls at the first merge** — so confirm the in-session grant at run start (§ Merge-authorization preflight), not just the allowlist.
+
+## Merge-authorization preflight — REQUIRED before the first delivery
+
+Autopilot's loop is orchestrator prose, so this preflight is a **required run-start step**, not a script: **before spawning the first delivery subagent**, the orchestrator must confirm it holds an **in-session user authorization to auto-merge**.
+
+- **Why up front, not mid-run.** Config + allowlist do not clear the harness auto-mode classifier (§ Permissions). If the grant is missing, every ticket delivers fully and then **wedges at its first merge** — you burn a whole delivery only to stall. This is the observed failure mode this preflight prevents.
+- **What counts as authorization.** A **live user message naming the merge authorization** — e.g. the user answering a run-start **"Merge policy"** question with an explicit grant. *Not* counted: `features.autopilotAutoMerge: true`, the `gh pr merge` allowlist, a value in `run.json`, or anything the agent narrates to itself.
+- **If it is present** → proceed into the loop; delivery subagents may unattended-merge on a green bar.
+- **If it is absent** → do **not** spawn a delivery that will stall. **Surface it and degrade at run start:** either ask the "Merge policy" question now and obtain the live grant, or run **PR-only / awaiting-human** — each ticket stops at its open green PR and is recorded *awaiting-human* (as with `features.autopilotAutoMerge: false`), and the loop continues. Escalate rather than guess a merge authorization.
+
+(If a lightweight helper that prints the required-authorization notice is useful, keep it additive; the documented orchestrator step above is the requirement.)
+
 ## Selection — "next actionable"
 
 Priority-ordered, FIFO within a priority. Read the board fresh each iteration (tickets you filed, or the owner added mid-run, get picked up):
@@ -88,6 +104,7 @@ A `backlog` ticket that is already shaped is run through `forge:triage` to becom
 
 A ticket merges **only when every one of these is green**. Any red routes to a fix wave (a fresh `implementer` spawn inside deliver's flow); the *same* gate failing twice is an escalation. **Nothing merges on red — ever.**
 
+0. **In-session merge authorization is present** (§ Merge-authorization preflight). An explicit in-session user grant is what actually clears the harness auto-mode classifier — `features.autopilotAutoMerge: true` + the `gh pr merge` allowlist are necessary but **not sufficient**, and a grant in `run.json`/narration does not count. Absent it, the ticket is parked *awaiting-human* at its open green PR, never merged.
 1. `forge:ship` completed clean: situation gate · conventions lint · rebase + full `verify` green.
 2. All mechanical gates pass: `plandrift` · `testintent` · `depguard` · `acgate` (every AC id in a passing test).
 3. Full-branch `reviewer` **and** `security` subagents return `verdict: pass` with **zero critical/high** findings. A critical is always an escalation, never a merge.
@@ -145,4 +162,4 @@ A long run stays bounded by construction — not by luck:
 
 ## Resume protocol
 
-Fresh session: read `.forge/autopilot/run.json` for run state → `escalate.mjs --check` to pick up any decisions the human answered → re-select per the selection order (which naturally resumes a mid-flight ticket first) → continue the loop.
+Fresh session: read `.forge/autopilot/run.json` for run state → `escalate.mjs --check` to pick up any decisions the human answered → **re-run the Merge-authorization preflight** (the in-session grant is *not* file-backed — a restarted session is a new session and must re-obtain a live grant, or degrade to PR-only) → re-select per the selection order (which naturally resumes a mid-flight ticket first) → continue the loop. (Compaction within the *same* session keeps the grant; only a full restart needs a fresh one.)

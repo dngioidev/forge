@@ -12,10 +12,15 @@ Autopilot is not a new pipeline — it is an **orchestrator over the pipeline fo
 
 `deliver`'s contract is "exactly one human gate — the PR." Autopilot **removes that gate** and replaces it with an *automated* merge bar. This is deliberate and owner-chosen (this spec). The quality guarantee shifts entirely onto the mechanical gates + adversarial subagents + CI. Therefore the merge bar is strict and non-negotiable (§4).
 
+**One thing the trust reversal does *not* buy you: it does not clear the harness's auto-mode classifier.** Removing the *product* PR gate is a forge decision; permitting a subagent to **unattended-merge its own PR** is a *harness* decision, and the auto-mode classifier requires an **explicit in-session user authorization** for it — a genuine live user message that names the merge authorization (e.g. the answer to a run-start "Merge policy" prompt). `features.autopilotAutoMerge: true` **plus** the `gh pr merge` allowlist (§ Permissions) are **necessary but not sufficient**: config + allowlist alone do **not** clear the classifier, and a grant recorded only in `run.json` or in agent narration is **not** an authorization. Without the in-session grant, the loop **stalls at the very first merge** — contradicting the hands-off contract — so the authorization must be obtained **up front at run start** (§4 preflight), not discovered mid-run.
+
 ## 3. Orchestration — how it works, mechanically
 
 ```
 [you] /forge:autopilot                         (optionally: --limit N, --area <a>, --dry-run)
+        ▼
+run start: confirm in-session merge authorization (§4 preflight)
+        │   absent ⇒ prompt (Merge policy) or degrade to PR-only — never a mid-run merge stall
         ▼
 loop:  select next actionable ticket  ──────────────┐   selection order §5
         ▼                                           │
@@ -41,8 +46,11 @@ until: no actionable ticket left  ⇒  STOP + run report
 
 ## 4. The auto-merge bar (replaces the human PR review)
 
+**Run-start preflight — in-session merge authorization (required before the first delivery).** Before autopilot spawns its *first* delivery subagent, the orchestrator must confirm it holds an **in-session user authorization to auto-merge** — a live user message naming the merge authorization, e.g. the answer to a run-start "Merge policy" prompt. This is a distinct requirement from `features.autopilotAutoMerge: true` and the `gh pr merge` allowlist: **config + allowlist alone do not clear the harness auto-mode classifier**, and a grant written only to `run.json` or spoken in agent narration does **not** count. If that authorization is absent, autopilot must **surface it and degrade at run start** — either prompt for it (obtaining the live grant) or run in a PR-only / *awaiting-human* mode where each ticket stops at its open green PR — **rather than burning a delivery that then stalls at the first merge**. The preflight exists precisely because that stall is the observed failure mode: without an up-front grant the loop delivers a whole ticket and then wedges at merge.
+
 A ticket merges **only when every one of these is green** — any red routes to a fix wave, and a second failure of the same gate escalates (never a merge on red):
 
+0. **In-session merge authorization is present** (the run-start preflight above). `features.autopilotAutoMerge: true` + the `gh pr merge` allowlist are necessary but not sufficient — the live in-session grant is what actually clears the harness classifier; without it, the merge cannot proceed and the ticket is parked *awaiting-human*, not merged.
 1. `ship` completed: situation gate · conventions lint · rebase + full `verify` green.
 2. All mechanical gates pass: `plandrift`, `testintent`, `depguard`, `acgate` (every AC checked).
 3. Full-branch `reviewer` **and** `security` subagents return `verdict: pass` with **zero critical/high** findings. A critical finding is always an escalation, never an auto-merge.
@@ -100,7 +108,8 @@ v1 is sequential by owner choice. The loop is factored so a **bounded worktree p
 
 - **AC-1 (loop):** `/forge:autopilot` selects the next actionable ticket per §5, delivers it, and moves to the next — continuously until none remain, then prints a run report. Resumes a mid-flight ticket first.
 - **AC-2 (auto-triage front door):** a `backlog` ticket is triaged before delivery; one that stays under-specified is escalated and skipped, not guessed.
-- **AC-3 (auto-merge bar):** a ticket merges to main only when §4 items 1–5 are all green; any red routes to a fix wave; a repeated failure escalates; **nothing merges on red**. `features.autopilotAutoMerge: false` stops at the open PR instead.
+- **AC-3 (auto-merge bar):** a ticket merges to main only when §4 items 0–5 are all green; any red routes to a fix wave; a repeated failure escalates; **nothing merges on red**. `features.autopilotAutoMerge: false` stops at the open PR instead.
+- **AC-3a (in-session merge authorization):** unattended auto-merge additionally requires an **explicit in-session user authorization** obtained at the **run-start preflight** (§4). `features.autopilotAutoMerge: true` + the `gh pr merge` allowlist alone do **not** clear the harness auto-mode classifier, and a grant recorded only in `run.json` or agent narration is insufficient; without the live grant the loop stalls at the first merge, so the preflight surfaces it up front and degrades to PR-only/awaiting-human rather than burning a delivery.
 - **AC-4 (human gates only):** the run halts (`escalate.mjs`) only for the §6 conditions; each escalation parks one ticket and the loop continues with the next.
 - **AC-5 (files new work):** a need surfaced mid-delivery becomes a linked, trail-noted ticket via `board/create.mjs` and re-enters the queue.
 - **AC-6 (safety):** honours the global pause / situation gate; the loop backstop prevents runaway; the run ledger makes an interrupted run resumable.
@@ -113,6 +122,6 @@ A long run must not blow the orchestrator's context window or let cost grow with
 - **Delegate, don't inline — mandatory, not aspirational (#156).** The main loop's per-ticket step **is** to spawn a delivery subagent (Task tool) that owns the whole ticket in its own context and returns a compact terminal report. The main loop never runs `forge:deliver` inline, edits files, or merges in its own context — doing so fills the main window (forcing mid-run compaction) and surfaces every permission prompt in the orchestrator. The heavy tokens live and die inside the per-ticket subagent; the outer loop keeps only `run.json` + git + a one-line outcome.
 - **Continuous requires pre-authorized permissions (#156).** Auto-merge/push/close are outward commands; unless they're in the `.claude/settings.local.json` allowlist, each raises a permission prompt and the run stalls. `scripts/autopilot/perms.mjs` prints the exact block; it's opt-in (forge never writes merge authority for you).
 - **The outer loop holds only file-backed state.** Between tickets the autopilot loop retains just `.forge/autopilot/run.json` + git state + a one-line outcome per ticket. Its growth is **~O(1) per ticket**, not O(work), so a 5-ticket run and a 50-ticket run have about the same loop overhead.
-- **Checkpoint + reset is free.** Every ticket is checkpointed to `run.json`; the resume protocol (§ resume) reconstructs from disk, so the orchestrator can be compacted or fully restarted between tickets at near-zero reload cost. (This session is the proof: it compacted at 67% and continued because state lived on the board + files, not the transcript.)
+- **Checkpoint + reset is free.** Every ticket is checkpointed to `run.json`; the resume protocol (§ resume) reconstructs from disk, so the orchestrator can be compacted or fully restarted between tickets at near-zero reload cost. (This session is the proof: it compacted at 67% and continued because state lived on the board + files, not the transcript.) **One thing is *not* file-backed and cannot be:** the in-session merge authorization (§4). Compaction preserves it — it's still the same live session — but a **fully restarted session is a new session and must re-run the run-start preflight** to obtain a fresh live grant; the authorization is deliberately *not* persisted to `run.json` (a stored value would not clear the harness classifier anyway). So re-obtaining the grant is the one non-free step on a cold restart, and it is a single up-front prompt, not per-ticket overhead.
 - **Cheap where it can be.** Selection (`select.mjs`) and the ledger are plain scripts — **zero model cost**. Model tiering already applies inside delivery (haiku for lookup, sonnet default, opus only for second-opinion).
 - **What's intrinsic vs. overhead.** Per-ticket *delivery* cost is intrinsic — it's the actual engineering and can't be optimised away. What autopilot keeps ~constant is the *loop overhead*. (The host OS — Windows included — has no bearing on tokens, context, or cost; only PATH/shell handling is platform-specific.)
