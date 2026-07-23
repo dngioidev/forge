@@ -15,23 +15,33 @@ import {
   findIssueByTitle, createIssue, toConfigField,
 } from './lib/board.mjs';
 import { runDoctor } from './doctor.mjs';
+import { runRunnerInit, parseArgs as parseRunnerArgs } from './runner/init.mjs';
 
 const DELIVERY_LOG_TITLE = 'Delivery log';
 
 export function parseArgs(argv) {
-  const args = { project: null, createProject: null, statusline: false, skipDoctor: false };
+  const args = { project: null, createProject: null, statusline: false, skipDoctor: false, runner: false, label: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--project') args.project = Number(argv[++i]);
     else if (a === '--create-project') args.createProject = argv[++i];
     else if (a === '--statusline') args.statusline = true;
     else if (a === '--skip-doctor') args.skipDoctor = true;
+    else if (a === '--runner') args.runner = true;
+    else if (a === '--label') args.label = argv[++i];
   }
   return args;
 }
 
 export async function runInit(ctx) {
   const { gh, cwd, log, args } = ctx;
+
+  // --runner is a distinct mode: scaffold the local self-hosted-runner assets
+  // (ADR-0005 AC2/AC3) instead of the board bootstrap. It has its own private-
+  // only refusal and never touches the project/board.
+  if (args.runner) {
+    return runRunnerInit({ gh, cwd }, parseRunnerArgs(args.label ? ['--label', args.label] : []), log);
+  }
   const actions = [];
   const say = (m) => { actions.push(m); log(m); };
 

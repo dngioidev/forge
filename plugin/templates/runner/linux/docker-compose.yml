@@ -1,0 +1,29 @@
+# forge ephemeral Linux runner (ADR-0005 decisions 1 + 3).
+#
+# This service is NOT long-running. The supervisor (supervisor.mjs) invokes it
+# once per job via `docker compose run --rm runner`, injecting a freshly-minted
+# 1-hour JIT config as ENCODED_JIT_CONFIG. `--rm` + the runner's own ephemeral
+# one-job lifecycle guarantee no cross-job or cross-repo workspace state.
+#
+# NO SECRETS HERE: the Administration-only PAT is never referenced. Only the
+# per-job JIT config is passed in, and only at run time via the supervisor's
+# `-e ENCODED_JIT_CONFIG=…`. Do not add the PAT to `environment:` or a compose
+# `secret:` — both would widen its exposure beyond the supervisor's process.
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: forge-local-runner:latest
+    # One job, then gone. The supervisor passes ENCODED_JIT_CONFIG per invocation.
+    environment:
+      ENCODED_JIT_CONFIG: ${ENCODED_JIT_CONFIG:?supervisor must inject a per-job JIT config}
+    # actionlint / other docker:// steps need the host docker daemon. The socket
+    # is a powerful grant (root-equivalent on the host) — private-repo, trusted-
+    # collaborator code only (enforced by the private-only refusal). See README.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Decision 3 hard concurrency cap is enforced by the supervisor; this keeps a
+    # single container from starving the box.
+    init: true
+    restart: "no"
