@@ -1,6 +1,8 @@
 # OSS CI & repo hardening for public contribution
 
-Status: **AC2 + AC4 delivered in-repo; AC1 + AC3 are owner actions to apply at the
+Status: **AC2 + AC4 delivered in-repo; the AC3 Dependabot *config*
+(`.github/dependabot.yml`) is committed here too. Enabling the AC3 security
+features and applying AC1 branch protection are owner actions to apply at the
 public flip (runbook below).**
 Refs: #214 (this work) · parent epic #209 (open-source the repo) · #180
 (self-hosted-runner integration — private-only) · SECURITY.md.
