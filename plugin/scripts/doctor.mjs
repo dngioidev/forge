@@ -8,123 +8,38 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from './lib/exec.mjs';
 import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
-import { fetchRunnerPin, parsePinnedVersion, compareVersions } from './lib/runner-release.mjs';
 import { readJson } from './lib/jsonfile.mjs';
 import { getRepoInfo, getProjectFields } from './lib/board.mjs';
-
-const ok = (name, msg) => ({ name, level: 'ok', msg });
-const warn = (name, msg, hint) => ({ name, level: 'warn', msg, hint });
-const fail = (name, msg, hint) => ({ name, level: 'fail', msg, hint });
-const skip = (name, msg) => ({ name, level: 'skip', msg }); // not applicable — never a failure (#89)
-
-const firstLine = (s) => String(s ?? '').split(/\r?\n/).find((l) => l.trim()) ?? '';
-
-// PAT shapes for the secret-store scan (ADR-0005 decision 1): classic
-// gh{p,o,s,u}_ + 36 chars, and fine-grained github_pat_ tokens. Assembled from
-// parts so this literal never itself matches (no self-flagging in a git grep).
-const RUNNER_PAT_RE = ['gh', '[opsu]_', '[A-Za-z0-9]{36}', '|', 'github', '_pat_', '[A-Za-z0-9_]{22,}'].join('');
+import {
+  ok, warn, fail, skip,
+  fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion,
+} from './lib/runner-checks.mjs';
 
 /**
  * Local self-hosted-runner health (ADR-0005 decisions 1 & 3, #225/AC4). Appends
  * results ONLY when `runner.enabled` — an absent/disabled block is fully silent
- * (no noise for the majority who don't run a local runner). Every gh/git call is
- * argv-only (no shell), degrades to a warn (never a crash) when gh lacks scope or
- * the API 4xxs, and never echoes a discovered secret's value into the output.
+ * (no noise for the majority who don't run a local runner). Built entirely from the
+ * shared runner-checks lib (also driving /forge:runner-check, #245): every gh/git
+ * call is argv-only (no shell), degrades to a warn (never a crash) when gh lacks
+ * scope or the API 4xxs, and never echoes a discovered secret's value.
  */
 async function checkRunner({ gh, cwd, runner, results }) {
   // Private-only guard (decision 3): a self-hosted runner on a PUBLIC repo is a
   // fork-PR RCE. Belt-and-suspenders with init's refusal (#224). Resolved first,
   // but the registration probe is the only gh-dependent leg — the secret-store
   // scan below is git-only and always runs (a committed PAT is unsafe on any repo).
-  const view = await gh(['repo', 'view', '--json', 'isPrivate,owner,name'], { parseJson: true });
-  if (!view.ok) {
-    results.push(warn('runner', `enabled, but repo visibility could not be determined (${firstLine(view.stderr) || 'gh repo view failed'})`, 'run inside the repo with gh authenticated'));
-  } else if (view.json?.isPrivate !== true) {
+  const vis = await fetchRepoVisibility(gh);
+  if (!vis.ok) {
+    results.push(warn('runner', `enabled, but repo visibility could not be determined (${vis.stderr})`, 'run inside the repo with gh authenticated'));
+  } else if (!vis.isPrivate) {
     results.push(fail('runner', 'runner.enabled on a PUBLIC repo — forks can run untrusted code on your machine (fork-PR RCE)', 'set runner.enabled=false, or keep the repo private (ADR-0005 decision 3)'));
   } else {
-    const owner = view.json.owner?.login;
-    const name = view.json.name;
-
-    // Registered + online? (decision 3 label routing). Repo endpoint by default;
-    // the org runners endpoint when sharing:"org" (decision 2). per_page=100 so a
-    // box with many registrations isn't truncated to a false "not registered".
-    const isOrg = runner.sharing === 'org';
-    const base = isOrg ? `orgs/${owner}/actions/runners` : `repos/${owner}/${name}/actions/runners`;
-    const api = await gh(['api', `${base}?per_page=100`], { parseJson: true });
-    const wanted = runner.labels.map((l) => l.toLowerCase()); // GitHub matches labels case-insensitively
-    if (!api.ok) {
-      results.push(warn('runner', `enabled, but could not query ${isOrg ? 'org' : 'repo'} runners (${firstLine(api.stderr) || 'gh api failed'})`, "grant the token repo/admin:org scope, or confirm the runner is registered"));
-    } else {
-      const list = Array.isArray(api.json?.runners) ? api.json.runners : [];
-      const labelNames = (r) => new Set((r.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean).map((s) => s.toLowerCase()));
-      const matches = list.filter((r) => { const ns = labelNames(r); return wanted.every((w) => ns.has(w)); });
-      if (matches.length === 0) {
-        results.push(warn('runner', `no self-hosted runner registered with labels [${runner.labels.join(', ')}]`, 'register the local runner (/forge:init --runner, then the printed enable steps)'));
-      } else if (matches.some((r) => r.status === 'online')) {
-        const online = matches.filter((r) => r.status === 'online').length;
-        results.push(ok('runner', `registered + online (${online}/${matches.length} matching runner${matches.length === 1 ? '' : 's'} online)`));
-      } else {
-        results.push(warn('runner', `runner registered but offline (labels [${runner.labels.join(', ')}])`, 'start the runner service on the host'));
-      }
-    }
+    results.push(await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner' }));
   }
 
-  await checkRunnerSecretStore({ cwd, results });
-  await checkRunnerVersion({ gh, cwd, results });
-}
-
-/**
- * Runner staleness (#233): GitHub DEPRECATES old actions/runner versions ("Runner
- * version vX is deprecated and cannot receive messages") and the ephemeral/JIT
- * runner can't auto-update, so a fixed pin silently stops receiving jobs. Parse the
- * scaffolded RUNNER_VERSION (Dockerfile, then setup-runner.ps1) and WARN when it is
- * behind the latest release. Degrades to a SILENT skip when the runner files are
- * absent (nothing scaffolded yet) or the gh lookup fails (can't determine latest) —
- * never a crash, never a fail.
- */
-async function checkRunnerVersion({ gh, cwd, results }) {
-  const dockerfile = await readFile(join(cwd, 'runner', 'linux', 'Dockerfile'), 'utf8').catch(() => null);
-  const ps1 = await readFile(join(cwd, 'runner', 'windows', 'setup-runner.ps1'), 'utf8').catch(() => null);
-  const pinned = parsePinnedVersion(dockerfile) ?? parsePinnedVersion(ps1);
-  if (!pinned) return; // no scaffolded runner files → silent skip
-
-  const latest = await fetchRunnerPin(gh); // no log — doctor is read-only/quiet here
-  if (latest.source !== 'live') return; // gh unreachable → can't judge staleness → silent skip
-
-  if (compareVersions(pinned, latest.version) < 0) {
-    results.push(warn('runner-version',
-      `pinned actions-runner v${pinned} is behind the latest v${latest.version} — GitHub deprecates old runners; the ephemeral runner will stop receiving jobs`,
-      're-run /forge:init --runner (or bump RUNNER_VERSION + SHA-256 in runner/linux/Dockerfile and runner/windows/setup-runner.ps1)'));
-  } else {
-    results.push(ok('runner-version', `pinned actions-runner v${pinned} is current`));
-  }
-}
-
-/**
- * Secret-store assertion (ADR-0005 decision 1): the ~/.forge/runner.env PAT store
- * must be gitignored + untracked, and no PAT may sit in a committed file. gh-free
- * (git-only) so it runs regardless of the registration probe's outcome. All calls
- * are argv-only; a non-git cwd simply degrades to a warn, never a throw. Only file
- * NAMES are ever surfaced — a discovered secret's value is never echoed.
- */
-async function checkRunnerSecretStore({ cwd, results }) {
-  const trackedRes = await run('git', ['-C', cwd, 'ls-files']);
-  const tracked = (trackedRes.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const storeTracked = tracked.filter((p) => /(^|\/)runner\.env$/.test(p) || /(^|\/)[^/]*\.runner\.env$/.test(p) || /(^|\/)\.forge\//.test(p));
-  const grep = await run('git', ['-C', cwd, 'grep', '-I', '-l', '-E', RUNNER_PAT_RE]);
-  // git grep: exit 0 = matches, 1 = clean (no match), anything else = real error.
-  const patHits = grep.code === 0 ? (grep.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : [];
-  const ignored = await run('git', ['-C', cwd, 'check-ignore', '-q', 'runner.env']);
-
-  if (storeTracked.length) {
-    results.push(fail('runner-secret', `runner secret store is tracked in git: ${storeTracked.slice(0, 3).join(', ')}`, 'git rm --cached it; the PAT belongs only in ~/.forge/runner.env (ADR-0005 decision 1)'));
-  } else if (patHits.length) {
-    results.push(fail('runner-secret', `PAT-looking secret found in committed file(s): ${patHits.slice(0, 3).join(', ')}`, 'rotate the token and purge it from git history (never commit a PAT)'));
-  } else if (!ignored.ok) {
-    results.push(warn('runner-secret', 'runner.env is not gitignored', 'add runner.env / **/.forge/ to .gitignore (/forge:init --runner does this)'));
-  } else {
-    results.push(ok('runner-secret', 'runner.env gitignored + untracked; no PAT in committed files'));
-  }
+  results.push(await checkRunnerSecretStore({ cwd }));
+  const version = await checkRunnerVersion({ gh, cwd });
+  if (version) results.push(version);
 }
 
 export async function runDoctor(ctx) {
