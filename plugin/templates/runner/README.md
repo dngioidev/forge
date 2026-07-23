@@ -59,6 +59,11 @@ committed. `forge:doctor` (ticket #225) asserts it is gitignored, untracked, and
 
 ## Enable — native Windows host runner (default when a Windows box is present)
 
+> Windows PowerShell blocks unsigned scripts by default (`Restricted` policy). Run
+> the steps in a session that allows them:
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` (session-scoped, no
+> admin), or invoke via `powershell -ExecutionPolicy Bypass -File .\setup-runner.ps1 …`.
+
 1. `cd runner/windows; .\setup-runner.ps1 -Install` (downloads + checksum-verifies
    the runner binary).
 2. Register a Windows service (e.g. NSSM) that runs `.\setup-runner.ps1 -Serve`

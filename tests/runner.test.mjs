@@ -84,6 +84,10 @@ describe('AC2 — private-repo scaffold', () => {
     const ps1 = await readFile(join(cwd, 'runner', 'windows', 'setup-runner.ps1'), 'utf8');
     expect(ps1).toContain('Get-FileHash'); // checksum-verified windows runner download
     expect(ps1).toContain('forge-local');
+    // #240: the generated .ps1 must be ASCII-only — Windows PowerShell 5.1 reads
+    // BOM-less scripts as ANSI, so a non-ASCII char (e.g. an em-dash) mojibakes and
+    // breaks parsing. Guard against reintroducing one.
+    expect(/^[\x00-\x7F]*$/.test(ps1)).toBe(true);
 
     await stat(join(cwd, 'runner', 'README.md'));
 
