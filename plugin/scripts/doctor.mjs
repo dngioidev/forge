@@ -8,6 +8,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from './lib/exec.mjs';
 import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
+import { fetchRunnerPin, parsePinnedVersion, compareVersions } from './lib/runner-release.mjs';
 import { readJson } from './lib/jsonfile.mjs';
 import { getRepoInfo, getProjectFields } from './lib/board.mjs';
 
@@ -69,6 +70,34 @@ async function checkRunner({ gh, cwd, runner, results }) {
   }
 
   await checkRunnerSecretStore({ cwd, results });
+  await checkRunnerVersion({ gh, cwd, results });
+}
+
+/**
+ * Runner staleness (#233): GitHub DEPRECATES old actions/runner versions ("Runner
+ * version vX is deprecated and cannot receive messages") and the ephemeral/JIT
+ * runner can't auto-update, so a fixed pin silently stops receiving jobs. Parse the
+ * scaffolded RUNNER_VERSION (Dockerfile, then setup-runner.ps1) and WARN when it is
+ * behind the latest release. Degrades to a SILENT skip when the runner files are
+ * absent (nothing scaffolded yet) or the gh lookup fails (can't determine latest) —
+ * never a crash, never a fail.
+ */
+async function checkRunnerVersion({ gh, cwd, results }) {
+  const dockerfile = await readFile(join(cwd, 'runner', 'linux', 'Dockerfile'), 'utf8').catch(() => null);
+  const ps1 = await readFile(join(cwd, 'runner', 'windows', 'setup-runner.ps1'), 'utf8').catch(() => null);
+  const pinned = parsePinnedVersion(dockerfile) ?? parsePinnedVersion(ps1);
+  if (!pinned) return; // no scaffolded runner files → silent skip
+
+  const latest = await fetchRunnerPin(gh); // no log — doctor is read-only/quiet here
+  if (latest.source !== 'live') return; // gh unreachable → can't judge staleness → silent skip
+
+  if (compareVersions(pinned, latest.version) < 0) {
+    results.push(warn('runner-version',
+      `pinned actions-runner v${pinned} is behind the latest v${latest.version} — GitHub deprecates old runners; the ephemeral runner will stop receiving jobs`,
+      're-run /forge:init --runner (or bump RUNNER_VERSION + SHA-256 in runner/linux/Dockerfile and runner/windows/setup-runner.ps1)'));
+  } else {
+    results.push(ok('runner-version', `pinned actions-runner v${pinned} is current`));
+  }
 }
 
 /**

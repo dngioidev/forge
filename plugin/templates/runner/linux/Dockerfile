@@ -19,10 +19,13 @@
 # never ships a fabricated/unresolvable digest.)
 FROM node:22-bookworm-slim AS base
 
-# Pin these before enabling (ADR-0005 / #227 dogfood): the runner release + its
-# published SHA-256. See https://github.com/actions/runner/releases
-ARG RUNNER_VERSION=2.328.0
-ARG RUNNER_SHA256=REPLACE-ME-with-the-published-actions-runner-linux-x64-sha256
+# The runner release + its published SHA-256, auto-pinned at scaffold time by
+# forge:init --runner to the CURRENT actions/runner release (#233). GitHub
+# deprecates old runner versions and the ephemeral runner can't auto-update, so
+# re-run forge:init --runner (or forge:doctor warns) when this falls behind.
+# See https://github.com/actions/runner/releases
+ARG RUNNER_VERSION={{RUNNER_VERSION}}
+ARG RUNNER_SHA256={{RUNNER_SHA256_LINUX}}
 ARG TARGETARCH=x64
 
 ENV DEBIAN_FRONTEND=noninteractive \

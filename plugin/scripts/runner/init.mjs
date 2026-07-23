@@ -14,6 +14,7 @@ import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { loadConfig } from '../lib/config.mjs';
+import { fetchRunnerPin } from '../lib/runner-release.mjs';
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEFAULT_LABEL = 'forge-local';
@@ -106,11 +107,20 @@ export async function runRunnerInit(ctx, args = parseArgs([]), log = console.log
   const verify = cfg.config?.conventions?.verify ?? 'pnpm verify';
   const label = args.label || DEFAULT_LABEL;
 
+  // Auto-pin the actions/runner version + published SHA-256 (linux-x64 + win-x64)
+  // to the CURRENT release (#233): a hardcoded/placeholder pin either fails the
+  // build (REPLACE-ME) or silently deprecates. Degrades to a real last-known-good
+  // pin (never a REPLACE-ME) with a warning if the gh lookup fails.
+  const pin = await fetchRunnerPin(gh, log);
+
   const substitute = (text) => text
     .replaceAll('{{OWNER}}', repo.owner)
     .replaceAll('{{REPO}}', repo.name)
     .replaceAll('{{LABEL}}', label)
-    .replaceAll('{{VERIFY}}', verify);
+    .replaceAll('{{VERIFY}}', verify)
+    .replaceAll('{{RUNNER_VERSION}}', pin.version)
+    .replaceAll('{{RUNNER_SHA256_LINUX}}', pin.linux)
+    .replaceAll('{{RUNNER_SHA256_WIN}}', pin.win);
 
   const runnerTemplates = join(PLUGIN_ROOT, 'templates', 'runner');
   const CANONICAL_VERIFY = join('.github', 'workflows', 'verify.yml');
@@ -179,6 +189,8 @@ export async function runRunnerInit(ctx, args = parseArgs([]), log = console.log
 
   for (const p of placed) log(`placed: ${p}`);
   for (const s of skipped) log(`kept existing: ${s}`);
+  // #233: surface what was pinned so the operator knows the build is ready to go.
+  log(`runner pinned to actions/runner v${pin.version}${pin.source === 'live' ? ' (current release)' : ' (last-known-good fallback — gh was unreachable)'} — Dockerfile + setup-runner.ps1 SHA-256 verified; forge:doctor warns if it later deprecates.`);
   for (const r of review) {
     log(`REVIEW: ${r} (an existing verify.yml was kept — compare and swap in the runner variant to move CI onto the local runner)`);
     log(`  NOTE: verify.yml and ${RUNNER_VARIANT} are both \`name: verify\`. The runner variant uses a distinct concurrency group (verify-runner-*) so it will NOT cancel your incumbent verify.yml if you commit both during review — but GitHub still runs two "verify" checks until you swap. Finish the swap (replace verify.yml with the runner variant) to land on one workflow (see #236).`);

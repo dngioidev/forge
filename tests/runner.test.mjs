@@ -12,8 +12,26 @@ const noop = () => {};
 const PRIVATE = { stdout: JSON.stringify({ isPrivate: true, owner: { login: 'dngioidev' }, name: 'forge' }) };
 const PUBLIC = { stdout: JSON.stringify({ isPrivate: false, owner: { login: 'dngioidev' }, name: 'forge' }) };
 
+// #233: the current actions/runner release init pins at scaffold time. The
+// published linux-x64 / win-x64 SHA-256 live between markers in the release body.
+const REL_VERSION = '2.340.0';
+const REL_LINUX = 'a'.repeat(64);
+const REL_WIN = 'b'.repeat(64);
+const RELEASE = {
+  stdout: JSON.stringify({
+    tag_name: `v${REL_VERSION}`,
+    body: [
+      `- actions-runner-linux-x64-${REL_VERSION}.tar.gz <!-- BEGIN SHA linux-x64 -->${REL_LINUX}<!-- END SHA linux-x64 -->`,
+      `- actions-runner-win-x64-${REL_VERSION}.zip <!-- BEGIN SHA win-x64 -->${REL_WIN}<!-- END SHA win-x64 -->`,
+    ].join('\n'),
+  }),
+};
+
 function privateRoutes() {
-  return [[(j) => j.startsWith('repo view'), PRIVATE]];
+  return [
+    [(j) => j.startsWith('api repos/actions/runner/releases/latest'), RELEASE],
+    [(j) => j.startsWith('repo view'), PRIVATE],
+  ];
 }
 
 async function tmpCwd() {
@@ -67,6 +85,13 @@ describe('AC2 — private-repo scaffold', () => {
     expect(dockerfile).toContain('corepack enable'); // pnpm
     expect(dockerfile).toContain('gh'); // gh baked in
     expect(dockerfile).toContain('sha256sum -c'); // checksum-verified download (supply chain)
+    // #233: version + SHA auto-pinned to the current release — no placeholder left.
+    expect(dockerfile).toContain(`ARG RUNNER_VERSION=${REL_VERSION}`);
+    expect(dockerfile).toContain(`ARG RUNNER_SHA256=${REL_LINUX}`);
+    expect(dockerfile).not.toContain('REPLACE-ME');
+    expect(dockerfile).not.toContain('{{RUNNER_VERSION}}');
+    expect(dockerfile).not.toContain('{{RUNNER_SHA256_LINUX}}');
+    expect(dockerfile).toMatch(/ARG RUNNER_SHA256=[0-9a-f]{64}\b/); // real 64-hex SHA
 
     const compose = await readFile(join(cwd, 'runner', 'linux', 'docker-compose.yml'), 'utf8');
     expect(compose).toContain('/var/run/docker.sock:/var/run/docker.sock'); // socket mount for actionlint
@@ -97,6 +122,13 @@ describe('AC2 — private-repo scaffold', () => {
     const ps1 = await readFile(join(cwd, 'runner', 'windows', 'setup-runner.ps1'), 'utf8');
     expect(ps1).toContain('Get-FileHash'); // checksum-verified windows runner download
     expect(ps1).toContain('forge-local');
+    // #233: win-x64 version + SHA auto-pinned; no placeholder left.
+    expect(ps1).toContain(`$RunnerVersion = '${REL_VERSION}'`);
+    expect(ps1).toContain(`$RunnerSha256 = '${REL_WIN}'`);
+    expect(ps1).not.toContain('REPLACE-ME');
+    expect(ps1).not.toContain('{{RUNNER_VERSION}}');
+    expect(ps1).not.toContain('{{RUNNER_SHA256_WIN}}');
+    expect(ps1).toMatch(/\$RunnerSha256 = '[0-9a-f]{64}'/); // real 64-hex SHA
     // #240: the generated .ps1 must be ASCII-only — Windows PowerShell 5.1 reads
     // BOM-less scripts as ANSI, so a non-ASCII char (e.g. an em-dash) mojibakes and
     // breaks parsing. Guard against reintroducing one.
@@ -177,6 +209,27 @@ describe('AC2 — private-repo scaffold', () => {
     expect(blob).toMatch(/verify\.runner\.yml/);
     expect(blob).toMatch(/concurrency group/i);
     expect(blob).toMatch(/#236/);
+  });
+
+  it('#233: degrades to a real pinned fallback (no REPLACE-ME / placeholder) when the release lookup fails', async () => {
+    const cwd = await tmpCwd();
+    const logs = [];
+    // release endpoint errors; repo view still private → scaffold proceeds with fallback pin
+    const { gh } = fakeGh([
+      [(j) => j.startsWith('api repos/actions/runner/releases/latest'), { ok: false, stderr: 'network is unreachable' }],
+      [(j) => j.startsWith('repo view'), PRIVATE],
+    ]);
+    const res = await runRunnerInit({ gh, cwd }, parseArgs([]), (m) => logs.push(String(m)));
+    expect(res.ok).toBe(true);
+    const dockerfile = await readFile(join(cwd, 'runner', 'linux', 'Dockerfile'), 'utf8');
+    const ps1 = await readFile(join(cwd, 'runner', 'windows', 'setup-runner.ps1'), 'utf8');
+    for (const body of [dockerfile, ps1]) {
+      expect(body).not.toContain('REPLACE-ME');
+      expect(body).not.toMatch(/\{\{RUNNER_/); // no placeholder left
+    }
+    expect(dockerfile).toMatch(/ARG RUNNER_SHA256=[0-9a-f]{64}\b/); // real fallback SHA
+    expect(ps1).toMatch(/\$RunnerSha256 = '[0-9a-f]{64}'/);
+    expect(logs.join('\n')).toMatch(/warning: could not resolve the current actions\/runner release/);
   });
 
   it('re-run is a no-op — all assets kept, none re-placed', async () => {

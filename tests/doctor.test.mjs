@@ -44,17 +44,33 @@ const PUBLIC_VIEW = { stdout: JSON.stringify({ isPrivate: false, owner: { login:
 const runnersResponse = (runners) => ({ stdout: JSON.stringify({ total_count: runners.length, runners }) });
 const FORGE_LABELS = [{ name: 'self-hosted' }, { name: 'linux' }, { name: 'forge-local' }];
 
+// #233: an actions/runner release response for the staleness check. SHA markers
+// live in the release body; only tag_name matters for version comparison.
+const releaseResponse = (version) => ({
+  stdout: JSON.stringify({
+    tag_name: `v${version}`,
+    body: `<!-- BEGIN SHA linux-x64 -->${'a'.repeat(64)}<!-- END SHA linux-x64 -->\n<!-- BEGIN SHA win-x64 -->${'b'.repeat(64)}<!-- END SHA win-x64 -->`,
+  }),
+});
+
 // Routes shared by the runner tests: auth ok, isPrivate view first, then generic
 // repo view + a catch-all so unrelated checks (board/security) don't throw.
-function runnerRoutes({ view = PRIVATE_VIEW, runners } = {}) {
+function runnerRoutes({ view = PRIVATE_VIEW, runners, release } = {}) {
   const routes = [
     ['auth status', AUTH_OK],
     [(j) => j.startsWith('repo view') && j.includes('isPrivate'), view],
     ['repo view', REPO_VIEW],
   ];
+  if (release !== undefined) routes.push([(j) => j.startsWith('api repos/actions/runner/releases/latest'), release]);
   if (runners !== undefined) routes.push([(j) => j.startsWith('api ') && j.includes('actions/runners'), runners]);
   routes.push([() => true, { ok: false, stderr: 'x' }]);
   return routes;
+}
+
+/** Write a scaffolded runner Dockerfile pinning RUNNER_VERSION for the staleness check. */
+async function writeRunnerDockerfile(cwd, version) {
+  await mkdir(join(cwd, 'runner', 'linux'), { recursive: true });
+  await writeFile(join(cwd, 'runner', 'linux', 'Dockerfile'), `FROM node:22\nARG RUNNER_VERSION=${version}\nARG RUNNER_SHA256=${'a'.repeat(64)}\n`, 'utf8');
 }
 
 describe('runDoctor — runner health (AC-225.4)', () => {
@@ -179,6 +195,61 @@ describe('runDoctor — runner health (AC-225.4)', () => {
     const res = await runDoctor({ gh, cwd, log: noop });
     expect(byName(res, 'runner-secret')[0].level).toBe('warn');
     expect(byName(res, 'runner-secret')[0].msg).toMatch(/gitignore/i);
+  });
+
+  it('#233: pinned runner version BEHIND latest → warn (deprecation staleness)', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    await writeRunnerDockerfile(cwd, '2.300.0'); // stale pin
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+      release: releaseResponse('2.340.0'),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-version')[0];
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/2\.300\.0/);
+    expect(r.msg).toMatch(/2\.340\.0/);
+    expect(r.msg).toMatch(/deprecat/i);
+    // staleness is advisory, never a hard failure
+    expect(res.results.filter((x) => x.level === 'fail').map((x) => x.name)).not.toContain('runner-version');
+  });
+
+  it('#233: pinned runner version CURRENT (== latest) → ok', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    await writeRunnerDockerfile(cwd, '2.340.0');
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+      release: releaseResponse('2.340.0'),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-version')[0].level).toBe('ok');
+  });
+
+  it('#233: release lookup fails → staleness check is a silent skip (no runner-version result)', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    await writeRunnerDockerfile(cwd, '2.300.0');
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+      release: { ok: false, stderr: 'network is unreachable' },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-version')).toEqual([]); // silent — can't judge staleness
+    expect(res.results.filter((x) => x.level === 'fail').map((x) => x.name)).not.toContain('runner-version');
+  });
+
+  it('#233: no scaffolded runner files → staleness check is a silent skip', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    // no runner/linux/Dockerfile written
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+      release: releaseResponse('2.340.0'),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-version')).toEqual([]);
   });
 
   it('label matching is case-insensitive (FORGE-LOCAL registered, forge-local configured) → ok', async () => {
