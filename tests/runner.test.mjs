@@ -409,6 +409,11 @@ describe('#254 — service install tooling (structural)', () => {
     expect(ps1).toMatch(/if \(Get-Service \$ServiceName -ErrorAction SilentlyContinue\)/);
     expect(ps1).toContain("$ErrorActionPreference = 'Continue'");
     expect(ps1).not.toMatch(/nssm[^\n]*stop[^\n]*2>\$null/i); // the old terminating pattern is gone
+    // #258: the LocalSystem service needs gh on its PATH (user-scoped gh is invisible
+    // to LocalSystem), carried via AppEnvironmentExtra PATH; and its output is logged.
+    expect(ps1).toMatch(/Get-Command gh/);
+    expect(ps1).toContain('PATH=$svcPath');
+    expect(ps1).toMatch(/AppStderr/);
   });
 
   it('windows setup-runner.ps1 stays ASCII-only with the new service code (#240 guard)', async () => {

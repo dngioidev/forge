@@ -4,3 +4,4 @@ node_modules/
 runner.env
 *.runner.env
 runner/windows/actions-runner/
+runner/windows/logs/

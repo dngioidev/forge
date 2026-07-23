@@ -159,6 +159,22 @@ function Install-Service {
   $psExe = (Get-Command powershell -ErrorAction SilentlyContinue).Source
   if (-not $psExe) { $psExe = 'powershell' }
   $script = Join-Path $PSScriptRoot 'setup-runner.ps1'
+  # An NSSM service runs as LocalSystem by default, which does NOT inherit the user's
+  # PATH - so a user-scoped `gh` (e.g. %LOCALAPPDATA%\gh-cli) is invisible and the JIT
+  # mint fails, the process exits, and NSSM throttles the service to Paused. Prepend
+  # gh's dir (resolved now) to the machine PATH for the service.
+  $ghSrc = (Get-Command gh -ErrorAction SilentlyContinue).Source
+  $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  if ($ghSrc) {
+    $svcPath = "$(Split-Path $ghSrc);$machinePath"
+  } else {
+    Write-Log "WARNING: gh not found on PATH now - the LocalSystem service likely won't find it either. Put gh on the machine PATH."
+    $svcPath = $machinePath
+  }
+  # Capture the service's output so a fast-exit is diagnosable (dir is gitignored).
+  $logDir = Join-Path $PSScriptRoot 'logs'
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
   # NSSM writes progress to stderr; under $ErrorActionPreference='Stop' that native
   # stderr becomes a terminating error (PS 5.1 NativeCommandError). Run the nssm calls
   # non-terminating and verify the result explicitly. Only pre-clean when the service
@@ -176,16 +192,29 @@ function Install-Service {
     & $nssm set $ServiceName Start SERVICE_AUTO_START
     & $nssm set $ServiceName AppExit Default Restart
     & $nssm set $ServiceName AppRestartDelay 10000
-    # AppEnvironmentExtra = the PAT from the current session env (never a literal, never a file).
-    & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT"
+    & $nssm set $ServiceName AppStdout (Join-Path $logDir 'service.out.log')
+    & $nssm set $ServiceName AppStderr (Join-Path $logDir 'service.err.log')
+    # AppEnvironmentExtra = the PAT (from this session env) + a PATH that carries gh to
+    # LocalSystem. Never a literal token, never a committed file.
+    & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT" "PATH=$svcPath"
     & $nssm start $ServiceName
   } finally {
     $ErrorActionPreference = $prevEAP
   }
-  Start-Sleep -Seconds 2
-  $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
+  # NSSM pauses an app that exits too fast (throttle) - poll briefly for Running.
+  $svc = $null
+  for ($i = 0; $i -lt 6; $i++) {
+    Start-Sleep -Seconds 2
+    $svc = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.State -eq 'Running') { break }
+  }
   if (-not $svc) { throw "service '$ServiceName' was not created - run 'nssm install $ServiceName ...' manually to see the error." }
-  Write-Log "installed service '$ServiceName' (NSSM: auto-start, restart-on-exit); status: $($svc.Status)"
+  if ($svc.State -eq 'Running') {
+    Write-Log "installed + started service '$ServiceName' (Running; auto-start, restart-on-exit)"
+  } else {
+    Write-Log "WARNING: '$ServiceName' state is '$($svc.State)' - NSSM throttles a fast-exiting app."
+    Write-Log "  Check the service log: $logDir\service.err.log  (common cause: a tool like gh not on the LocalSystem PATH)."
+  }
   Write-Log "status:  nssm status $ServiceName   |   stop/edit: nssm stop|edit $ServiceName"
 }
 
