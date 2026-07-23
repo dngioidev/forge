@@ -38,6 +38,10 @@ Still stale? Check you're not shadowed: a repo-local override (a same-named skil
 - **`spawn pnpm ENOENT`** — bare `.cmd` shims need the cmd.exe retry that `exec.mjs run()` provides; if you hit this in a consumer repo's verify command, invoke via `pnpm.cmd` or ensure the shim dir is on PATH.
 - **gh auth/scope lost** — `gh auth refresh -s project`.
 
-## 6. When it's really stuck
+## 6. Local self-hosted runner
+
+Runner setup + delivery hit a distinct family of issues (Docker/WSL, PowerShell parsing, execution policy, `docker://` on containerized runners, JIT-remnant locks, deprecated runner versions). They have their own symptom → cause → fix table in the **[runner adoption guide](runner-adoption.md#known-issues--solutions-runbook)**.
+
+## 7. When it's really stuck
 
 Re-run `/forge:init` (idempotent — resumes/repairs, never duplicates), then `/forge:doctor`. If a script errors with GraphQL in the message, don't hand-patch the board — that's what forge exists to remove; file a bug ticket with the exact output instead.
