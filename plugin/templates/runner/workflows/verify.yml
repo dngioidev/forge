@@ -17,8 +17,14 @@ on:
     branches: [main]
   pull_request:
 
+# Distinct concurrency group so this runner variant can never collide with an
+# incumbent `name: verify` workflow. Both would otherwise resolve to the same
+# `${{ github.workflow }}-${{ github.ref }}` group (both are `name: verify`) and,
+# with cancel-in-progress, silently cancel each other during the review window
+# where verify.yml and verify.runner.yml coexist before the swap (see #236). A
+# fixed prefix keeps the group unique yet still self-cancels stale runs per ref.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: verify-runner-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
