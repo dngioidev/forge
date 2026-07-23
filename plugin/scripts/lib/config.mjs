@@ -6,6 +6,51 @@ export const CONFIG_RELPATH = join('.claude', 'forge.json');
 const FIELD_KEYS = ['status', 'priority', 'size', 'type'];
 const OPTIONAL_FIELD_KEYS = ['phase', 'area']; // #114/#146: consumer-defined single-selects, mapped by init when the project has them
 
+// ADR-0005 (#226/AC5) — local self-hosted runner config block.
+const RUNNER_SHARING = ['repo', 'org']; // decision 2: per-repo default, org opt-in
+const RUNNER_WINDOWS = ['native', 'hosted']; // decision 4: native default (box present), hosted fallback
+const RUNNER_ADVANCED_KEYS = ['linuxMatrix', 'deploySmoke', 'nightly']; // decision 5: owner-gated CI upside
+
+/**
+ * Documented defaults for the ADR-0005 `runner` block (spec #226/AC5). A runner
+ * is off until explicitly enabled; when on, it registers the standard forge-local
+ * label set, shares per-repo (solo default; `org` is the opt-in team path), and
+ * takes the Windows leg on a native host runner (falling back to `hosted` when no
+ * Windows box is present). Advanced-CI toggles (decision 5) are all off — anything
+ * that could spend money stays owner-gated.
+ */
+export const RUNNER_DEFAULTS = Object.freeze({
+  enabled: false,
+  labels: Object.freeze(['self-hosted', 'linux', 'forge-local']),
+  sharing: 'repo',
+  windows: 'native',
+});
+
+/**
+ * Resolve a `runner` block to its effective config: the documented defaults filled
+ * in for every field the consumer omitted. An absent/non-object block resolves to
+ * all defaults (runner disabled). Assumes validateConfig already rejected malformed
+ * shapes; any value that is still the wrong type falls back to its default rather
+ * than propagating, so callers (init/doctor) always see a well-formed block.
+ */
+export function normalizeRunner(runner) {
+  const r = (runner && typeof runner === 'object' && !Array.isArray(runner)) ? runner : {};
+  const adv = (r.advancedCi && typeof r.advancedCi === 'object' && !Array.isArray(r.advancedCi)) ? r.advancedCi : {};
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : RUNNER_DEFAULTS.enabled,
+    labels: (Array.isArray(r.labels) && r.labels.length > 0 && r.labels.every((l) => typeof l === 'string' && l.trim().length > 0))
+      ? [...r.labels]
+      : [...RUNNER_DEFAULTS.labels],
+    sharing: RUNNER_SHARING.includes(r.sharing) ? r.sharing : RUNNER_DEFAULTS.sharing,
+    windows: RUNNER_WINDOWS.includes(r.windows) ? r.windows : RUNNER_DEFAULTS.windows,
+    advancedCi: {
+      linuxMatrix: adv.linuxMatrix === true,
+      deploySmoke: adv.deploySmoke === true,
+      nightly: adv.nightly === true,
+    },
+  };
+}
+
 /**
  * Structural validation of .claude/forge.json — plain checks, no schema
  * library (zero-dependency principle, spec §2). Returns every problem it
@@ -114,6 +159,38 @@ export function validateConfig(cfg) {
     }
   }
 
+  // ADR-0005 (#226/AC5) — optional `runner` block. Validated only when present;
+  // absent means "no local runner", which is the safe default.
+  if (cfg.runner !== undefined) {
+    const r = cfg.runner;
+    if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+      push('runner: must be an object');
+    } else {
+      if (r.enabled !== undefined && typeof r.enabled !== 'boolean') push('runner.enabled: must be a boolean');
+      if (r.labels !== undefined) {
+        if (!Array.isArray(r.labels) || r.labels.length === 0) {
+          push('runner.labels: must be a non-empty array of label strings');
+        } else {
+          r.labels.forEach((l, i) => {
+            if (typeof l !== 'string' || l.trim().length === 0) push(`runner.labels[${i}]: must be a non-empty string`);
+          });
+        }
+      }
+      if (r.sharing !== undefined && !RUNNER_SHARING.includes(r.sharing)) push('runner.sharing: must be "repo" or "org"');
+      if (r.windows !== undefined && !RUNNER_WINDOWS.includes(r.windows)) push('runner.windows: must be "native" or "hosted"');
+      if (r.advancedCi !== undefined) {
+        if (typeof r.advancedCi !== 'object' || r.advancedCi === null || Array.isArray(r.advancedCi)) {
+          push('runner.advancedCi: must be an object');
+        } else {
+          for (const [k, v] of Object.entries(r.advancedCi)) {
+            if (!RUNNER_ADVANCED_KEYS.includes(k)) push(`runner.advancedCi.${k}: unknown toggle (valid: ${RUNNER_ADVANCED_KEYS.join(', ')})`);
+            else if (typeof v !== 'boolean') push(`runner.advancedCi.${k}: must be a boolean`);
+          }
+        }
+      }
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -133,5 +210,7 @@ export async function loadConfig(cwd) {
     return { ok: false, missing: false, errors: [`${CONFIG_RELPATH} is not valid JSON: ${err.message}`], config: null };
   }
   const v = validateConfig(cfg);
-  return { ok: v.ok, missing: false, errors: v.errors, config: cfg };
+  // #226/AC5: expose the runner block with documented defaults applied, so
+  // init/doctor read one well-formed shape regardless of what the file omitted.
+  return { ok: v.ok, missing: false, errors: v.errors, config: cfg, runner: normalizeRunner(cfg?.runner) };
 }

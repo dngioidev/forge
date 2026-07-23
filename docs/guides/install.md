@@ -52,6 +52,41 @@ Run it after init and any time something feels off. ✗ items block work and say
 
 **Theme (optional):** `/theme` → **Forge (smithy)** for forge's ember-on-steel identity.
 
+### Local self-hosted runner (`runner` block — PRIVATE repos only)
+
+Private repos have a metered monthly Actions-minute cap (Windows bills at 2×). A local self-hosted runner drops that GitHub bill to $0 and lets you afford heavier pipelines (ADR-0005). `/forge:init --runner` scaffolds the runner assets (see [handbook](handbook.md#local-self-hosted-runner-adr-0005) and `runner/README.md`); this section covers the **`runner` block in `.claude/forge.json`** that records the config those assets read.
+
+> **Security rule — private repos only.** A self-hosted runner must **never** process fork/public-repo PRs: a fork can run untrusted code on your machine (GitHub's documented fork-PR RCE). `/forge:init --runner` **refuses on a public repo**, and if this repo ever goes public the runner wiring must be removed. Do not enable a runner on anything a stranger can open a PR against.
+
+Add the block only if you run a local runner — it is entirely optional and off by default:
+
+```jsonc
+// .claude/forge.json
+"runner": {
+  "enabled": true,                                  // default false — runner off until you opt in
+  "labels": ["self-hosted", "linux", "forge-local"], // routing labels the workflow targets
+  "sharing": "repo",                                // "repo" (default, solo) | "org" (team, opt-in)
+  "windows": "native",                              // "native" (default when a Windows box is present) | "hosted" (fallback)
+  "advancedCi": {                                   // decision 5 — all off by default, owner-gated (may spend money)
+    "linuxMatrix": false,
+    "deploySmoke": false,
+    "nightly": false
+  }
+}
+```
+
+| field | default | meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch. Absent or `false` = no local runner. |
+| `labels` | `["self-hosted","linux","forge-local"]` | Labels the runner registers with and `verify.yml` targets, so jobs route to your box and only your box. |
+| `sharing` | `"repo"` | `"repo"` registers the one physical box **per private repo** (solo/personal accounts — N registrations, zero org setup). `"org"` points at an org runner group so **one** registration serves all repos — the only path GitHub calls true sharing, and it needs a (free) org. |
+| `windows` | `"native"` | `"native"` runs the Windows leg on a native Windows host runner at $0 (default when you develop on Windows). `"hosted"` is the fallback when no Windows box exists — PRs run Linux-only locally, Windows trims to main + a nightly hosted drift check. |
+| `advancedCi.*` | all `false` | Optional upside (decision 5): `linuxMatrix` (full Linux matrix per PR), `deploySmoke` (build + `terraform plan`, never `apply`), `nightly` (maintain + graph reindex + security sweep). Off by default because anything that provisions infra or hits a paid API is **owner-gated**. |
+
+**Solo vs. team boundary (honest):** on a personal account, `sharing: "repo"` is the real default — "many repos on one box" is achieved operationally (one machine, one registration per repo), because GitHub runner *groups* are an org/enterprise construct. True one-registration-serves-many sharing (`sharing: "org"`) requires moving the private repos into a (free) org. Pick `repo` unless you already run an org.
+
+Malformed values are rejected by `/forge:doctor` and any config load (e.g. `sharing: "enterprise"`, a non-boolean `enabled`); omitted fields take the defaults above.
+
 ## 5. Working in it
 
 Everything is ticket-first: `/forge:ticket` for quick triage, then the lane skills (ideate → brainstorm → design → plan → execute → ship → release; hotfix/respond/maintain for care). `forge board status` (or the status line) is the one-glance catch-up. The owner merges every PR — agents never do.

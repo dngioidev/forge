@@ -109,6 +109,21 @@ Rollback = redeploy the previous digest (one command, runbook). Migrations are f
 | `team` | members, roles, approval policy (solo default: you are maintainer of everything) |
 | `features` | deploy · graph · designReview · e2e — all off by default |
 | `deploy` | environments chain, healthcheck, registry |
+| `runner` | local self-hosted runner config (labels · sharing · windows · advancedCi) — off by default, PRIVATE repos only (see below) |
+
+### Local self-hosted runner (ADR-0005)
+
+Opt-in, **private-repo-only** free CI on a local GitHub Actions runner. `/forge:init --runner` scaffolds the assets (ephemeral Linux container + JIT supervisor, native-Windows host setup, trimmed `verify.yml`) and **refuses on a public repo** — a fork could run untrusted code on your machine (GitHub's fork-PR RCE). If the repo ever goes public, remove the runner wiring. The one secret (a fine-grained *Administration*-only PAT) lives **only** in a gitignored, `chmod 600` `~/.forge/runner.env` loaded as the runner service's env — never in `forge.json`. The `runner` block records config, not secrets:
+
+| field | default | meaning |
+| --- | --- | --- |
+| `enabled` | `false` | master switch — absent/`false` means no local runner |
+| `labels` | `["self-hosted","linux","forge-local"]` | labels the runner registers with and `verify.yml` targets |
+| `sharing` | `"repo"` | `"repo"` = one box, one registration **per private repo** (solo default); `"org"` = one org-runner-group registration serves all repos (team, needs a free org) |
+| `windows` | `"native"` | `"native"` runs the Windows leg on a native host runner at $0 (default when a Windows box is present); `"hosted"` is the fallback (PRs Linux-only, Windows on main + nightly drift check) |
+| `advancedCi` | all `false` | owner-gated upside — `linuxMatrix`, `deploySmoke` (build + `terraform plan`, never `apply`), `nightly` (maintain + graph reindex + security sweep) |
+
+**Solo vs. team:** `sharing: "repo"` is the honest solo default (GitHub runner *groups* are org/enterprise-only, so a personal account shares one box by registering it per repo). `sharing: "org"` is the only path GitHub calls true sharing and requires moving the repos into a (free) org. Full setup: [install guide](install.md#local-self-hosted-runner-runner-block--private-repos-only) and `runner/README.md`.
 
 ## 11. When something's wrong
 
