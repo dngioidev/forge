@@ -1,0 +1,7 @@
+# actionlint config for the forge local self-hosted runner.
+# Declares the custom runner label so the `runs-on: [self-hosted, linux, {{LABEL}}]`
+# jobs don't trip actionlint's runner-label check — the label is a real self-hosted
+# label, just not a GitHub-hosted one. See #238 and runner/README.md.
+self-hosted-runner:
+  labels:
+    - "{{LABEL}}"

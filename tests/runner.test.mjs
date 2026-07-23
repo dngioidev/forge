@@ -97,6 +97,21 @@ describe('AC2 — private-repo scaffold', () => {
     for (const token of ['{{OWNER}}', '{{REPO}}', '{{LABEL}}', '{{VERIFY}}']) {
       expect(verify).not.toContain(token);
     }
+    // actionlint runs as a pinned, checksum-verified BINARY — never a docker://
+    // container action (#238: nested bind-mount breaks the workspace on the runner).
+    expect(verify).not.toContain('uses: docker://'); // no container action
+    expect(verify).toContain('version=1.7.7'); // pinned v1.7.7 binary
+    expect(verify).toContain('actionlint_${version}_linux_amd64.tar.gz');
+    expect(verify).toContain('023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757'); // SHA-256 pin
+    expect(verify).toContain('sha256sum -c'); // checksum-verified download (supply chain)
+    expect(verify).toContain('./actionlint -color'); // binary run
+
+    // actionlint runner-label declared so the self-hosted `runs-on` doesn't trip
+    // actionlint's runner-label check (label substituted, no placeholder left).
+    const actionlintCfg = await readFile(join(cwd, '.github', 'actionlint.yaml'), 'utf8');
+    expect(actionlintCfg).toContain('self-hosted-runner:');
+    expect(actionlintCfg).toContain('forge-local');
+    expect(actionlintCfg).not.toContain('{{LABEL}}');
   });
 
   it('uses conventions.verify from forge.json and a custom --label', async () => {

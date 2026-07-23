@@ -50,5 +50,11 @@
     "commitFormat": "conventional+issue-ref",
     "specsDir": "docs/specs",
     "plansDir": "docs/plans"
+  },
+  "runner": {
+    "enabled": true,
+    "labels": ["self-hosted", "linux", "forge-local"],
+    "sharing": "repo",
+    "windows": "hosted"
   }
 }

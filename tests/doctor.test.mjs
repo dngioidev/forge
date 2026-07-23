@@ -33,6 +33,8 @@ async function gitRepo({ gitignore = '.forge/\n', files = {}, force = [] } = {})
 async function writeCfg(cwd, runner) {
   const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
   if (runner !== undefined) committed.runner = runner;
+  // no runner arg → truly feature-off, regardless of the live repo's committed config
+  else delete committed.runner;
   await mkdir(join(cwd, '.claude'), { recursive: true });
   await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
 }
@@ -305,6 +307,7 @@ describe('runDoctor — healthy repo shape', () => {
     const cwd = await tmpCwd();
     const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
     committed.board.deliveryLogIssue = 15;
+    delete committed.runner; // feature-off shape regardless of the live repo's runner block
     await mkdir(join(cwd, '.claude'), { recursive: true });
     await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
     await writeFile(join(cwd, '.gitignore'), '.forge/\n', 'utf8');

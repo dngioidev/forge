@@ -40,6 +40,8 @@ export function parseArgs(argv) {
 /** Scaffold file → destination in the consumer repo. */
 function destFor(rel) {
   if (rel.startsWith('workflows/')) return join('.github', rel);
+  // github/* → repo .github/* (e.g. actionlint.yaml declaring the runner label)
+  if (rel.startsWith('github/')) return join('.github', rel.slice('github/'.length));
   return join('runner', rel);
 }
 
