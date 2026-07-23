@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateConfig, loadConfig } from '../../plugin/scripts/lib/config.mjs';
+import { validateConfig, loadConfig, normalizeRunner, RUNNER_DEFAULTS } from '../../plugin/scripts/lib/config.mjs';
 
 function validCfg() {
   return {
@@ -104,6 +104,93 @@ describe('validateConfig', () => {
     const r = validateConfig(cfg);
     expect(r.errors.some((e) => e.includes('maintainer'))).toBe(true);
   });
+
+  // ADR-0005 #226/AC5 — the optional `runner` block.
+  it('AC5: accepts an absent runner block (runner off is the default)', () => {
+    expect(validateConfig(validCfg()).ok).toBe(true);
+  });
+
+  it('AC5: accepts a well-formed runner block', () => {
+    const cfg = validCfg();
+    cfg.runner = {
+      enabled: true,
+      labels: ['self-hosted', 'linux', 'forge-local'],
+      sharing: 'repo',
+      windows: 'native',
+      advancedCi: { linuxMatrix: true, deploySmoke: false, nightly: true },
+    };
+    expect(validateConfig(cfg)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('AC5: rejects malformed runner values (enabled, sharing, windows, labels)', () => {
+    const cfg = validCfg();
+    cfg.runner = { enabled: 'yes', sharing: 'enterprise', windows: 'linux', labels: ['ok', ''] };
+    const r = validateConfig(cfg);
+    expect(r.ok).toBe(false);
+    expect(r.errors).toContain('runner.enabled: must be a boolean');
+    expect(r.errors).toContain('runner.sharing: must be "repo" or "org"');
+    expect(r.errors).toContain('runner.windows: must be "native" or "hosted"');
+    expect(r.errors.some((e) => e.includes('runner.labels[1]'))).toBe(true);
+  });
+
+  it('AC5: rejects a non-object runner block and an empty labels array', () => {
+    const asArray = validCfg(); asArray.runner = [];
+    expect(validateConfig(asArray).errors).toContain('runner: must be an object');
+
+    const emptyLabels = validCfg(); emptyLabels.runner = { labels: [] };
+    expect(validateConfig(emptyLabels).errors).toContain('runner.labels: must be a non-empty array of label strings');
+  });
+
+  it('AC5: rejects unknown / non-boolean advancedCi toggles', () => {
+    const unknown = validCfg(); unknown.runner = { advancedCi: { linuxMatrix: true, bogus: true } };
+    expect(validateConfig(unknown).errors.some((e) => e.includes('runner.advancedCi.bogus'))).toBe(true);
+
+    const nonBool = validCfg(); nonBool.runner = { advancedCi: { nightly: 'on' } };
+    expect(validateConfig(nonBool).errors).toContain('runner.advancedCi.nightly: must be a boolean');
+
+    const notObj = validCfg(); notObj.runner = { advancedCi: [] };
+    expect(validateConfig(notObj).errors).toContain('runner.advancedCi: must be an object');
+  });
+});
+
+describe('normalizeRunner (#226/AC5 defaults)', () => {
+  it('applies the documented defaults for an absent block', () => {
+    expect(normalizeRunner(undefined)).toEqual({
+      enabled: false,
+      labels: ['self-hosted', 'linux', 'forge-local'],
+      sharing: 'repo',
+      windows: 'native',
+      advancedCi: { linuxMatrix: false, deploySmoke: false, nightly: false },
+    });
+    expect(RUNNER_DEFAULTS.sharing).toBe('repo');
+    expect(RUNNER_DEFAULTS.windows).toBe('native');
+  });
+
+  it('fills only the omitted fields, preserving provided valid ones', () => {
+    const out = normalizeRunner({ enabled: true, sharing: 'org' });
+    expect(out.enabled).toBe(true);
+    expect(out.sharing).toBe('org');
+    expect(out.windows).toBe('native'); // default: native, hosted-fallback
+    expect(out.labels).toEqual(['self-hosted', 'linux', 'forge-local']);
+  });
+
+  it('normalizes malformed values back to defaults defensively', () => {
+    const out = normalizeRunner({ enabled: 'yes', sharing: 'nope', windows: 42, labels: 'not-array' });
+    expect(out).toEqual({
+      enabled: false,
+      labels: ['self-hosted', 'linux', 'forge-local'],
+      sharing: 'repo',
+      windows: 'native',
+      advancedCi: { linuxMatrix: false, deploySmoke: false, nightly: false },
+    });
+  });
+
+  it('does not alias the default labels array (no shared mutable state)', () => {
+    const a = normalizeRunner(undefined);
+    a.labels.push('mutated');
+    expect(normalizeRunner(undefined).labels).toEqual(['self-hosted', 'linux', 'forge-local']);
+    expect(RUNNER_DEFAULTS.labels).toEqual(['self-hosted', 'linux', 'forge-local']);
+  });
 });
 
 describe('loadConfig', () => {
@@ -128,5 +215,31 @@ describe('loadConfig', () => {
     const r = await loadConfig(dir);
     expect(r.ok).toBe(true);
     expect(r.config.board.projectNumber).toBe(8);
+  });
+
+  it('AC5: exposes a normalized runner block with defaults when absent', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-cfg-'));
+    await mkdir(join(dir, '.claude'), { recursive: true });
+    await writeFile(join(dir, '.claude', 'forge.json'), JSON.stringify(validCfg()), 'utf8');
+    const r = await loadConfig(dir);
+    expect(r.ok).toBe(true);
+    expect(r.runner).toEqual({
+      enabled: false,
+      labels: ['self-hosted', 'linux', 'forge-local'],
+      sharing: 'repo',
+      windows: 'native',
+      advancedCi: { linuxMatrix: false, deploySmoke: false, nightly: false },
+    });
+  });
+
+  it('AC5: applies documented defaults over a partial runner block on load', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-cfg-'));
+    await mkdir(join(dir, '.claude'), { recursive: true });
+    const cfg = validCfg();
+    cfg.runner = { enabled: true, sharing: 'org' };
+    await writeFile(join(dir, '.claude', 'forge.json'), JSON.stringify(cfg), 'utf8');
+    const r = await loadConfig(dir);
+    expect(r.ok).toBe(true);
+    expect(r.runner).toMatchObject({ enabled: true, sharing: 'org', windows: 'native', labels: ['self-hosted', 'linux', 'forge-local'] });
   });
 });
