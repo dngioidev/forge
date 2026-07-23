@@ -39,6 +39,16 @@ chmod 600 ~/.forge/runner.env
 committed. `forge:doctor` (ticket #225) asserts it is gitignored, untracked, and
 `chmod 600`.
 
+## Confirm readiness — `forge:runner-check`
+
+Once you've done the host setup below, run **`/forge:runner-check`** for a single
+go/no-go preflight: it resolves this `runner` block and checks the whole setup
+end-to-end — private-repo guard, block valid, host prerequisites (`git`/`gh`/`node`
+≥ 22.13, `docker` reachable), PAT-store safety, the runner registered + online for
+your labels (plus the windows label when `windows: native`), the `runner/` scaffold,
+and the pinned `actions-runner` version — then prints one **READY / NOT READY**
+verdict with a fix hint per line. It never reads or prints the PAT. Re-run until READY.
+
 ## Enable — Linux / WSL2 (containerized runner)
 
 1. Build the image (`cd runner/linux && docker compose build`) and confirm
