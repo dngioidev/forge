@@ -16,8 +16,12 @@ services:
       dockerfile: Dockerfile
     image: forge-local-runner:latest
     # One job, then gone. The supervisor passes ENCODED_JIT_CONFIG per invocation.
+    # Build-safe default (`:-`) so `docker compose build`/`config` parse on a fresh
+    # scaffold with no JIT config (#232). The hard "must be injected" guarantee is
+    # enforced at RUN time by entrypoint.sh, which fails fast if it's empty when a
+    # job actually starts — the guard survives without breaking build/config.
     environment:
-      ENCODED_JIT_CONFIG: ${ENCODED_JIT_CONFIG:?supervisor must inject a per-job JIT config}
+      ENCODED_JIT_CONFIG: ${ENCODED_JIT_CONFIG:-}
     # actionlint / other docker:// steps need the host docker daemon. The socket
     # is a powerful grant (root-equivalent on the host) — private-repo, trusted-
     # collaborator code only (enforced by the private-only refusal). See README.
