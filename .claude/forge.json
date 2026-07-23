@@ -55,6 +55,6 @@
     "enabled": true,
     "labels": ["self-hosted", "linux", "forge-local"],
     "sharing": "repo",
-    "windows": "hosted"
+    "windows": "native"
   }
 }
