@@ -41,7 +41,10 @@ committed. `forge:doctor` (ticket #225) asserts it is gitignored, untracked, and
 
 ## Enable — Linux / WSL2 (containerized runner)
 
-1. Build the image and confirm Docker + `gh` are on PATH.
+1. Build the image (`cd runner/linux && docker compose build`) and confirm
+   Docker + `gh` are on PATH. The build needs no JIT config — compose uses a
+   build-safe default and the per-job config is required only at run time
+   (enforced by `entrypoint.sh`).
 2. Register the supervisor as a **systemd** service that loads the secret as its
    environment (never an interactive shell):
 

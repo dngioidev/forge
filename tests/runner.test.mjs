@@ -73,6 +73,19 @@ describe('AC2 — private-repo scaffold', () => {
     expect(compose).toContain('ENCODED_JIT_CONFIG'); // JIT config injected per job
     expect(compose).not.toContain('FORGE_RUNNER_PAT'); // no PAT in compose
     expect(compose).not.toMatch(/^\s*secrets:/m); // no compose secrets block
+    // #232: build-safe — the `:?` required-variable form trips `docker compose
+    // build`/`config` on a fresh scaffold (no JIT config yet). Must use the
+    // default form (`:-`) so build/config parse; the run-time guard moves to
+    // entrypoint.sh.
+    expect(compose).not.toMatch(/ENCODED_JIT_CONFIG:\?/); // no required-var guard in compose
+    expect(compose).toContain('${ENCODED_JIT_CONFIG:-}'); // build-safe default
+
+    // #232: the hard "must be injected" guarantee is enforced at RUN time in the
+    // entrypoint — fail fast (non-zero exit) if the config is empty when a job
+    // starts, without echoing the secret value.
+    const entrypoint = await readFile(join(cwd, 'runner', 'linux', 'entrypoint.sh'), 'utf8');
+    expect(entrypoint).toMatch(/-z\s+"\$\{ENCODED_JIT_CONFIG:-\}"/); // empty-check guard
+    expect(entrypoint).toContain('exit 1'); // fail fast on empty config
 
     const supervisor = await readFile(join(cwd, 'runner', 'linux', 'supervisor.mjs'), 'utf8');
     expect(supervisor).toContain('generate-jitconfig'); // mints 1h JIT per job
