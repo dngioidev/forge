@@ -19,9 +19,12 @@ useDefault = true
 [allowlist]
 description = "Intentionally fake, secret-shaped test fixtures (not live credentials) — see docs/security/oss-secret-scan.md"
 
-# Globally-known non-secret: AWS's own documented example access key id.
+# Globally-known / fabricated non-secrets, exempted by value so they're safe even
+# when quoted OUTSIDE the fixture files (e.g. the secret-scan doc's own triage table).
 regexes = [
-  '''AKIAIOSFODNN7EXAMPLE''',
+  '''AKIAIOSFODNN7EXAMPLE''',    # AWS's own documented example access key id
+  '''AKIAABCDEFGHIJKLMNOP''',    # fabricated AWS-shaped key from tests/lib/journal.test.mjs (redaction fixture),
+                                 # also quoted in docs/security/oss-secret-scan.md's triage table
 ]
 
 # Files whose whole purpose is to contain secret-SHAPED example strings that
