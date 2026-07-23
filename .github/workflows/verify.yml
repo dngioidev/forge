@@ -61,17 +61,32 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
 
-  # actionlint runs a container (docker://) — the local runner mounts the docker
-  # socket so this works on the free runner exactly as on hosted.
+  # actionlint runs as a pinned, checksum-verified BINARY — not a docker://
+  # container action. On the containerized forge-local runner a container action
+  # is bind-mounted `-v .../_work/forge/forge:/github/workspace`, but that host
+  # path only exists inside the runner container, not on the host docker daemon
+  # the sibling container talks to → /github/workspace is empty and actionlint
+  # aborts with "no project was found in any parent directories" (see #238).
+  # Installing the binary and running it in the job's own workspace avoids the
+  # nested bind-mount entirely while keeping supply-chain integrity via SHA-256.
   actionlint:
     permissions:
       contents: read
     runs-on: [self-hosted, linux, forge-local]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: docker://rhysd/actionlint@sha256:1d74bfc9fd1963af8f89a7c22afaaafd42f49aad711a09951d02cb996398f61d # 1.7.7
-        with:
-          args: -color
+      - name: Install actionlint (pinned v1.7.7, SHA-256 verified)
+        run: |
+          version=1.7.7
+          sha256=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          tarball="actionlint_${version}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${tarball}"
+          echo "${sha256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          chmod +x actionlint
+      - run: ./actionlint -color
 
   plugin-validate:
     permissions:
