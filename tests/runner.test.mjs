@@ -112,6 +112,12 @@ describe('AC2 — private-repo scaffold', () => {
     expect(verify).not.toContain('schedule:'); // no nightly cron — Windows runs per-PR now
     expect(verify).not.toContain('cron:');
     expect(verify).toContain('pnpm verify'); // {{VERIFY}} substituted
+    // #236: distinct concurrency group so the runner variant never collides with
+    // an incumbent `name: verify` workflow (both would share the bare
+    // `${{ github.workflow }}-${{ github.ref }}` group and cancel each other).
+    expect(verify).toContain('group: verify-runner-${{ github.ref }}');
+    expect(verify).not.toContain('group: ${{ github.workflow }}-${{ github.ref }}');
+    expect(verify).toContain('cancel-in-progress: true'); // still self-cancels stale runs per ref
     for (const token of ['{{OWNER}}', '{{REPO}}', '{{LABEL}}', '{{VERIFY}}']) {
       expect(verify).not.toContain(token);
     }
@@ -154,12 +160,23 @@ describe('AC2 — private-repo scaffold', () => {
     await mkdir(join(cwd, '.github', 'workflows'), { recursive: true });
     await writeFile(join(cwd, '.github', 'workflows', 'verify.yml'), '# user CI\n', 'utf8');
     const { gh } = fakeGh(privateRoutes());
-    const res = await runRunnerInit({ gh, cwd }, parseArgs([]), noop);
+    const logs = [];
+    const res = await runRunnerInit({ gh, cwd }, parseArgs([]), (m) => logs.push(String(m)));
     expect(res.ok).toBe(true);
     expect(await readFile(join(cwd, '.github', 'workflows', 'verify.yml'), 'utf8')).toBe('# user CI\n');
     const variant = await readFile(join(cwd, '.github', 'workflows', 'verify.runner.yml'), 'utf8');
     expect(variant).toContain('self-hosted, linux, forge-local');
+    // #236: the review variant carries a distinct concurrency group so committing
+    // it beside the incumbent verify.yml won't silently cancel the runner jobs.
+    expect(variant).toContain('group: verify-runner-${{ github.ref }}');
+    expect(variant).not.toContain('group: ${{ github.workflow }}-${{ github.ref }}');
     expect(res.review).toContain(join('.github', 'workflows', 'verify.runner.yml'));
+    // #236: init logs a clear collision note explaining the two "verify" checks
+    // coexist until the operator swaps.
+    const blob = logs.join('\n');
+    expect(blob).toMatch(/verify\.runner\.yml/);
+    expect(blob).toMatch(/concurrency group/i);
+    expect(blob).toMatch(/#236/);
   });
 
   it('re-run is a no-op — all assets kept, none re-placed', async () => {

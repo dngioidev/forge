@@ -179,7 +179,10 @@ export async function runRunnerInit(ctx, args = parseArgs([]), log = console.log
 
   for (const p of placed) log(`placed: ${p}`);
   for (const s of skipped) log(`kept existing: ${s}`);
-  for (const r of review) log(`REVIEW: ${r} (an existing verify.yml was kept — compare and swap in the runner variant to move CI onto the local runner)`);
+  for (const r of review) {
+    log(`REVIEW: ${r} (an existing verify.yml was kept — compare and swap in the runner variant to move CI onto the local runner)`);
+    log(`  NOTE: verify.yml and ${RUNNER_VARIANT} are both \`name: verify\`. The runner variant uses a distinct concurrency group (verify-runner-*) so it will NOT cancel your incumbent verify.yml if you commit both during review — but GitHub still runs two "verify" checks until you swap. Finish the swap (replace verify.yml with the runner variant) to land on one workflow (see #236).`);
+  }
 
   // AC3 — print the enable-time secret setup; NEVER write the secret itself.
   log('');
