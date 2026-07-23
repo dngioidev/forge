@@ -1,0 +1,88 @@
+name: Bug report
+description: Report a defect in forge (a skill, gate, hook, board script, or workflow)
+title: "bug: <short summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. forge triages every incoming issue into a
+        typed ticket with acceptance criteria — the fields below map to what
+        triage needs (repro / expected / actual / evidence).
+
+        **Security issues do not belong here** — report them privately via
+        [SECURITY.md](../../SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: forge version / commit
+      description: Plugin version (e.g. v0.16.0) or commit SHA. Run `/forge:doctor` if unsure.
+      placeholder: "v0.16.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of forge misbehaves?
+      options:
+        - a skill (pipeline / care / knowledge)
+        - a gate (verify, plandrift, acgate, docsync, depguard, …)
+        - a hook (capture, denylist, …)
+        - board automation / trail comments
+        - the graph MCP server
+        - CI workflow / templates
+        - other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or skill invocations, in order.
+      placeholder: |
+        1. Run `forge:autopilot --shape`
+        2. It picks ticket #NNN
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, error output, gate messages, trail comments, or screenshots. Redact secrets and personal data.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version (`node --version`), pnpm version, gh CLI version.
+      placeholder: |
+        OS: Windows 11 / macOS 14 / Ubuntu 24.04
+        Node: 22.13.0
+        pnpm: 10.14.0
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md privately).
+          required: true
