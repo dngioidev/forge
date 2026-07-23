@@ -50,14 +50,14 @@ You do **not** have to run the forge skills to contribute — but your PR is mea
 
 ## Branching
 
-Branch off the latest `main`, named `<type>/<issue-number>-<slug>`:
+Branch off the latest `main`, named `<type>/<issue-number>-<slug>` (the number is the issue you're closing; the slugs below are illustrative):
 
 ```
-fix/123-null-ledger-crash
-feat/145-parallel-worktrees
-docs/212-community-health-files
-chore/210-secret-scan
-test/165-cover-run-release
+fix/<n>-null-ledger-crash
+feat/<n>-parallel-worktrees
+docs/<n>-community-health-files
+chore/<n>-secret-scan
+test/<n>-cover-run-release
 ```
 
 Spike branches (`spike/...`) are for throwaway research and are never merged.
@@ -80,10 +80,11 @@ Closes #145
 
 ## The gate ladder (what a PR is checked against)
 
-`ship` runs these in order; contributors should expect the same bar:
+`ship` runs these in order; contributors should expect the same bar. The full authoritative ladder (including the `situation` gate and the final `CI green` check) is in the [handbook](docs/guides/handbook.md#6-the-gate-ladder-what-ship-runs-in-order):
 
 | gate | checks |
 | --- | --- |
+| situation | an active incident / security-response blocks non-hotfix ship |
 | conventions | branch / commit / PR naming; spike branches never ship |
 | verify | `pnpm verify` is green locally |
 | plandrift | touched files stay within the plan's Files list (+ defaults) |
@@ -92,6 +93,7 @@ Closes #145
 | acgate | every acceptance-criterion ID is covered by a passing test |
 | docsync | every doc under `docs/` is in the route index (`docs/README.md`); a new skill is in the handbook |
 | review / security | role-card review of the diff; criticals block |
+| CI green | never ask for merge on red |
 
 If you add or change a doc under `docs/`, add its one-line entry to `docs/README.md`. If you add a skill, mention it in `docs/guides/handbook.md`. These are enforced by the `docsync` gate.
 

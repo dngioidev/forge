@@ -3,6 +3,3 @@ contact_links:
   - name: Security vulnerability
     url: https://github.com/dngioidev/forge/security/advisories/new
     about: Report security issues privately — never in a public issue. See SECURITY.md.
-  - name: Question or idea (Discussions)
-    url: https://github.com/dngioidev/forge/discussions
-    about: Ask a question or float an early idea before filing a formal request.
