@@ -97,6 +97,13 @@ function Serve-Runner {
   Push-Location $RunnerDir
   try {
     while ($true) {
+      # Clear config remnants from a previous interrupted job (a Ctrl-C mid-job
+      # leaves .runner/.credentials*, and the next run.cmd --jitconfig then fails
+      # with "Access to the path '...\.runner' is denied"). Start every job clean.
+      foreach ($f in '.runner', '.credentials', '.credentials_rsaparams') {
+        $p = Join-Path $RunnerDir $f
+        if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+      }
       $jit = New-JitConfig
       Write-Log 'minted JIT config - running one job'
       # --jitconfig implies a single ephemeral job; the runner auto-deregisters after.
