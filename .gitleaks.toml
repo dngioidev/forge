@@ -27,8 +27,15 @@ regexes = [
 # Files whose whole purpose is to contain secret-SHAPED example strings that
 # exercise the repo's redaction / pre-send scanning code paths. Scoped to the
 # exact fixture files (present and historical) rather than all of tests/, so a
-# real credential added elsewhere is still caught.
+# real credential added elsewhere is still caught. Anchored ^…$ because gitleaks
+# matches path regexes unanchored (substring), so a bare suffix would also
+# exempt differently-nested lookalike paths — anchoring keeps the scope exact.
+#
+# Residual (inherent to any path allowlist): the ENTIRE content of these two
+# files is exempt, so a real secret pasted into one of them would not be caught
+# by this gate. Accepted: they are redaction-test fixtures by design; a real
+# credential belongs in neither.
 paths = [
-  '''tests/lib/journal\.test\.mjs$''',
-  '''tests/backends/presend\.test\.mjs$''',
+  '''^tests/lib/journal\.test\.mjs$''',
+  '''^tests/backends/presend\.test\.mjs$''',
 ]

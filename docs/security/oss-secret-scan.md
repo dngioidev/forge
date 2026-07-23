@@ -42,6 +42,12 @@ docker run --rm -v "$PWD/work:/repo" \
 trufflehog's format/checksum-aware detectors did not match any of the 5 strings
 gitleaks flagged — corroborating that they are not real credentials.
 
+Digest provenance: the pinned gitleaks digest was obtained by pulling
+`ghcr.io/gitleaks/gitleaks:latest`, which self-reported `version v8.30.1`; its
+`RepoDigests` entry is the `sha256:c00b6bd0…` used in `secret-scan.yml`. Pinning
+by digest is deliberate so CI runs that exact image indefinitely even as
+`:latest` moves.
+
 ---
 
 ## AC2 — triage (every finding)
@@ -54,16 +60,21 @@ redactor catch them. Values redacted here per the ticket's no-plaintext rule.
 | --- | --- | --- | --- | --- |
 | 1 | `generic-api-key` | `tests/backends/presend.test.mjs:20` | False positive | Fixture in a test that asserts `scanPrompt` **refuses** secret-shaped input. File is history-only (presend backend was later removed). |
 | 2 | `jwt` | `tests/backends/presend.test.mjs:11` | False positive | Fabricated JWT in the same "refuses known secret patterns" fixture list. |
-| 3 | `aws-access-token` | `tests/lib/journal.test.mjs:47` | False positive | `AKIAIOSFODNN7EXAMPLE` — AWS's own **documented example** access key id, used in a redaction test. |
+| 3 | `aws-access-token` | `tests/lib/journal.test.mjs:47` | False positive | `AKIAABCDEFGHIJKLMNOP` — a fabricated AWS-shaped key inside a `redact({ nested: { list: [...] } })` test asserting nested values are scrubbed. |
 | 4 | `generic-api-key` | `tests/lib/journal.test.mjs:35` | False positive | Fake `GH_TOKEN=ghp_…` in a test asserting the journal redacts it to `[redacted]`. |
 | 5 | `generic-api-key` | `tests/lib/journal.test.mjs:36` | False positive | Fake `token:` value in the same redaction test. |
 
 **No true positives. No rotation and no history rewrite are required.**
 
-These fixtures are excluded going forward by `.gitleaks.toml` — scoped to the two
-exact fixture files (present + historical) plus the AWS example-key literal, so a
-real credential added anywhere else is still caught. Re-scanning the full history
-**with** that config returns `no leaks found` (0).
+Note: the deleted `presend.test.mjs` also contained `AKIAIOSFODNN7EXAMPLE` (AWS's
+own documented example key) at its line 8, but it is **not** among the 5 findings
+— gitleaks' default ruleset already allowlists that well-known literal.
+
+These fixtures are excluded going forward by `.gitleaks.toml` — path-scoped to the
+two exact fixture files (present + historical, anchored `^…$`), plus a redundant
+explicit regex for the AWS example literal as defense-in-depth. A real credential
+added **anywhere else** is still caught. Re-scanning the full history **with** that
+config returns `no leaks found` (0).
 
 ---
 
