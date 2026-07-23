@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.17.0 — 2026-07-23
+
+### Fixes
+
+- give the LocalSystem NSSM service gh on PATH + logging (#258) (#259) ([#258](https://github.com/dngioidev/forge/issues/258) [#259](https://github.com/dngioidev/forge/issues/259))
+- -InstallService no longer aborts on a fresh install (#256) (#257) ([#256](https://github.com/dngioidev/forge/issues/256) [#257](https://github.com/dngioidev/forge/issues/257))
+- auto-pin current actions/runner version + SHA at scaffold, warn on staleness (#249) ([#249](https://github.com/dngioidev/forge/issues/249))
+- distinct concurrency group for verify.runner.yml variant (#248) ([#248](https://github.com/dngioidev/forge/issues/248))
+- back off on build/container failure, not just mint (#247) ([#247](https://github.com/dngioidev/forge/issues/247))
+- make docker compose build/config succeed without a JIT config (#246) ([#246](https://github.com/dngioidev/forge/issues/246))
+
+### Features
+
+- service-install tooling for the supervisors (systemd --user + NSSM) (#255) ([#255](https://github.com/dngioidev/forge/issues/255))
+- add forge:runner-check adoption-readiness preflight (#250) ([#250](https://github.com/dngioidev/forge/issues/250))
+- runner-health check (ADR-0005 AC4, #225) (#231) ([#225](https://github.com/dngioidev/forge/issues/225) [#231](https://github.com/dngioidev/forge/issues/231))
+- forge.json runner block + validation + docs (#226) (#230) ([#226](https://github.com/dngioidev/forge/issues/226) [#230](https://github.com/dngioidev/forge/issues/230))
+- scaffold local self-hosted runner + private-only refusal (#224) (#229) ([#224](https://github.com/dngioidev/forge/issues/224) [#229](https://github.com/dngioidev/forge/issues/229))
+
+### Tests
+
+- raise vitest timeout for the slower self-hosted runner (#251) (#252) ([#251](https://github.com/dngioidev/forge/issues/251) [#252](https://github.com/dngioidev/forge/issues/252))
+
+### Docs
+
+- adoption guide + known-issues runbook (#243) (#244) ([#243](https://github.com/dngioidev/forge/issues/243) [#244](https://github.com/dngioidev/forge/issues/244))
+- accept ADR-0005 local self-hosted runner (AC1 sign-off) (#180) (#228) ([#180](https://github.com/dngioidev/forge/issues/180) [#228](https://github.com/dngioidev/forge/issues/228))
+- public-facing README + repo description/topics pass (#213) (#218) ([#213](https://github.com/dngioidev/forge/issues/213) [#218](https://github.com/dngioidev/forge/issues/218))
+- add OSS community health files (#217) ([#217](https://github.com/dngioidev/forge/issues/217))
+
+### Chores
+
+- OSS gate — full-history secret scan + repeatable tooling (#210) (#216) ([#210](https://github.com/dngioidev/forge/issues/210) [#216](https://github.com/dngioidev/forge/issues/216))
+
 ## v0.16.0 — 2026-07-23
 
 ### Docs
