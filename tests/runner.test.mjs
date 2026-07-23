@@ -403,6 +403,12 @@ describe('#254 — service install tooling (structural)', () => {
     expect(ps1).not.toMatch(/FORGE_RUNNER_PAT[^\n]*(Out-File|Set-Content|Add-Content)/);
     // no literal PAT
     expect(ps1).not.toMatch(/github_pat_[A-Za-z0-9_]{20,}/);
+    // #256: fresh install must NOT run `nssm stop` on a missing service (its stderr
+    // terminates under ErrorActionPreference=Stop). Pre-clean is guarded by a
+    // Get-Service existence check, and the nssm calls run non-terminating.
+    expect(ps1).toMatch(/if \(Get-Service \$ServiceName -ErrorAction SilentlyContinue\)/);
+    expect(ps1).toContain("$ErrorActionPreference = 'Continue'");
+    expect(ps1).not.toMatch(/nssm[^\n]*stop[^\n]*2>\$null/i); // the old terminating pattern is gone
   });
 
   it('windows setup-runner.ps1 stays ASCII-only with the new service code (#240 guard)', async () => {

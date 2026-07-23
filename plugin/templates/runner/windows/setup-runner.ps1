@@ -159,26 +159,51 @@ function Install-Service {
   $psExe = (Get-Command powershell -ErrorAction SilentlyContinue).Source
   if (-not $psExe) { $psExe = 'powershell' }
   $script = Join-Path $PSScriptRoot 'setup-runner.ps1'
-  # Replace any prior registration so re-install is clean.
-  & $nssm stop $ServiceName confirm 2>$null | Out-Null
-  & $nssm remove $ServiceName confirm 2>$null | Out-Null
-  & $nssm install $ServiceName $psExe '-NoProfile' '-ExecutionPolicy' 'Bypass' '-File' $script '-Serve'
-  & $nssm set $ServiceName AppDirectory $PSScriptRoot
-  & $nssm set $ServiceName Start SERVICE_AUTO_START
-  & $nssm set $ServiceName AppExit Default Restart
-  & $nssm set $ServiceName AppRestartDelay 10000
-  # AppEnvironmentExtra = the PAT from the current session env (never a literal, never a file).
-  & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT"
-  & $nssm start $ServiceName
-  Write-Log "installed + started service '$ServiceName' (NSSM: auto-start, restart-on-exit)"
+  # NSSM writes progress to stderr; under $ErrorActionPreference='Stop' that native
+  # stderr becomes a terminating error (PS 5.1 NativeCommandError). Run the nssm calls
+  # non-terminating and verify the result explicitly. Only pre-clean when the service
+  # already exists - nssm stop/remove on a missing service prints "Can't open service!".
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
+      Write-Log "existing '$ServiceName' found - removing before reinstall"
+      & $nssm stop $ServiceName confirm 2>&1 | Out-Null
+      & $nssm remove $ServiceName confirm 2>&1 | Out-Null
+    }
+    & $nssm install $ServiceName $psExe '-NoProfile' '-ExecutionPolicy' 'Bypass' '-File' $script '-Serve'
+    & $nssm set $ServiceName AppDirectory $PSScriptRoot
+    & $nssm set $ServiceName Start SERVICE_AUTO_START
+    & $nssm set $ServiceName AppExit Default Restart
+    & $nssm set $ServiceName AppRestartDelay 10000
+    # AppEnvironmentExtra = the PAT from the current session env (never a literal, never a file).
+    & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT"
+    & $nssm start $ServiceName
+  } finally {
+    $ErrorActionPreference = $prevEAP
+  }
+  Start-Sleep -Seconds 2
+  $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
+  if (-not $svc) { throw "service '$ServiceName' was not created - run 'nssm install $ServiceName ...' manually to see the error." }
+  Write-Log "installed service '$ServiceName' (NSSM: auto-start, restart-on-exit); status: $($svc.Status)"
   Write-Log "status:  nssm status $ServiceName   |   stop/edit: nssm stop|edit $ServiceName"
 }
 
 function Uninstall-Service {
   Assert-Admin
   $nssm = Get-Nssm
-  & $nssm stop $ServiceName confirm 2>$null | Out-Null
-  & $nssm remove $ServiceName confirm
+  if (-not (Get-Service $ServiceName -ErrorAction SilentlyContinue)) {
+    Write-Log "service '$ServiceName' not installed - nothing to remove."
+    return
+  }
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & $nssm stop $ServiceName confirm 2>&1 | Out-Null
+    & $nssm remove $ServiceName confirm 2>&1 | Out-Null
+  } finally {
+    $ErrorActionPreference = $prevEAP
+  }
   Write-Log "removed service '$ServiceName'"
 }
 
