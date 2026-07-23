@@ -59,6 +59,10 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [Rollback runbook](guides/rollback-runbook.md) — find the previous digest, redeploy it (one command), verify, record; forward-only-migration exception.
 - [Data-recovery runbook](guides/data-recovery-runbook.md) — restore → verify → postmortem; never debug against the only copy.
 
+## Security
+
+- [OSS CI & repo hardening](security/oss-ci-hardening.md) — #214: fork-PR safety analysis of `verify.yml` (pwn-request class), self-hosted-runner private-only guard (#180), and the owner runbook to apply branch protection + Dependabot + secret scanning/push protection + private vuln reporting at the public flip (epic #209).
+
 ## Feedback
 
 - [iomanage feedback 0.1.0→0.3.0](feedback/iomanage-feedback-forge-0.3.0.md) — observed usage feedback across the early versions.

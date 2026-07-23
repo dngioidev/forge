@@ -1,5 +1,11 @@
 name: verify
 
+# Fork-PR safety (see docs/security/oss-ci-hardening.md):
+#   - Trigger is `pull_request`, NOT `pull_request_target` — untrusted fork code
+#     runs with a read-only GITHUB_TOKEN and no access to repo/org secrets.
+#   - No `secrets.*` are referenced by any job, so nothing is exposed to forks.
+#   - Least-privilege permissions are set at the top level AND per job (below),
+#     so a future top-level widening cannot silently grant a job write access.
 on:
   push:
     branches: [main]
@@ -9,11 +15,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default token scope for the whole workflow: read-only checkout, nothing else.
 permissions:
   contents: read
 
 jobs:
   test:
+    permissions:
+      contents: read
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
@@ -29,6 +38,8 @@ jobs:
       - run: pnpm verify
 
   actionlint:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -37,6 +48,8 @@ jobs:
           args: -color
 
   plugin-validate:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0

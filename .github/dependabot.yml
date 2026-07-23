@@ -1,0 +1,51 @@
+# Dependabot version updates for forge.
+#
+# This file is committable and inert until Dependabot is enabled on the repo
+# (Settings → Code security → Dependabot). Enablement is an owner action at the
+# public flip — see docs/security/oss-ci-hardening.md (AC3). Dependabot *alerts*
+# and *security updates* are separate toggles enabled in the same place; this
+# file drives the scheduled *version* updates once the feature is on.
+#
+# Cadence mirrors forge:maintain (patch/minor batched; majors surfaced to be
+# bundled into one coordinated ticket).
+version: 2
+updates:
+  # JavaScript / pnpm workspace (root package.json + pnpm-lock.yaml).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+    # Batch patch + minor into a single PR per group (matches forge:maintain's
+    # "patch/minor batched into one PR"). Majors are left ungrouped so each
+    # surfaces on its own for a coordinated upgrade ticket.
+    groups:
+      npm-patch-minor:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by .github/workflows/** (keeps the SHA pins current).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions-patch-minor:
+        update-types:
+          - minor
+          - patch
