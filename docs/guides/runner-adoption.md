@@ -62,27 +62,37 @@ Steady state is **JIT + `--ephemeral`**: the supervisor mints a one-hour, single
 
 1. Ensure `docker`, `gh`, `node` are on the WSL PATH and the Docker daemon is reachable (`docker info`).
 2. Put the PAT in `~/.forge/runner.env` (chmod 600).
-3. Start the supervisor:
+3. **Install the durable service (the default):**
    ```bash
    cd runner/linux
-   set -a; . ~/.forge/runner.env; set +a      # foreground test; use systemd EnvironmentFile for a service
+   bash install-service.sh
+   ```
+   It writes a `systemd --user` unit (`EnvironmentFile=%h/.forge/runner.env`, `Environment=FORGE_RUNNER_CONCURRENCY=1`, `ExecStart=/usr/bin/env node <abs>/supervisor.mjs`, `Restart=on-failure`, `RestartSec=10`, `WantedBy=default.target`), runs `systemctl --user daemon-reload` + `enable --now forge-runner`, and attempts `loginctl enable-linger "$USER"` for boot/logout persistence (it prints the `sudo loginctl enable-linger <you>` fallback if that needs privileges, rather than hard-failing). It warns if `~/.forge/runner.env` is missing. Check with `systemctl --user status forge-runner` / `journalctl --user -u forge-runner -f`; remove with `bash install-service.sh --uninstall`.
+4. **Quick test (foreground)** — to sanity-check before installing the service:
+   ```bash
+   cd runner/linux
+   set -a; . ~/.forge/runner.env; set +a
    FORGE_RUNNER_CONCURRENCY=1 node supervisor.mjs
    ```
-   It builds the image on first run, mints a JIT config per job, and runs one ephemeral container per job. Leave it running.
-4. For durability, register it as a `systemd --user` service (`EnvironmentFile=%h/.forge/runner.env`) — see `runner/README.md`.
+   It builds the image on first run, mints a JIT config per job, and runs one ephemeral container per job.
 
 ### Windows leg (native host runner)
 
 1. **Execution policy** blocks unsigned scripts by default: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` (session-scoped, no admin), or invoke via `powershell -ExecutionPolicy Bypass -File .\setup-runner.ps1 …`.
 2. `cd runner\windows; .\setup-runner.ps1 -Install` — downloads + checksum-verifies + unpacks the runner binary.
-3. Set the PAT and serve:
+3. **Install the durable service (the default).** Needs an **elevated** shell and `nssm` on PATH (`winget install NSSM.NSSM` or `choco install nssm`):
    ```powershell
-   $env:FORGE_RUNNER_PAT = '<token>'   # or pull from WSL: (wsl -d <distro> bash -lc 'grep -oP "(?<=FORGE_RUNNER_PAT=).*" ~/.forge/runner.env')
+   $env:FORGE_RUNNER_PAT = '<token>'   # THIS session only; or pull from WSL: (wsl -d <distro> bash -lc 'grep -oP "(?<=FORGE_RUNNER_PAT=).*" ~/.forge/runner.env')
+   .\setup-runner.ps1 -InstallService
+   ```
+   Registers a `forge-runner` NSSM service running `-Serve` (`AppDirectory=runner\windows`, `Start=SERVICE_AUTO_START`, restart-on-exit) with `AppEnvironmentExtra=FORGE_RUNNER_PAT=<value from $env:FORGE_RUNNER_PAT>` — the PAT is read from the session env at install time and never written to a committed file, `setx /M`, or this repo. It errors clearly if `$env:FORGE_RUNNER_PAT` is unset or the shell isn't elevated. Remove with `.\setup-runner.ps1 -UninstallService` (elevated).
+4. **Quick test (foreground)** — before installing the service:
+   ```powershell
+   $env:FORGE_RUNNER_PAT = '<token>'
    .\setup-runner.ps1 -Serve
    ```
-   It prepends Git Bash to PATH (so `bash`-shebang tools resolve to Git Bash, not WSL), mints a JIT config per job, and runs one ephemeral job at a time. Leave it running.
-4. Route the Windows leg to it: set `test-windows`'s `runs-on` to `[self-hosted, windows, forge-local]` and `forge.json` `runner.windows` to `"native"`. Keep a nightly hosted `windows-latest` run if you want a clean-image drift check.
-5. For durability, register `-Serve` as a Windows service (NSSM `AppEnvironmentExtra=FORGE_RUNNER_PAT=…`).
+   It prepends Git Bash to PATH (so `bash`-shebang tools resolve to Git Bash, not WSL), mints a JIT config per job, and runs one ephemeral job at a time.
+5. Route the Windows leg to it: set `test-windows`'s `runs-on` to `[self-hosted, windows, forge-local]` and `forge.json` `runner.windows` to `"native"`. Keep a nightly hosted `windows-latest` run if you want a clean-image drift check.
 
 ## Moving other workflows onto the runner
 

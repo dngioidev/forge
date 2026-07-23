@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runRunnerInit, parseArgs, ensureGitleaksAllowlist } from '../plugin/scripts/runner/init.mjs';
 import { runInit, parseArgs as parseInitArgs } from '../plugin/scripts/init.mjs';
 import { fakeGh } from './helpers/fakegh.mjs';
@@ -118,10 +119,18 @@ describe('AC2 — private-repo scaffold', () => {
     expect(supervisor).toContain('dngioidev'); // owner substituted
     expect(supervisor).toContain('forge-local'); // label substituted
 
+    // #254: the durable systemd --user installer is scaffolded alongside the supervisor.
+    const installSh = await readFile(join(cwd, 'runner', 'linux', 'install-service.sh'), 'utf8');
+    expect(installSh).toContain('EnvironmentFile=%h/.forge/runner.env');
+    expect(installSh).toContain('WantedBy=default.target');
+
     await stat(join(cwd, 'runner', 'linux', 'entrypoint.sh'));
     const ps1 = await readFile(join(cwd, 'runner', 'windows', 'setup-runner.ps1'), 'utf8');
     expect(ps1).toContain('Get-FileHash'); // checksum-verified windows runner download
     expect(ps1).toContain('forge-local');
+    // #254: the NSSM service registration flags are scaffolded into the same script.
+    expect(ps1).toContain('[switch]$InstallService');
+    expect(ps1).toContain('[switch]$UninstallService');
     // #233: win-x64 version + SHA auto-pinned; no placeholder left.
     expect(ps1).toContain(`$RunnerVersion = '${REL_VERSION}'`);
     expect(ps1).toContain(`$RunnerSha256 = '${REL_WIN}'`);
@@ -338,5 +347,66 @@ describe('AC3 — secret-store guards, no secret committed', () => {
       expect(body).not.toMatch(/github_pat_[A-Za-z0-9_]{20,}/);
       expect(body).not.toMatch(/ghp_[A-Za-z0-9]{30,}/);
     }
+  });
+});
+
+describe('#254 — service install tooling (structural)', () => {
+  const tpl = (p) => fileURLToPath(new URL(`../plugin/templates/runner/${p}`, import.meta.url));
+
+  it('linux install-service.sh writes a systemd --user unit, PAT via EnvironmentFile only', async () => {
+    const sh = await readFile(tpl('linux/install-service.sh'), 'utf8');
+    // secret model: PAT loaded from the out-of-band store, never inlined into the unit
+    expect(sh).toContain('EnvironmentFile=%h/.forge/runner.env');
+    expect(sh).toContain('Environment=FORGE_RUNNER_CONCURRENCY=1');
+    expect(sh).toContain('Restart=on-failure');
+    expect(sh).toContain('RestartSec=10');
+    expect(sh).toContain('WantedBy=default.target');
+    // ExecStart runs node against the resolved supervisor path
+    expect(sh).toMatch(/ExecStart=\/usr\/bin\/env node /);
+    // install lifecycle: reload + enable --now + boot persistence
+    expect(sh).toContain('systemctl --user daemon-reload');
+    expect(sh).toContain('systemctl --user enable --now');
+    expect(sh).toContain('loginctl enable-linger');
+    // uninstall counterpart
+    expect(sh).toContain('--uninstall');
+    expect(sh).toContain('disable --now');
+    // status/logs guidance
+    expect(sh).toContain('systemctl --user status');
+    expect(sh).toContain('journalctl --user -u');
+    // no hardcoded PAT anywhere
+    expect(sh).not.toMatch(/github_pat_[A-Za-z0-9_]{20,}/);
+    expect(sh).not.toMatch(/ghp_[A-Za-z0-9]{30,}/);
+  });
+
+  it('linux install-service.sh is ASCII-only', async () => {
+    const sh = await readFile(tpl('linux/install-service.sh'), 'utf8');
+    expect(/^[\x00-\x7F]*$/.test(sh)).toBe(true);
+  });
+
+  it('windows -InstallService uses AppEnvironmentExtra from env, never a literal or a file', async () => {
+    const ps1 = await readFile(tpl('windows/setup-runner.ps1'), 'utf8');
+    expect(ps1).toContain('[switch]$InstallService');
+    expect(ps1).toContain('[switch]$UninstallService');
+    // PAT sourced from THIS session env, handed to the service via AppEnvironmentExtra
+    expect(ps1).toContain('AppEnvironmentExtra');
+    expect(ps1).toContain('FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT');
+    // errors clearly when the session PAT is unset
+    expect(ps1).toMatch(/if \(-not \$env:FORGE_RUNNER_PAT\)/);
+    // requires elevation + NSSM (graceful hints)
+    expect(ps1).toContain('Assert-Admin');
+    expect(ps1).toMatch(/nssm/i);
+    // service config: auto-start + restart-on-exit, args run -Serve
+    expect(ps1).toContain('SERVICE_AUTO_START');
+    expect(ps1).toContain('AppExit Default Restart');
+    expect(ps1).toMatch(/'-File'[^\n]*'-Serve'/);
+    // never persists the PAT to a file (no Out-File/Set-Content/Add-Content carrying it)
+    expect(ps1).not.toMatch(/FORGE_RUNNER_PAT[^\n]*(Out-File|Set-Content|Add-Content)/);
+    // no literal PAT
+    expect(ps1).not.toMatch(/github_pat_[A-Za-z0-9_]{20,}/);
+  });
+
+  it('windows setup-runner.ps1 stays ASCII-only with the new service code (#240 guard)', async () => {
+    const ps1 = await readFile(tpl('windows/setup-runner.ps1'), 'utf8');
+    expect(/^[\x00-\x7F]*$/.test(ps1)).toBe(true);
   });
 });

@@ -55,20 +55,40 @@ verdict with a fix hint per line. It never reads or prints the PAT. Re-run until
    Docker + `gh` are on PATH. The build needs no JIT config — compose uses a
    build-safe default and the per-job config is required only at run time
    (enforced by `entrypoint.sh`).
-2. Register the supervisor as a **systemd** service that loads the secret as its
-   environment (never an interactive shell):
+2. Put the PAT in `~/.forge/runner.env` (chmod 600) — see "The one secret" above.
+3. **Install the durable service (the default):**
 
-   ```ini
-   # /etc/systemd/system/forge-runner.service
-   [Service]
-   EnvironmentFile=%h/.forge/runner.env
-   ExecStart=/usr/bin/node %h/<repo>/runner/linux/supervisor.mjs
-   Restart=always
+   ```sh
+   cd runner/linux
+   bash install-service.sh
    ```
 
-   `systemctl --user enable --now forge-runner` (or a system unit under the
-   service account). The supervisor reads `FORGE_RUNNER_PAT` from the service
-   environment only.
+   It writes `~/.config/systemd/user/forge-runner.service` with
+   `EnvironmentFile=%h/.forge/runner.env`, `Environment=FORGE_RUNNER_CONCURRENCY=1`,
+   `ExecStart=/usr/bin/env node <abs>/supervisor.mjs`, `Restart=on-failure`,
+   `RestartSec=10`, `WantedBy=default.target`; runs `systemctl --user daemon-reload`
+   then `systemctl --user enable --now forge-runner`; and attempts
+   `loginctl enable-linger "$USER"` so the service survives logout/reboot. If linger
+   needs privileges it prints the exact `sudo loginctl enable-linger <you>` to run
+   (it does not hard-fail). It warns if `~/.forge/runner.env` is missing (the
+   service would fail to start). Check it:
+
+   ```sh
+   systemctl --user status forge-runner
+   journalctl --user -u forge-runner -f
+   ```
+
+   Remove it with `bash install-service.sh --uninstall` (disable --now + delete the
+   unit; your `~/.forge/runner.env` is left untouched).
+4. **Quick test (foreground)** — to sanity-check the supervisor before installing
+   the service:
+
+   ```sh
+   set -a; . ~/.forge/runner.env; set +a
+   FORGE_RUNNER_CONCURRENCY=1 node supervisor.mjs
+   ```
+
+   The supervisor reads `FORGE_RUNNER_PAT` from its process environment only.
 
 ## Enable — native Windows host runner (default when a Windows box is present)
 
@@ -79,11 +99,29 @@ verdict with a fix hint per line. It never reads or prints the PAT. Re-run until
 
 1. `cd runner/windows; .\setup-runner.ps1 -Install` (downloads + checksum-verifies
    the runner binary).
-2. Register a Windows service (e.g. NSSM) that runs `.\setup-runner.ps1 -Serve`
-   with the PAT supplied via the **service environment** — NSSM
-   `AppEnvironmentExtra=FORGE_RUNNER_PAT=<token>` reading your out-of-band store —
-   not `setx`, not this repo.
-3. To route `verify.yml`'s Windows leg to this native runner, change the
+2. **Install the durable service (the default).** Needs an **elevated** shell and
+   `nssm` on PATH (`winget install NSSM.NSSM` or `choco install nssm`):
+
+   ```powershell
+   $env:FORGE_RUNNER_PAT = '<token>'   # THIS session only, from your out-of-band store
+   .\setup-runner.ps1 -InstallService
+   ```
+
+   This registers a `forge-runner` Windows service via NSSM that runs
+   `.\setup-runner.ps1 -Serve` with `AppDirectory = runner\windows`,
+   `Start = SERVICE_AUTO_START`, restart-on-exit, and
+   `AppEnvironmentExtra=FORGE_RUNNER_PAT=<value from $env:FORGE_RUNNER_PAT>`. The PAT
+   is read from the session env at install time and **never** written to a committed
+   file, `setx /M`, or this repo; the command errors if `$env:FORGE_RUNNER_PAT` is
+   unset or the shell isn't elevated. Remove it with
+   `.\setup-runner.ps1 -UninstallService` (elevated).
+3. **Quick test (foreground)** — before installing the service:
+
+   ```powershell
+   $env:FORGE_RUNNER_PAT = '<token>'
+   .\setup-runner.ps1 -Serve
+   ```
+4. To route `verify.yml`'s Windows leg to this native runner, change the
    `test-windows` job's `runs-on` to `[self-hosted, windows, {{LABEL}}]` — that
    makes the per-PR Windows check free too.
 

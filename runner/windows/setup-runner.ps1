@@ -20,14 +20,19 @@
   Enable (run once to install the runner binary, then register the service):
     1. gh auth is NOT used for minting - the service provides $env:FORGE_RUNNER_PAT.
     2. .\setup-runner.ps1 -Install            # downloads + unpacks the runner
-    3. Register a Windows service (e.g. NSSM) that runs:  .\setup-runner.ps1 -Serve
-       with AppEnvironmentExtra=FORGE_RUNNER_PAT=<token from your secret store>
-  See runner/README.md for the full per-OS instructions.
+    3. $env:FORGE_RUNNER_PAT = '<token>'      # this session only, from your store
+       .\setup-runner.ps1 -InstallService     # registers the durable NSSM service
+       (foreground .\setup-runner.ps1 -Serve is now just the quick-test path.)
+  -InstallService reads the PAT from the current session env and hands it to the
+  service as AppEnvironmentExtra=FORGE_RUNNER_PAT - never written to a committed
+  file, setx /M, or this repo. See runner/README.md for the full instructions.
 #>
 [CmdletBinding()]
 param(
   [switch]$Install,
   [switch]$Serve,
+  [switch]$InstallService,
+  [switch]$UninstallService,
   [string]$Owner = 'dngioidev',
   [string]$Repo = 'forge',
   [string]$Label = 'forge-local',
@@ -116,6 +121,66 @@ function Serve-Runner {
   }
 }
 
+$ServiceName = 'forge-runner'
+
+function Assert-Admin {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Service install/uninstall requires an elevated session. Re-run PowerShell as Administrator.'
+  }
+}
+
+function Get-Nssm {
+  # NSSM (the Non-Sucking Service Manager) wraps a console app as a Windows service
+  # (ADR-0005). Require it on PATH rather than downloading a third-party binary into
+  # the repo tree: one less pinned SHA to keep current, nothing new to gitignore.
+  # Give a concrete install hint when it is absent.
+  $cmd = (Get-Command nssm -ErrorAction SilentlyContinue).Source
+  if (-not $cmd) {
+    throw 'nssm was not found on PATH. Install it (e.g. `winget install NSSM.NSSM` or `choco install nssm`), open a new elevated shell, then re-run. ADR-0005 registers the runner service via NSSM.'
+  }
+  return $cmd
+}
+
+function Install-Service {
+  Assert-Admin
+  # The one secret is read from THIS session's environment at install time and handed
+  # to the service as its own environment (NSSM AppEnvironmentExtra). It is NEVER
+  # written to a committed file, setx /M, or this repo. Error clearly when the session
+  # does not carry it.
+  if (-not $env:FORGE_RUNNER_PAT) {
+    throw 'FORGE_RUNNER_PAT is not set in this session. Set it for THIS install session only (from your out-of-band store): $env:FORGE_RUNNER_PAT = ''<token>'' - never setx /M, never a committed file - then re-run -InstallService.'
+  }
+  $nssm = Get-Nssm
+  $psExe = (Get-Command powershell -ErrorAction SilentlyContinue).Source
+  if (-not $psExe) { $psExe = 'powershell' }
+  $script = Join-Path $PSScriptRoot 'setup-runner.ps1'
+  # Replace any prior registration so re-install is clean.
+  & $nssm stop $ServiceName confirm 2>$null | Out-Null
+  & $nssm remove $ServiceName confirm 2>$null | Out-Null
+  & $nssm install $ServiceName $psExe '-NoProfile' '-ExecutionPolicy' 'Bypass' '-File' $script '-Serve'
+  & $nssm set $ServiceName AppDirectory $PSScriptRoot
+  & $nssm set $ServiceName Start SERVICE_AUTO_START
+  & $nssm set $ServiceName AppExit Default Restart
+  & $nssm set $ServiceName AppRestartDelay 10000
+  # AppEnvironmentExtra = the PAT from the current session env (never a literal, never a file).
+  & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT"
+  & $nssm start $ServiceName
+  Write-Log "installed + started service '$ServiceName' (NSSM: auto-start, restart-on-exit)"
+  Write-Log "status:  nssm status $ServiceName   |   stop/edit: nssm stop|edit $ServiceName"
+}
+
+function Uninstall-Service {
+  Assert-Admin
+  $nssm = Get-Nssm
+  & $nssm stop $ServiceName confirm 2>$null | Out-Null
+  & $nssm remove $ServiceName confirm
+  Write-Log "removed service '$ServiceName'"
+}
+
 if ($Install) { Install-Runner }
 elseif ($Serve) { Serve-Runner }
-else { Write-Log 'nothing to do - pass -Install or -Serve (see runner/README.md)' }
+elseif ($InstallService) { Install-Service }
+elseif ($UninstallService) { Uninstall-Service }
+else { Write-Log 'nothing to do - pass -Install, -Serve, -InstallService, or -UninstallService (see runner/README.md)' }
