@@ -1,0 +1,34 @@
+# gitleaks configuration for forge (OSS secret-scan gate, issue #210).
+#
+# Extends the built-in ruleset and adds a narrowly-scoped allowlist for the
+# repo's own test fixtures: strings that are intentionally shaped like secrets
+# so the unit tests can prove the pre-send scanner and journal redactor catch
+# them. These are NOT live credentials. See docs/security/oss-secret-scan.md
+# for the full triage.
+#
+# Used by:
+#   - .github/workflows/secret-scan.yml (CI regression gate)
+#   - a full-history scan:
+#       gitleaks detect --source . --no-git=false --redact --log-opts=--all
+
+title = "forge secret-scan config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentionally fake, secret-shaped test fixtures (not live credentials) — see docs/security/oss-secret-scan.md"
+
+# Globally-known non-secret: AWS's own documented example access key id.
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+]
+
+# Files whose whole purpose is to contain secret-SHAPED example strings that
+# exercise the repo's redaction / pre-send scanning code paths. Scoped to the
+# exact fixture files (present and historical) rather than all of tests/, so a
+# real credential added elsewhere is still caught.
+paths = [
+  '''tests/lib/journal\.test\.mjs$''',
+  '''tests/backends/presend\.test\.mjs$''',
+]
