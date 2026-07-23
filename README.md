@@ -22,3 +22,7 @@ A portable AI-dev-platform plugin for Claude Code: 20 pipeline skills in 5 lanes
 ## Laws worth knowing before you disagree with a gate
 
 Ticket-first, always — silent side-work is forbidden. Owner merges every PR. Situations (incident, security-response) change what's *allowed*, not what's suggested. Gates are mechanical scripts — run them, don't argue with them. `"Unknown" is a valid answer.`
+
+## Contributing
+
+Contributions follow forge's own pipeline. Start with the **[Contributing guide](CONTRIBUTING.md)** — setup, `pnpm verify`, branching/commit conventions, and how PRs are reviewed. All participation is governed by the **[Code of Conduct](CODE_OF_CONDUCT.md)**. To report a vulnerability, see **[SECURITY.md](SECURITY.md)** (private reporting — never a public issue). forge is [MIT](LICENSE)-licensed.

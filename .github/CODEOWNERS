@@ -1,0 +1,5 @@
+# CODEOWNERS — default reviewer for forge.
+# The maintainer is requested for review on every pull request.
+# Docs: https://docs.github.com/articles/about-code-owners
+
+* @dngioidev

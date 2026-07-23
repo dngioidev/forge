@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose a new capability or improvement for forge
+title: "item: <short summary>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an idea. forge shapes proposals into typed tickets
+        with **acceptance criteria** before they enter the pipeline — the fields
+        below mirror that shape (problem → proposal → acceptance criteria), so a
+        well-formed request can move straight to planning.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What's missing or painful today? Describe the situation, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should forge do? How would it fit the existing pipeline (triage → plan → execute → ship)?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete, testable conditions that define "done" (forge maps each to a passing test at ship).
+      placeholder: |
+        - AC1: ...
+        - AC2: ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed, and why this one.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which lane does this touch?
+      options:
+        - pipeline skill (ideate / plan / execute / ship / release / …)
+        - care skill (hotfix / respond / maintain / investigate)
+        - board automation / trail
+        - gates / hooks
+        - graph / code intelligence
+        - docs / community
+        - other
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
