@@ -24,8 +24,8 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const OWNER = process.env.FORGE_RUNNER_OWNER || '{{OWNER}}';
 const REPO = process.env.FORGE_RUNNER_REPO || '{{REPO}}';
@@ -42,6 +42,29 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 function log(msg) {
   // Never interpolate PAT / JIT config into a log line.
   process.stdout.write(`[forge-runner ${new Date().toISOString()}] ${msg}\n`);
+}
+
+// Escalating, capped back-off for consecutive job failures — mint OR build/
+// container (#234). A persistent build error must NOT become a tight
+// mint→build→fail loop that hammers generate-jitconfig and litters orphaned JIT
+// registrations. Start at 10s, double each straight failure, cap at 5 min;
+// reset on any success.
+const BACKOFF_BASE_MS = 10_000;
+const BACKOFF_CAP_MS = 300_000;
+
+/** Pure: next back-off (ms) from the previous one — 0 means no prior failure. */
+export function nextBackoff(prev = 0) {
+  const next = prev > 0 ? prev * 2 : BACKOFF_BASE_MS;
+  return Math.min(next, BACKOFF_CAP_MS);
+}
+
+/** Sleep in <=1s slices so a drain (SIGINT/SIGTERM) interrupts a long back-off. */
+async function backoffSleep(ms) {
+  const deadline = Date.now() + ms;
+  while (!stopping && Date.now() < deadline) {
+    const slice = Math.min(1000, deadline - Date.now());
+    await new Promise((r) => setTimeout(r, slice));
+  }
 }
 
 /** Run a command, capturing stdout. Extra env is merged into the child only. */
@@ -88,14 +111,22 @@ async function runOneJob() {
     env: { ENCODED_JIT_CONFIG: minted.jit },
   });
   log(`container for ${minted.name} exited (code ${res.code})`);
-  return true;
+  return res.ok; // #234: a non-zero container exit is a failure → worker backs off.
 }
 
 /** One worker slot: keep taking single jobs until asked to stop. */
 async function worker(slot) {
+  let backoff = 0;
+  let failures = 0;
   while (!stopping) {
     const ok = await runOneJob();
-    if (!ok) await new Promise((r) => setTimeout(r, 10_000)); // back off on mint failure
+    if (ok) { backoff = 0; failures = 0; continue; }
+    // #234: back off on ANY job failure (mint OR build/container), escalating and
+    // capped, so a misconfigured host can't churn the GitHub API in a tight loop.
+    failures += 1;
+    backoff = nextBackoff(backoff);
+    log(`worker ${slot}: ${failures} consecutive failure(s) — backing off ${Math.round(backoff / 1000)}s before retry`);
+    await backoffSleep(backoff);
   }
   log(`worker ${slot} drained`);
 }
@@ -114,4 +145,7 @@ async function main() {
   log('all workers drained — exiting');
 }
 
-main().catch((err) => { log(`fatal: ${err.message}`); process.exit(1); });
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isMain) {
+  main().catch((err) => { log(`fatal: ${err.message}`); process.exit(1); });
+}
