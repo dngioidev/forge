@@ -6,20 +6,16 @@
 # security guidance).
 #
 # Cost model: Linux legs run for $0 on the local ephemeral container runner
-# (`forge-local` label). The Windows leg is trimmed to main + nightly on hosted
-# `windows-latest` (the fallback shape). When a native Windows host runner is
-# present (the ADR-0005 default), switch the `test-windows` job's `runs-on` to
-# `[self-hosted, windows, forge-local]` — see runner/README.md.
+# (`forge-local` label). The Windows leg runs as a normal per-PR check on hosted
+# `windows-latest` (billed per PR). When a native Windows host runner is present
+# (the ADR-0005 default), switch the `test-windows` job's `runs-on` to
+# `[self-hosted, windows, forge-local]` to make it free too — see runner/README.md.
 name: verify
 
 on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    # Nightly hosted windows-latest drift check — catches "works on my box" host
-    # drift vs the clean hosted image even when Windows legs run locally.
-    - cron: '0 6 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,10 +40,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
 
-  # Windows leg — main + nightly only (never on PRs). Hosted fallback; flip
-  # runs-on to the native self-hosted Windows runner when a box is present.
+  # Windows leg — a normal per-PR check on hosted windows-latest (every push +
+  # PR, same as Linux). Flip runs-on to the native self-hosted Windows runner
+  # when a box is present to make it free too.
   test-windows:
-    if: github.event_name != 'pull_request'
     permissions:
       contents: read
     runs-on: windows-latest

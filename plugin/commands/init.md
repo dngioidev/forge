@@ -22,7 +22,7 @@ Append `--statusline` when the user said yes in step 2.
 
 ## `--runner` — scaffold a local self-hosted runner (ADR-0005, private repos only)
 
-`--runner` is a distinct mode: instead of the board bootstrap it scaffolds the local self-hosted-runner assets so a **private** repo gets free CI (ephemeral Linux container runner + JIT supervisor, native-Windows host-runner setup, and a trimmed `verify.yml` — PRs Linux-only on the `forge-local` label, Windows main-only + nightly). It **refuses on a public repo** (`gh repo view --json isPrivate`) — a self-hosted runner must never process fork PRs.
+`--runner` is a distinct mode: instead of the board bootstrap it scaffolds the local self-hosted-runner assets so a **private** repo gets free CI (ephemeral Linux container runner + JIT supervisor, native-Windows host-runner setup, and a `verify.yml` — Linux jobs on the `forge-local` label, Windows a normal per-PR check on hosted `windows-latest`). It **refuses on a public repo** (`gh repo view --json isPrivate`) — a self-hosted runner must never process fork PRs.
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --runner

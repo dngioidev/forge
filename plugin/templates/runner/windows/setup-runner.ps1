@@ -6,7 +6,8 @@
   the developer does. It registers `--ephemeral` (one job per registration) and
   wipes _work between jobs; the hard private-only guard (never fork/public PRs)
   plus the Decision-3 concurrency cap are the isolation contract for host-level
-  execution. Keep the nightly hosted windows-latest drift check in verify.yml.
+  execution. Routing verify.yml's Windows leg here makes the per-PR Windows check
+  free instead of billing on hosted windows-latest.
 
   SECRET HANDLING (critical): the Administration-only PAT is read ONLY from this
   process's environment ($env:FORGE_RUNNER_PAT), which the Windows *service*
