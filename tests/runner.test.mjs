@@ -87,12 +87,13 @@ describe('AC2 — private-repo scaffold', () => {
 
     await stat(join(cwd, 'runner', 'README.md'));
 
-    // trimmed verify.yml — PRs Linux-only on forge-local; Windows main+nightly
+    // verify.yml — Linux on forge-local; Windows a normal per-PR check on hosted
     const verify = await readFile(join(cwd, '.github', 'workflows', 'verify.yml'), 'utf8');
     expect(verify).toContain('self-hosted, linux, forge-local');
-    expect(verify).toContain("if: github.event_name != 'pull_request'"); // windows off PRs
-    expect(verify).toContain('windows-latest'); // hosted fallback + nightly drift
-    expect(verify).toContain('schedule:'); // nightly drift check
+    expect(verify).not.toContain("if: github.event_name != 'pull_request'"); // windows runs per-PR, no gate
+    expect(verify).toContain('windows-latest'); // hosted per-PR check
+    expect(verify).not.toContain('schedule:'); // no nightly cron — Windows runs per-PR now
+    expect(verify).not.toContain('cron:');
     expect(verify).toContain('pnpm verify'); // {{VERIFY}} substituted
     for (const token of ['{{OWNER}}', '{{REPO}}', '{{LABEL}}', '{{VERIFY}}']) {
       expect(verify).not.toContain(token);

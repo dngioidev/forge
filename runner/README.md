@@ -6,8 +6,9 @@ fork-PR RCE risk), which is why `forge:init --runner` refuses on a public repo a
 why `verify.yml` keeps the `forge-local` runner off any untrusted code path.
 
 Free CI for private repos: Linux legs run at $0 on a local ephemeral container
-runner; the Windows leg runs on a native Windows host runner (default when a box
-is present) or trimmed hosted `windows-latest` (main + nightly) as the fallback.
+runner. The Windows leg runs as a normal per-PR check on hosted `windows-latest`
+(billed per PR); flip it to a native self-hosted Windows runner (default when a
+box is present) to make it free too.
 
 ## The one secret — never committed
 
@@ -65,8 +66,8 @@ committed. `forge:doctor` (ticket #225) asserts it is gitignored, untracked, and
    `AppEnvironmentExtra=FORGE_RUNNER_PAT=<token>` reading your out-of-band store —
    not `setx`, not this repo.
 3. To route `verify.yml`'s Windows leg to this native runner, change the
-   `test-windows` job's `runs-on` to `[self-hosted, windows, forge-local]`. Keep the
-   nightly hosted `windows-latest` drift check.
+   `test-windows` job's `runs-on` to `[self-hosted, windows, forge-local]` — that
+   makes the per-PR Windows check free too.
 
 ## Isolation notes
 

@@ -120,7 +120,7 @@ Opt-in, **private-repo-only** free CI on a local GitHub Actions runner. `/forge:
 | `enabled` | `false` | master switch — absent/`false` means no local runner |
 | `labels` | `["self-hosted","linux","forge-local"]` | labels the runner registers with and `verify.yml` targets |
 | `sharing` | `"repo"` | `"repo"` = one box, one registration **per private repo** (solo default); `"org"` = one org-runner-group registration serves all repos (team, needs a free org) |
-| `windows` | `"native"` | `"native"` runs the Windows leg on a native host runner at $0 (default when a Windows box is present); `"hosted"` is the fallback (PRs Linux-only, Windows on main + nightly drift check) |
+| `windows` | `"native"` | `"native"` runs the Windows leg on a native host runner at $0 (default when a Windows box is present); `"hosted"` is the fallback — Windows runs as a normal per-PR check on hosted `windows-latest` (billed per PR), Linux stays free on the local runner |
 | `advancedCi` | all `false` | owner-gated upside — `linuxMatrix`, `deploySmoke` (build + `terraform plan`, never `apply`), `nightly` (maintain + graph reindex + security sweep) |
 
 **Solo vs. team:** `sharing: "repo"` is the honest solo default (GitHub runner *groups* are org/enterprise-only, so a personal account shares one box by registering it per repo). `sharing: "org"` is the only path GitHub calls true sharing and requires moving the repos into a (free) org. Full setup: [install guide](install.md#local-self-hosted-runner-runner-block--private-repos-only) and `runner/README.md`.
