@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.16.0 — 2026-07-23
+
+### Docs
+
+- re-init is a real fix for bare-node blank bar (§1/§2) (#208) ([#208](https://github.com/dngioidev/forge/issues/208))
+- wire SKILL to the forge-ci / forge-decisions monitors (#169) (#196) ([#169](https://github.com/dngioidev/forge/issues/169) [#196](https://github.com/dngioidev/forge/issues/196))
+- fix stale skill/role counts and dead shell-windows link (#168) (#195) ([#168](https://github.com/dngioidev/forge/issues/168) [#195](https://github.com/dngioidev/forge/issues/195))
+- remove stale Console daemon section (ADR-0003) (#194) ([#194](https://github.com/dngioidev/forge/issues/194))
+
+### Fixes
+
+- verify Status field actually moved after close.mjs mutation (#207) ([#207](https://github.com/dngioidev/forge/issues/207))
+- add .catch to isMain entrypoints so real I/O errors exit cleanly (#206) ([#206](https://github.com/dngioidev/forge/issues/206))
+- readJson returns null only for ENOENT, propagates real I/O errors (#185) (#205) ([#185](https://github.com/dngioidev/forge/issues/185) [#205](https://github.com/dngioidev/forge/issues/205))
+- wire statusline with absolute node path, not bare `node` (#203) ([#203](https://github.com/dngioidev/forge/issues/203))
+- verify the Status field actually moved to Done after a done-move (#178) (#200) ([#178](https://github.com/dngioidev/forge/issues/178) [#200](https://github.com/dngioidev/forge/issues/200))
+- quote-safe title idempotency lookup — no duplicate on quoted titles (#199) ([#199](https://github.com/dngioidev/forge/issues/199))
+- spec kill-switch names the situation gate, not removed forge-control (#193) ([#193](https://github.com/dngioidev/forge/issues/193))
+- kill-switch names the real situation gate, not removed forge-control (#191) ([#191](https://github.com/dngioidev/forge/issues/191))
+- document in-session merge-authorization requirement + run-start preflight (#179) (#190) ([#179](https://github.com/dngioidev/forge/issues/179) [#190](https://github.com/dngioidev/forge/issues/190))
+- delivery-subagent brief must watch CI to green in-run and merge same run (#189) ([#189](https://github.com/dngioidev/forge/issues/189))
+- recognize localized (non-English) AC headings in readiness (#176) (#188) ([#176](https://github.com/dngioidev/forge/issues/176) [#188](https://github.com/dngioidev/forge/issues/188))
+- exclude umbrella types (program/epic) from selectNext (#187) ([#187](https://github.com/dngioidev/forge/issues/187))
+- crash-safe run-ledger — atomic writeJson + guarded reader (#184) ([#184](https://github.com/dngioidev/forge/issues/184))
+
+### Features
+
+- expose statusline/agy/review CLIs; document monitors exclusion (#198) ([#198](https://github.com/dngioidev/forge/issues/198))
+- add self-audit documentation for plugin v0.15.0
+
+### Chores
+
+- add MIT LICENSE + license field to manifests (#197) ([#197](https://github.com/dngioidev/forge/issues/197))
+
+### Tests
+
+- cover runRelease mutating path + parseArgs (#165) (#186) ([#165](https://github.com/dngioidev/forge/issues/165) [#186](https://github.com/dngioidev/forge/issues/186))
+
 ## v0.15.0 — 2026-07-21
 
 ### Features
