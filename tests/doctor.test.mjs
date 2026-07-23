@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runDoctor } from '../plugin/scripts/doctor.mjs';
+import { run } from '../plugin/scripts/lib/exec.mjs';
 import { fakeGh, fieldsResponse, REPO_VIEW, AUTH_OK } from './helpers/fakegh.mjs';
 
 const noop = () => {};
@@ -11,6 +12,196 @@ const byName = (res, name) => res.results.filter((r) => r.name === name);
 async function tmpCwd() {
   return mkdtemp(join(tmpdir(), 'forge-doc-'));
 }
+
+/** Init a real git repo in a tmp dir with the given tracked files + .gitignore, committed. */
+async function gitRepo({ gitignore = '.forge/\n', files = {}, force = [] } = {}) {
+  const cwd = await tmpCwd();
+  await run('git', ['-C', cwd, 'init', '-q']);
+  await writeFile(join(cwd, '.gitignore'), gitignore, 'utf8');
+  for (const [rel, body] of Object.entries(files)) {
+    const abs = join(cwd, rel);
+    await mkdir(join(abs, '..'), { recursive: true });
+    await writeFile(abs, body, 'utf8');
+  }
+  await run('git', ['-C', cwd, 'add', '-A']);
+  for (const rel of force) await run('git', ['-C', cwd, 'add', '-f', '--', rel]);
+  await run('git', ['-C', cwd, '-c', 'user.email=t@t.dev', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+  return cwd;
+}
+
+/** Write a valid forge.json (based on the committed one) with a runner block into cwd. */
+async function writeCfg(cwd, runner) {
+  const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+  if (runner !== undefined) committed.runner = runner;
+  await mkdir(join(cwd, '.claude'), { recursive: true });
+  await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+}
+
+const PRIVATE_VIEW = { stdout: JSON.stringify({ isPrivate: true, owner: { login: 'dngioidev' }, name: 'forge' }) };
+const PUBLIC_VIEW = { stdout: JSON.stringify({ isPrivate: false, owner: { login: 'dngioidev' }, name: 'forge' }) };
+const runnersResponse = (runners) => ({ stdout: JSON.stringify({ total_count: runners.length, runners }) });
+const FORGE_LABELS = [{ name: 'self-hosted' }, { name: 'linux' }, { name: 'forge-local' }];
+
+// Routes shared by the runner tests: auth ok, isPrivate view first, then generic
+// repo view + a catch-all so unrelated checks (board/security) don't throw.
+function runnerRoutes({ view = PRIVATE_VIEW, runners } = {}) {
+  const routes = [
+    ['auth status', AUTH_OK],
+    [(j) => j.startsWith('repo view') && j.includes('isPrivate'), view],
+    ['repo view', REPO_VIEW],
+  ];
+  if (runners !== undefined) routes.push([(j) => j.startsWith('api ') && j.includes('actions/runners'), runners]);
+  routes.push([() => true, { ok: false, stderr: 'x' }]);
+  return routes;
+}
+
+describe('runDoctor — runner health (AC-225.4)', () => {
+  it('feature off (no runner block) → runner checks are absent, no noise', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd); // no runner block
+    const { gh } = fakeGh(runnerRoutes());
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')).toEqual([]);
+    expect(byName(res, 'runner-secret')).toEqual([]);
+  });
+
+  it('runner.enabled:false → still silent', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false });
+    const { gh } = fakeGh(runnerRoutes());
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')).toEqual([]);
+    expect(byName(res, 'runner-secret')).toEqual([]);
+  });
+
+  it('enabled + a matching runner online → ok', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')[0].level).toBe('ok');
+    expect(byName(res, 'runner')[0].msg).toMatch(/online/);
+    // secret store: gitignored + untracked + no PAT → ok
+    expect(byName(res, 'runner-secret')[0].level).toBe('ok');
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('runner');
+  });
+
+  it('enabled + matching runner OFFLINE → warn (not a crash, not ok)', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'offline', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')[0].level).toBe('warn');
+    expect(byName(res, 'runner')[0].msg).toMatch(/offline/);
+  });
+
+  it('enabled + NO matching runner registered → warn', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      // an online runner but WITHOUT the forge-local label → not a match
+      runners: runnersResponse([{ id: 9, name: 'other', status: 'online', labels: [{ name: 'self-hosted' }, { name: 'linux' }] }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')[0].level).toBe('warn');
+    expect(byName(res, 'runner')[0].msg).toMatch(/no self-hosted runner|not registered|register/i);
+  });
+
+  it('enabled + gh api lacks scope / 403 → degrades to warn, does not crash', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: { ok: false, stderr: 'HTTP 403: Resource not accessible by personal access token' },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')[0].level).toBe('warn');
+  });
+
+  it('enabled + sharing:org → queries the ORG runners endpoint', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true, sharing: 'org' });
+    const { gh, calls } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')[0].level).toBe('ok');
+    expect(calls.some((c) => c.includes('api orgs/dngioidev/actions/runners'))).toBe(true);
+  });
+
+  it('enabled on a PUBLIC repo → FAIL with the fork-PR RCE message', async () => {
+    const cwd = await tmpCwd();
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({ view: PUBLIC_VIEW }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner')[0];
+    expect(r.level).toBe('fail');
+    expect(r.msg).toMatch(/public|fork/i);
+    expect(res.ok).toBe(false);
+  });
+
+  it('secret store TRACKED in git → FAIL', async () => {
+    // runner.env committed (not ignored) → tracked → fail
+    const cwd = await gitRepo({ gitignore: '.forge/\n', files: { 'runner.env': 'FORGE_RUNNER_PAT=redacted\n' } });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-secret')[0];
+    expect(r.level).toBe('fail');
+    expect(r.msg).toMatch(/track/i);
+  });
+
+  it('secret-store scan is git-only and still runs when gh repo view fails', async () => {
+    const token = 'ghp_' + 'y'.repeat(36);
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n', files: { 'src/leak.js': `const t = "${token}";\n` } });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({ view: { ok: false, stderr: 'network is unreachable' } }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    // registration probe degrades to warn (visibility unknown)…
+    expect(byName(res, 'runner')[0].level).toBe('warn');
+    // …but the gh-independent secret scan still fires and catches the committed PAT
+    expect(byName(res, 'runner-secret')[0].level).toBe('fail');
+  });
+
+  it('enabled + store present but runner.env NOT gitignored → warn', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\n' }); // runner.env pattern absent
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-secret')[0].level).toBe('warn');
+    expect(byName(res, 'runner-secret')[0].msg).toMatch(/gitignore/i);
+  });
+
+  it('label matching is case-insensitive (FORGE-LOCAL registered, forge-local configured) → ok', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true, labels: ['self-hosted', 'linux', 'forge-local'] });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: [{ name: 'Self-Hosted' }, { name: 'Linux' }, { name: 'FORGE-LOCAL' }] }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')[0].level).toBe('ok');
+  });
+
+  it('PAT-looking secret in a committed file → FAIL', async () => {
+    const token = 'ghp_' + 'x'.repeat(36); // shape-valid classic PAT, not a real secret
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n', files: { 'src/leak.js': `const t = "${token}";\n` } });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-secret')[0];
+    expect(r.level).toBe('fail');
+    expect(r.msg).toMatch(/PAT|secret/i);
+  });
+});
 
 describe('runDoctor — failure classes (AC-1.4)', () => {
   it('missing gh auth is a distinct ✗', async () => {
