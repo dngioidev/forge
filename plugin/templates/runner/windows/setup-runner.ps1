@@ -84,6 +84,15 @@ function Serve-Runner {
     throw 'FORGE_RUNNER_PAT is not set - the service must supply it (NSSM AppEnvironmentExtra). Refusing to start.'
   }
   if ($Owner -like '{{*') { throw 'owner/repo not substituted - re-run forge:init --runner in the target repo.' }
+  # Prefer Git Bash's bash over WSL's System32 bash.exe. forge ships a bash-script
+  # dispatcher (plugin/bin/forge) and its tests shell out to `bash`; if WSL bash wins
+  # on PATH it can't run a C:\ path and those jobs fail (hosted windows-latest uses
+  # Git Bash). Prepend Git's bin so this native runner matches hosted behaviour.
+  $gitCmd = (Get-Command git -ErrorAction SilentlyContinue).Source
+  if ($gitCmd) {
+    $gitBin = Join-Path (Split-Path (Split-Path $gitCmd -Parent) -Parent) 'bin'
+    if (Test-Path (Join-Path $gitBin 'bash.exe')) { $env:PATH = "$gitBin;$env:PATH" }
+  }
   Write-Log "serving $Owner/$Repo on label `"$Label`" (native ephemeral, one job per registration)"
   Push-Location $RunnerDir
   try {
