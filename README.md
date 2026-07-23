@@ -35,7 +35,7 @@ forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code)
 
 ## What you get
 
-- **Pipeline skills (5 lanes)** — front-of-pipeline (`ideate`, `brainstorm`, `spike`, `design`, `shape`), build (`plan`, `execute`, `deliver`, `ship`), care (`hotfix`, `respond`, `maintain`), knowledge (`distill`, `review`, `investigate`), and scale (`autopilot`, `triage`, `board`). Each is a `/forge:<skill>` command.
+- **Pipeline skills (5 lanes)** — front-of-pipeline (`ideate`, `brainstorm`, `spike`, `design`, `shape`), build (`plan`, `execute`, `execute-agents`, `deliver`, `ship`, `release`), care (`hotfix`, `respond`, `maintain`), knowledge (`distill`, `review`, `investigate`), and scale (`autopilot`, `triage`, `board`) — 20 in all. Each is a `/forge:<skill>` command.
 - **Agent roster** — 12 Claude-native role subagents (planner, scoper, implementer, reviewer, security, test-architect, and more) spawned with fresh context for the job at hand.
 - **Board automation** — GitHub Projects as the source of truth, with a ticket-trail law: every lifecycle moment is recorded on the driving issue. No silent side-work.
 - **Mechanical ship gates** — AC mapping, plan-drift, doc-sync, test-intent, and a reviewer + security pass — enforced as scripts, not opinions.
