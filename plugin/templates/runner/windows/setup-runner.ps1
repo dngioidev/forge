@@ -31,10 +31,12 @@ param(
   [string]$Owner = '{{OWNER}}',
   [string]$Repo = '{{REPO}}',
   [string]$Label = '{{LABEL}}',
-  [string]$RunnerVersion = '2.336.0',
-  # Pin the published SHA-256 for actions-runner-win-x64-<version>.zip. Keep current
-  # (GitHub deprecates old runner versions); see #233 for auto-pinning at scaffold time.
-  [string]$RunnerSha256 = 'd59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162'
+  [string]$RunnerVersion = '{{RUNNER_VERSION}}',
+  # Published SHA-256 for actions-runner-win-x64-<version>.zip, auto-pinned at
+  # scaffold time by forge:init --runner to the CURRENT release (#233). GitHub
+  # deprecates old runner versions; re-run forge:init --runner (forge:doctor warns)
+  # to bump when it falls behind.
+  [string]$RunnerSha256 = '{{RUNNER_SHA256_WIN}}'
 )
 
 $ErrorActionPreference = 'Stop'
