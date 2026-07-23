@@ -1,0 +1,86 @@
+# forge local self-hosted-runner CI (ADR-0005 decisions 3 + 4).
+#
+# PRIVATE REPOS ONLY. A self-hosted runner must never process fork PRs — forge:init
+# --runner refuses on a public repo, and this workflow keeps the local `forge-local`
+# runner off any untrusted code path (see docs/security & GitHub's self-hosted-runner
+# security guidance).
+#
+# Cost model: Linux legs run for $0 on the local ephemeral container runner
+# (`forge-local` label). The Windows leg is trimmed to main + nightly on hosted
+# `windows-latest` (the fallback shape). When a native Windows host runner is
+# present (the ADR-0005 default), switch the `test-windows` job's `runs-on` to
+# `[self-hosted, windows, forge-local]` — see runner/README.md.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly hosted windows-latest drift check — catches "works on my box" host
+    # drift vs the clean hosted image even when Windows legs run locally.
+    - cron: '0 6 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Linux legs — every PR + push, on the free local ephemeral runner.
+  test-linux:
+    permissions:
+      contents: read
+    runs-on: [self-hosted, linux, forge-local]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+
+  # Windows leg — main + nightly only (never on PRs). Hosted fallback; flip
+  # runs-on to the native self-hosted Windows runner when a box is present.
+  test-windows:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+
+  # actionlint runs a container (docker://) — the local runner mounts the docker
+  # socket so this works on the free runner exactly as on hosted.
+  actionlint:
+    permissions:
+      contents: read
+    runs-on: [self-hosted, linux, forge-local]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: docker://rhysd/actionlint@sha256:1d74bfc9fd1963af8f89a7c22afaaafd42f49aad711a09951d02cb996398f61d # 1.7.7
+        with:
+          args: -color
+
+  plugin-validate:
+    permissions:
+      contents: read
+    runs-on: [self-hosted, linux, forge-local]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude plugin validate ./plugin --strict

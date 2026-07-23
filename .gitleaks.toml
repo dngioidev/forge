@@ -36,6 +36,9 @@ regexes = [
 # by this gate. Accepted: they are redaction-test fixtures by design; a real
 # credential belongs in neither.
 paths = [
+  '''(^|/)\.forge/''', # forge runner: out-of-band PAT store (never a real leak)
+  '''(^|/)runner\.env$''', # forge runner: out-of-band PAT store (never a real leak)
+  '''(^|/)[^/]*\.runner\.env$''', # forge runner: out-of-band PAT store (never a real leak)
   '''^tests/lib/journal\.test\.mjs$''',
   '''^tests/backends/presend\.test\.mjs$''',
 ]
