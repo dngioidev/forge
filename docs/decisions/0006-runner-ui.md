@@ -1,67 +1,80 @@
 # ADR-0006 - Runner fleet management UI: UI approach, Python stack, cross-platform control, code home
 
-**Date:** 2026-07-24 - **Status:** **Proposed** (AC1 gate; needs OWNER sign-off before any build) - **Ticket:** #263 (AC1 of epic #262) - **Route:** spike (deliverable = this decision record + the throwaway proof under `tools/runner-ui/spike/`; the spike branch `spike/263-runner-ui-adr` never merges)
+**Date:** 2026-07-24 - **Status:** **Accepted** (owner-signed 2026-07-24) - **Ticket:** #263 (AC1 of epic #262) - **Route:** spike (deliverable = this decision record + a throwaway cross-platform proof; the spike branch `spike/263-runner-ui-adr` never merges, and its throwaway `tools/runner-ui/spike/` code is not carried onto main)
 
 ## Context
 
-Epic #262 proposes a **Python** UI to manage the local self-hosted runner **fleet** that ADR-0005 (#180) shipped. AC1 is the gate: a spike must resolve four questions with a concrete recommendation grounded in the real scaffold, and the owner must approve before AC2+ (build). This ADR is that spike's deliverable.
+Epic #262 proposes a **Python** UI to manage the local self-hosted runner **fleet** that ADR-0005 (#180) shipped. AC1 is the gate: a spike must resolve four questions with a concrete recommendation grounded in the real scaffold, and the owner must approve before AC2+ (build). This ADR is that spike's deliverable, now with the owner's sign-off recorded.
 
 The four questions: (1) UI approach - desktop GUI vs local web app vs terminal UI; (2) Python stack + deps and how they are pinned/run cross-platform; (3) control strategy - how the tool discovers and controls services without reimplementing them; (4) home for the code - in-repo `tools/runner-ui/` vs a sibling repo.
 
+The owner's decision on Q1 **overrides the spike's original recommendation** (a localhost web app): the charter is expanded from a narrow runner UI into a native Python **desktop "cockpit"** built on PySide6/Qt. The grounded facts and the cross-platform proof below are unchanged and still bind every decision.
+
 ### Grounded facts from the existing runner scaffold (ADR-0005 + code)
 
-These are the REAL constraints every recommendation below is anchored to:
+These are the REAL constraints every decision below is anchored to:
 
 - **Two service managers, two OS contexts, one physical box.** Windows legs run as an **NSSM** service `forge-runner-<owner>-<repo>` (LocalSystem, `SERVICE_AUTO_START`, restart-on-exit) registered by `runner/windows/setup-runner.ps1`. Linux legs run as a **systemd `--user`** unit `forge-runner-<owner>-<repo>.service` installed by `runner/linux/install-service.sh`, which drives **`docker compose run --rm`** ephemeral job containers via `runner/linux/supervisor.mjs`. The owner's box is Windows 11 hosting a native Windows runner PLUS a WSL2 Ubuntu Linux runner (confirmed live below).
 - **Repo-scoped, multi-repo names.** The service/unit name is repo-derived (`forge-runner-<owner>-<repo>`), so ONE host durably serves several private repos at once. This box already runs `forge-runner-dngioidev-forge` and `forge-runner-dngioidev-iomanage` - the UI is genuinely a *fleet* view, not a single-service toggle.
-- **The one secret is off-limits to this UI.** The Administration-only PAT lives ONLY in the gitignored, chmod-600 `~/.forge/runner.env` (Linux) or the service environment / NSSM `AppEnvironmentExtra` (Windows). ADR-0005 forbids it on argv, in `forge.json`, in logs, or in any committed file. **The UI must never read `runner.env` or surface the PAT** - it reads service *state* only.
+- **The one secret is off-limits to this UI.** The Administration-only PAT lives ONLY in the gitignored, chmod-600 `~/.forge/runner.env` (Linux) or the service environment / NSSM `AppEnvironmentExtra` (Windows). ADR-0005 forbids it on argv, in `forge.json`, in logs, or in any committed file. **The cockpit must never read `runner.env` or surface the PAT** - it reads service *state* only.
 - **Managers are already the API.** The scaffold itself only ever shells out - `gh api`, `sc`/NSSM, `systemctl --user`, `docker compose`. It reimplements nothing. `gh` is already a hard dependency. The runner is **private-repo-only** (fork-PR RCE guard).
-- **`.claude/forge.json` `runner` block is committed** and machine-readable: `{ enabled, labels:[self-hosted,linux,forge-local], sharing:"repo", windows:"native" }`. That is the UI's config source of truth for what to expect.
+- **`.claude/forge.json` `runner` block is committed** and machine-readable: `{ enabled, labels:[self-hosted,linux,forge-local], sharing:"repo", windows:"native" }`. That is the cockpit's config source of truth for what to expect.
 - **Read-only status needs no privilege.** `Get-Service`/`sc query`, `systemctl --user status`, and `docker ps` all return state unprivileged. Only *mutating* a Windows NSSM service (start/stop/reinstall) needs Windows admin; systemd `--user` needs no root at all.
+- **Claude usage data is a real local file source.** Claude Code writes per-session JSONL transcripts under `~/.claude/projects/**/*.jsonl`, and each assistant turn records its `usage` (input / output / cache-read / cache-creation tokens). Cost is therefore computable **entirely from local files** as tokens x published per-model rates - no external API call, no invented data. This is the same local basis `/cost` and ccusage-style tools read, and it is the grounded source for the cockpit's usage/pricing/token panels.
 
-## Decisions (recommendations - the owner decides Q1/Q2/Q3-privilege/Q4)
+## Decisions (owner-signed 2026-07-24)
 
-### Decision 1 - UI approach -> **RECOMMEND: a local web app (FastAPI + a static localhost browser page), bound to 127.0.0.1 only. Second choice: a Textual TUI.**
+### Decision 1 - UI approach -> **a native Python DESKTOP app using PySide6 (Qt).**
 
-Rationale, grounded in the two-OS-context constraint:
+The web-app recommendation from the spike is **REJECTED**. The owner wants a real Windows application window (a "cockpit"), not a browser tab.
 
-- The renderer must work identically on Windows and inside WSL2, with near-zero packaging. A **browser page served by a localhost FastAPI process** is the lowest-friction cross-platform view: no GUI toolkit to install per OS, no PyInstaller-per-OS packaging, and the same page renders on either side. Control actions map cleanly to a small JSON API (`GET /services`, `POST /services/{name}/{start|stop}`).
-- It also fits the **fleet** shape: a table of N repo runners across both OSes, auto-refreshing, is a natural web view and trivially extended later (still localhost-only) without a native-window rewrite.
-- Binding **127.0.0.1 only** keeps it private by default - consistent with ADR-0005's private-only posture. No auth surface is exposed to the network.
+- **Why PySide6/Qt:** it is the only option that cleanly delivers, in ONE native window, both rich **native charts** (QtCharts) for the usage/cost panels AND an **embedded real terminal** (ConPTY via `pywinpty`). Neither the localhost web app nor a Textual TUI gives a native windowed cockpit with those two capabilities together.
+- **Accepted trade-offs (eyes open):** heavier install (a PyInstaller onefile bundle on the order of ~100MB); more code than the web/TUI options; and PySide6 is **LGPL** (fine to use). These costs are accepted in exchange for the native cockpit experience.
+- **Cross-OS reach is preserved.** A Windows-native app still reaches the WSL2 Linux runner via `wsl.exe -- systemctl --user ...` interop (the proof below demonstrated exactly this boundary crossing, in reverse - a WSL process reading Windows services). So choosing a Windows-native shell does not cost the two-OS fleet view.
 
-Rejected options and their real trade-offs:
+### Decision 2 - Charter -> **EXPANDED to a Claude Code "cockpit," not just a runner UI.**
 
-- **Desktop GUI - Tkinter:** ships with CPython (zero extra dep) but dated/limited widgets and still needs a display; awkward inside headless WSL2. Weak fit for a fleet table.
-- **Desktop GUI - PyQt/PySide:** heavy dependency, GPL/commercial licensing to reason about, and painful per-OS packaging (large PyInstaller bundles). Overkill for a solo ops tool.
-- **Textual TUI:** genuinely strong - single dep (`textual`), runs in any terminal including over SSH/WSL, no browser, and the runner is already a terminal-adjacent asset. It is the recommended **fallback** if the owner prefers a pure-terminal tool with the smallest dependency set. Its only downside vs the web app is a slightly higher build effort for rich tables/refresh and no trivial "open in browser" share path. Both are acceptable; the pick is the owner's.
+The app is no longer scoped to runner fleet control alone. In addition to **runner fleet control**, the cockpit monitors:
 
-### Decision 2 - Python stack + deps, pinned and run cross-platform -> **RECOMMEND: CPython >= 3.12, dependencies managed and pinned with `uv` (lockfile committed), one venv per OS context; deps limited to `fastapi` + `uvicorn` (+ stdlib `subprocess`). Nothing that reimplements a service manager.**
+- an **embedded terminal** (a real ConPTY session hosted inside the Qt window via `pywinpty`);
+- live **monitoring** of the fleet (service/container state, refreshing);
+- **Claude usage / pricing / tokens-consumed** panels.
 
-Rationale:
+The usage feature is grounded, not invented: it reads the per-session JSONL transcripts under `~/.claude/projects/**/*.jsonl`, sums each assistant turn's recorded `usage` token counts, and multiplies by published per-model rates to compute cost - all from local files, with **no external API calls and no fabricated data** (see the grounded fact above). The security invariant is unchanged: usage data comes from transcripts, never from any secret store.
 
-- **`uv`** gives a committed, hash-pinned `uv.lock` that resolves identically on Windows and Linux, is fast, and can even bootstrap the interpreter - directly relevant because **Python is not currently installed on the Windows host** (only the Windows Store alias stub is present; see Evidence). Provisioning Python is therefore a documented prerequisite: `winget install Python.Python.3.12` on Windows, `apt install python3 python3-venv` (or distro equivalent) in WSL. `uv` also runs cleanly with `pipx`/`pip` as the fallback if the owner prefers `requirements.txt` compiled by pip-tools.
-- **Minimal deps** keeps faith with the runner's zero-runtime-dependency ethos: `fastapi`+`uvicorn` for the local web app (or just `textual` for the TUI fallback), and **stdlib `subprocess`** for all control. No `pywin32`/service-manager libraries - those would reimplement what `sc`/`systemctl`/`docker` already expose.
-- **Run cross-platform** via `uv run python -m runner_ui` (a `.venv` per OS context: one under Windows, one inside WSL). The proof already ran under Python 3.14.4 in WSL, so >= 3.12 is safely available there; the Windows venv is provisioned at enable time.
+### Decision 3 - Python stack + deps, pinned and run cross-platform -> **CPython >= 3.12, dependencies pinned with `uv` (committed `uv.lock`); deps = PySide6, pywinpty, psutil (+ stdlib `subprocess`).**
 
-### Decision 3 - Control strategy -> **RECOMMEND: shell out to the existing managers only (never reimplement); cross the Windows<->WSL2 boundary with native two-way interop; read-only + unprivileged by default, mutating actions explicitly elevated.**
+- **`uv`** gives a committed, hash-pinned `uv.lock` that resolves the same way each build, is fast, and can even bootstrap the interpreter. This matters directly because **Python is not installed on the Windows host** (only the Windows Store alias stub is present; see Evidence). Provisioning Python on Windows is therefore a documented **build prerequisite**: `winget install Python.Python.3.12`.
+- **Dep list** (updated from the spike): **`PySide6`** (the Qt GUI + QtCharts), **`pywinpty`** (the embedded ConPTY terminal), **`psutil`** (process/resource monitoring). **Dropped:** `fastapi` / `uvicorn` - those existed only for the now-rejected web app. **Kept:** stdlib **`subprocess`** for all service control (no service-manager libraries; `sc`/`systemctl`/`docker` are already the API).
+- **Run** via `uv run` against a CPython >= 3.12 interpreter (the spike's cross-platform proof ran under Python 3.14.4 in WSL, so >= 3.12 is safely available on the Linux side; the Windows interpreter is provisioned per the prerequisite above).
 
-This is the load-bearing decision and it is fully proven below.
+### Decision 4 - Control strategy -> **shell-out only + WSL2 two-way interop + PAT-free read-only default (UNCHANGED - proven below); per-action UAC elevation for Windows mutations.**
 
-- **Discover + control by shelling out**, exactly as the scaffold does: Windows via `sc query` / `Get-Service` (and `nssm start|stop` / `setup-runner.ps1` for lifecycle), Linux via `systemctl --user`, containers via `docker ps` / `docker compose`. `gh` only if live GitHub *registration* state is wanted later - and that path needs the PAT, so **the default UI stays PAT-free by reading local service state only** and never touches `runner.env`.
-- **One process reaches both OSes** on a single box via WSL2 two-way interop: from WSL, Windows services are reachable through `sc.exe` / `powershell.exe` on PATH; from Windows, Linux services are reachable through `wsl.exe -- systemctl --user ...` and `wsl.exe -- docker ...`. This removes any need for SSH agents or a per-OS daemon in the solo/single-box topology. (A future multi-host fleet would add a thin per-host agent, but that is out of scope for #262.)
-- **Privilege handling:** read-only status is unprivileged on both OSes (proven below - the probe read Windows NSSM state from inside WSL with no elevation). Mutating a Windows NSSM service needs admin, so start/stop/reinstall actions must trigger an explicit elevation (a UAC-elevated helper invocation) and must degrade with a clear "run elevated" message rather than silently failing. systemd `--user` mutations need no root. **Exact privilege UX (auto-elevate per action vs "launch elevated" banner) is an owner call.**
-- **Security invariant (non-negotiable):** never pass the PAT on argv, never read `~/.forge/runner.env`, never log service env that could contain it. The probe demonstrates status-only reads that never touch the secret store.
+This is the load-bearing decision and it is fully proven below; it is accepted as recommended.
 
-### Decision 4 - Home for the code -> **RECOMMEND: in-repo `tools/runner-ui/` (a first-class tools directory, sibling to `runner/`), depending on the scaffold by *convention* (reads `.claude/forge.json` runner block + the `forge-runner-<owner>-<repo>` naming), not by importing runner code.**
+- **Discover + control by shelling out**, exactly as the scaffold does: Windows via `sc query` / `Get-Service` (and `nssm start|stop` / `setup-runner.ps1` for lifecycle), Linux via `systemctl --user`, containers via `docker ps` / `docker compose`. The default cockpit stays **PAT-free** by reading local service state only and never touching `runner.env`.
+- **One process reaches both OSes** on a single box via WSL2 two-way interop: from Windows, Linux services are reachable through `wsl.exe -- systemctl --user ...` and `wsl.exe -- docker ...`; from WSL, Windows services are reachable through `sc.exe` / `powershell.exe` on PATH. No SSH agent or per-OS daemon is needed in the solo/single-box topology. (A future multi-host fleet would add a thin per-host agent - out of scope for #262.)
+- **Mutation privilege UX (accepted default):** read-only status stays **unprivileged** on both OSes (proven below). Mutating a Windows NSSM service (start/stop/reinstall) triggers an **explicit per-action UAC elevation** via a `ShellExecute` "runas" helper - the user sees a clear elevation prompt for that action, and read-only status never elevates. systemd `--user` mutations need no root. The owner may refine the exact elevation UX during the Wave-1 build.
+- **Security invariant (non-negotiable):** never pass the PAT on argv, never read `~/.forge/runner.env`, never log service env that could contain it. The cockpit reads service state only; usage data comes from transcripts, not from any secret store.
 
-Rationale and trade-offs:
+### Decision 5 - Home for the code -> **in-repo `tools/runner-ui/` (accepted as recommended).**
 
-- **In-repo (recommended):** versions in lockstep with the scaffold it drives, shares the committed `forge.json` runner block and the documented PAT/private-only rules, one CI, immediately discoverable. It reads config + service names rather than importing `supervisor.mjs`, so it stays loosely coupled. Placed at `tools/runner-ui/` (not under `runner/`, which is the runtime asset) to keep "the thing that runs jobs" separate from "the thing that watches the fleet".
-- **Sibling repo (rejected for now):** cleaner "one fleet tool, many repos" story and an independent release cadence, but it would duplicate forge's conventions, add a second repo to maintain (which would itself want a runner), and complicate the private-only story. Revisit only if the UI graduates to managing runners for repos that do not vendor forge.
+A first-class tools directory, sibling to `runner/`, depending on the scaffold by *convention* (reads the `.claude/forge.json` runner block + the `forge-runner-<owner>-<repo>` naming), not by importing runner code.
+
+- **In-repo:** versions in lockstep with the scaffold it drives, shares the committed `forge.json` runner block and the documented PAT/private-only rules, one CI, immediately discoverable. It reads config + service names rather than importing `supervisor.mjs`, so it stays loosely coupled. Placed at `tools/runner-ui/` (not under `runner/`, which is the runtime asset) to keep "the thing that runs jobs" separate from "the thing that watches the fleet".
+- A **sibling repo** was considered and rejected for now: it would duplicate forge's conventions, add a second repo to maintain (which would itself want a runner), and complicate the private-only story. Revisit only if the cockpit graduates to managing runners for repos that do not vendor forge.
+
+### Accepted build phasing (owner-approved)
+
+The cockpit ships in three waves so epic #262's children map cleanly onto it:
+
+- **Wave 1** - app shell + runner fleet control (the PySide6 window, service discovery/status, start/stop with per-action elevation).
+- **Wave 2** - Claude usage / cost / token monitor (the transcript-reader + QtCharts panels).
+- **Wave 3** - embedded terminal (the ConPTY session via `pywinpty`, hosted in the window).
 
 ## Evidence - AC2 throwaway proof (real service state, cross-platform, no PAT)
 
-A disposable `tools/runner-ui/spike/probe.py` (Python, shell-out only, marked throwaway) was run to prove the chosen stack lists at least one REAL service's state cross-platform. **Note:** Python is not installed on the Windows host (only the Store alias stub), so the proof was run under **Python 3.14.4 inside WSL2** - which, via interop, listed BOTH the Linux services (native) and the Windows services (`sc.exe`), from ONE process. This both proves AC2 and validates the Decision-3 single-process cross-boundary control model.
+A disposable `probe.py` (Python, shell-out only, marked throwaway; it lived under `tools/runner-ui/spike/` on the spike branch and is not carried onto main) was run to prove the chosen stack lists at least one REAL service's state cross-platform. **Note:** Python is not installed on the Windows host (only the Store alias stub), so the proof was run under **Python 3.14.4 inside WSL2** - which, via interop, listed BOTH the Linux services (native) and the Windows services (`sc.exe`), from ONE process. This both proves AC2 and validates the Decision-4 single-process cross-boundary control model (and, in reverse, that a Windows-native cockpit can drive the WSL Linux runner).
 
 Verbatim output (2026-07-24):
 
@@ -87,21 +100,27 @@ host: Linux 6.18.33.2-microsoft-standard-WSL2  python 3.14.4
 
 The Windows side was also confirmed standalone from PowerShell (`Get-Service forge-runner*` -> `forge-runner-dngioidev-forge` Running), so the tool works whether launched from Windows or from WSL once Python is provisioned on the Windows side. The probe shells out with argv lists (never `shell=True`), reads only service state, and never opens `runner.env`.
 
-## Owner decisions required before build (AC1 sign-off)
+## Owner sign-off (received 2026-07-24)
 
-Per AC1, build (AC2+ productionization / epic #262 AC2+) is blocked until the owner approves these four picks. Recommendations restated so the owner can approve or amend each:
+Per AC1, build (epic #262 AC2+) was blocked until the owner approved. The owner has now signed off; the six decisions below are **Accepted** (final, not recommendations):
 
-1. **UI approach** - approve **local web app (FastAPI, localhost-only)**, or choose the **Textual TUI** fallback (or a desktop GUI, not recommended).
-2. **Python stack + deps** - approve **CPython >= 3.12 + `uv` (committed lockfile) + minimal deps (`fastapi`/`uvicorn`, or `textual`)**, and approve **provisioning Python on the Windows host** (currently absent) as a prerequisite. Fallback: pip-tools `requirements.txt`.
-3. **Control strategy / privilege UX** - approve **shell-out-only + WSL2 two-way interop + PAT-free read-only default**; decide the **mutation privilege UX** on Windows (auto-elevate per action vs launch-elevated banner). The shell-out and PAT-free invariants are proven and not in question; only the elevation UX needs the owner's call.
-4. **Code home** - approve **in-repo `tools/runner-ui/`**, or direct a **sibling repo**.
+1. **UI approach** - APPROVED: native Python **desktop app on PySide6 (Qt)**. The localhost web-app recommendation is rejected in favor of a real native cockpit window (QtCharts + embedded terminal in one window).
+2. **Charter** - APPROVED expanded: a Claude Code **cockpit** - runner fleet control PLUS embedded terminal, live monitoring, and Claude usage/pricing/tokens (from local `~/.claude/projects/**/*.jsonl` transcripts).
+3. **Python stack + deps** - APPROVED: **CPython >= 3.12 + `uv` (committed `uv.lock`)**; deps **PySide6, pywinpty, psutil** (+ stdlib `subprocess`); `fastapi`/`uvicorn` dropped. Provisioning Python on the Windows host (`winget install Python.Python.3.12`) is an approved build prerequisite.
+4. **Control strategy / privilege UX** - APPROVED: **shell-out-only + WSL2 two-way interop + PAT-free read-only default** (proven), with **per-action UAC elevation via a ShellExecute "runas" helper** for Windows NSSM mutations; systemd `--user` needs no root. Exact elevation UX may be refined during Wave-1.
+5. **Code home** - APPROVED: **in-repo `tools/runner-ui/`**.
+6. **Phasing** - APPROVED: **Wave 1** app shell + runner fleet control; **Wave 2** Claude usage/cost/token monitor; **Wave 3** embedded terminal.
 
-Once approved, the real tool is built fresh via plan/execute under `tools/runner-ui/`; the `spike/` directory and the `spike/263-runner-ui-adr` branch are discarded (spike branches never merge).
+The real tool is now built fresh via plan/execute under `tools/runner-ui/`; the throwaway `spike/` proof and the `spike/263-runner-ui-adr` branch are discarded (spike branches never merge).
 
 ## Consequences
 
-- **AC1 pending owner sign-off.** This ADR resolves all four questions with grounded recommendations and a working cross-platform proof; it does not authorize build until the owner approves the four picks above (escalated on #263).
-- **Throwaway / recovery:** the spike branch is deleted after write-up; nothing there merges. This ADR lands on `main` alongside ADR-0001..0005. Any code sketched in `spike/` is re-implemented properly through plan/execute, never cherry-picked.
+- **AC1 is signed off.** This ADR resolves all four questions with grounded, owner-approved decisions and a working cross-platform proof. Build (epic #262 AC2+) is now authorized against the accepted phasing.
+- **Charter widened.** #262's scope grows from "runner UI" to "Claude Code cockpit" (fleet control + terminal + monitoring + usage/cost). Epic children should map to the three approved waves.
+- **New build prerequisite.** Python must be provisioned on the Windows host (`winget install Python.Python.3.12`) before Wave 1, since only the Store stub is present today.
+- **Accepted costs.** A native PySide6 app means a larger install (~100MB onefile), more code than a web/TUI tool, and an LGPL dependency (acceptable). These are the deliberate price of the native cockpit.
+- **Security posture unchanged.** The cockpit reads service state only, never reads `~/.forge/runner.env`, never surfaces the PAT; usage data comes from local transcripts, not from any secret store.
+- **Throwaway / recovery:** the spike branch and its `tools/runner-ui/spike/` proof are discarded; nothing there merges. This ADR is the only artifact that lands on `main`, alongside ADR-0001..0005. Any code sketched in the spike is re-implemented properly through plan/execute, never cherry-picked.
 
 ## Sources (grounded)
 
@@ -109,4 +128,5 @@ Once approved, the real tool is built fresh via plan/execute under `tools/runner
 - This repo - `runner/README.md`, `runner/windows/setup-runner.ps1` (NSSM service, LocalSystem, admin-gated install), `runner/linux/install-service.sh` (systemd `--user`, no root), `runner/linux/supervisor.mjs` (shell-out to `gh`/`docker`, PAT never on argv/never logged).
 - This repo - `.claude/forge.json` `runner` block: `{ enabled, labels, sharing:"repo", windows:"native" }`.
 - Live host (2026-07-24): `Get-Service forge-runner*` and the WSL2 probe run captured above - real `forge-runner-dngioidev-forge` / `-iomanage` services + systemd `--user` units + docker job containers.
-- WSL2 two-way interop (Windows binaries on the WSL PATH; `wsl.exe` from Windows) - the basis for single-process cross-OS control on one box.
+- WSL2 two-way interop (Windows binaries on the WSL PATH; `wsl.exe` from Windows) - the basis for single-process cross-OS control on one box, and the path a Windows-native cockpit uses to drive the WSL Linux runner.
+- Local Claude usage data - per-session JSONL transcripts under `~/.claude/projects/**/*.jsonl`, each assistant turn's recorded `usage` token counts x published per-model rates - the grounded, API-free basis for the cockpit's usage/pricing/token panels (the same source `/cost` and ccusage-style tools read).
