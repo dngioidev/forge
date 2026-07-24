@@ -50,12 +50,15 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [ADR-0002 — Console/control distribution](decisions/0002-console-control-distribution.md) — *(superseded by ADR-0003)* the console + control plane ship as repo tooling run from a checkout, not in the packaged plugin (#91).
 - [ADR-0003 — Remove forge-control + console](decisions/0003-remove-control-console.md) — the local control plane + console are removed (unused for a solo interactive workflow; token/scope reduction). Preserved in the v0.5.0 tag; the pipeline (skills/board/gates/care) is unaffected (#95).
 - [ADR-0004 — Remove the multi-backend plane](decisions/0004-remove-multi-backend-plane.md) — the CLI role-swap / multi-backend plane (Plane B) is removed as unwired dead weight; role subagents stay Claude-native. Preserved in the v0.5.0 tag (#99).
+- [ADR-0006 — Runner fleet cockpit](decisions/0006-runner-ui.md) — a native PySide6 (Qt) desktop "cockpit" for the local self-hosted runner fleet: Python 3.12 + `uv`, shell-out-only + WSL2 interop, PAT-free read-only default, in-repo at `tools/runner-ui/` (epic #262).
 
 ## Guides
 
 - [Install](guides/install.md) — forge into any project: prerequisites, marketplace install, init adopt-vs-create, doctor, per-feature wiring, superpowers migration.
 - [Handbook](guides/handbook.md) — daily use: the laws, the cockpit, the Build loop, every human interaction point, care/knowledge/scale flows, gates + situations tables.
 - [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, environment.
+- [Runner adoption](guides/runner-adoption.md) — give a private repo free CI on a local self-hosted runner: adopt (new + existing), per-OS host setup, the cockpit, the manual service runbook, and a known-issues table.
+- [Runner cockpit](../tools/runner-ui/README.md) — the native PySide6 desktop app (`tools/runner-ui/`) that manages the runner fleet: install (Python 3.12 + `uv`), `uv run forge-cockpit`, fleet view / control / logs / install (ADR-0006).
 - [Rollback runbook](guides/rollback-runbook.md) — find the previous digest, redeploy it (one command), verify, record; forward-only-migration exception.
 - [Data-recovery runbook](guides/data-recovery-runbook.md) — restore → verify → postmortem; never debug against the only copy.
 
