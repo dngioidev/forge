@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QStyle,
     QTableView,
@@ -36,11 +37,31 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from forge_cockpit import discovery
-from forge_cockpit.discovery import Fleet, RunnerEntry
+from forge_cockpit import control, discovery, logs
+from forge_cockpit.control import ActionResult
+from forge_cockpit.discovery import NSSM, SYSTEMD, Fleet, RunnerEntry
+from forge_cockpit.log_view import LogViewer
+from forge_cockpit.logs import LogRead
 
 #: The discovery entry point the tab drives; injectable so tests stay hermetic.
 Discover = Callable[[], Fleet]
+
+#: Control seam: (entry, action) -> ActionResult. Injectable for hermetic tests.
+Controller = Callable[[RunnerEntry, str], ActionResult]
+
+#: Log-read seam: (entry) -> LogRead. Injectable for hermetic tests.
+ReadLogs = Callable[[RunnerEntry], LogRead]
+
+#: User-notification seam: (level, title, text) -> None. Defaults to a QMessageBox;
+#: tests inject a recorder so no modal dialog blocks the offscreen suite.
+Notifier = Callable[[str, str, str], None]
+
+#: Mechanisms whose service can be started/stopped/restarted (AC1). Docker job
+#: containers are ephemeral one-job runners — not controllable as a service.
+_CONTROLLABLE = frozenset({NSSM, SYSTEMD})
+
+#: Mechanisms that have a viewable service log source (AC2).
+_LOGGABLE = frozenset({NSSM, SYSTEMD})
 
 #: Column order for the fleet table (AC1: every field the overview must show).
 _COLUMNS: tuple[str, ...] = (
@@ -199,6 +220,29 @@ class _DiscoveryWorker(QRunnable):
         self.signals.finished.emit(fleet)
 
 
+class _Job(QRunnable):
+    """Runs an arbitrary callable off the GUI thread (control actions, AC1/AC3).
+
+    Reuses the #265 worker pattern: the callable runs on a thread-pool thread and
+    its result — or the string of any exception — is emitted via
+    :class:`_WorkerSignals`, delivered to the GUI thread by a queued connection so
+    a slow ``nssm``/``systemctl`` mutation never blocks the window.
+    """
+
+    def __init__(self, fn: Callable[[], object]) -> None:
+        super().__init__()
+        self._fn = fn
+        self.signals = _WorkerSignals()
+
+    def run(self) -> None:  # pragma: no cover - exercised via the thread pool
+        try:
+            result = self._fn()
+        except Exception as exc:  # never let an action crash the worker thread
+            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.signals.finished.emit(result)
+
+
 class FleetTab(QWidget):
     """The "Runner fleet" tab: a table over the fleet model + async refresh.
 
@@ -216,6 +260,13 @@ class FleetTab(QWidget):
     fleet_loaded = Signal()
     #: Emitted on the GUI thread when a refresh failed (carries the error string).
     refresh_failed = Signal(str)
+    #: Emitted on the GUI thread after a control action completes (carries the
+    #: :class:`ActionResult`) — the test seam for AC1/AC3 success+failure surfacing.
+    action_completed = Signal(object)
+    #: Emitted on the GUI thread when a control action's worker itself errored.
+    action_failed = Signal(str)
+    #: Emitted on the GUI thread when a log viewer is opened (carries the viewer).
+    log_viewer_opened = Signal(object)
 
     def __init__(
         self,
@@ -224,12 +275,22 @@ class FleetTab(QWidget):
         auto_refresh_ms: int = 0,
         pool: QThreadPool | None = None,
         initial_refresh: bool = True,
+        controller: Controller = control.control,
+        read_logs: ReadLogs = logs.read_logs,
+        notifier: Notifier | None = None,
+        log_tail_lines: int = logs.DEFAULT_TAIL_LINES,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._discover = discover
         self._pool = pool or QThreadPool.globalInstance()
         self._busy = False
+        self._controller = controller
+        self._read_logs = read_logs
+        self._notifier = notifier or self._default_notifier
+        self._log_tail_lines = log_tail_lines
+        #: Live references to opened log viewers so they are not GC'd (AC2).
+        self._log_viewers: list[LogViewer] = []
         #: Thread ident of the last discovery call — proves it ran off the GUI
         #: thread (AC3). ``None`` until the first refresh runs.
         self.last_discovery_thread_ident: int | None = None
@@ -263,6 +324,7 @@ class FleetTab(QWidget):
         self.table = QTableView()
         self.table.setModel(self._model)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
@@ -270,6 +332,28 @@ class FleetTab(QWidget):
         header.setStretchLastSection(True)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
+
+        # -- control bar (AC1/AC2/AC3): act on the selected runner ---------- #
+        controls = QHBoxLayout()
+        self.start_button = QPushButton("Start")
+        self.start_button.setToolTip("Start the selected runner service")
+        self.start_button.clicked.connect(lambda: self._do_control(control.START))
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setToolTip("Stop the selected runner service")
+        self.stop_button.clicked.connect(lambda: self._do_control(control.STOP))
+        self.restart_button = QPushButton("Restart")
+        self.restart_button.setToolTip("Restart the selected runner service")
+        self.restart_button.clicked.connect(lambda: self._do_control(control.RESTART))
+        self.logs_button = QPushButton("View logs")
+        self.logs_button.setToolTip("View + tail the selected runner's logs")
+        self.logs_button.clicked.connect(self._view_logs)
+        for btn in (self.start_button, self.stop_button, self.restart_button, self.logs_button):
+            controls.addWidget(btn)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.table.selectionModel().selectionChanged.connect(self._sync_controls)
+        self._sync_controls()
 
     # -- accessors (for tests / callers) ---------------------------------- #
     @property
@@ -334,3 +418,101 @@ class FleetTab(QWidget):
     def _end_refresh(self) -> None:
         self._busy = False
         self.refresh_button.setEnabled(True)
+        self._sync_controls()
+
+    # -- selection + control state (AC1/AC2) ------------------------------- #
+    def selected_entry(self) -> RunnerEntry | None:
+        """The :class:`RunnerEntry` for the selected row, or ``None`` if none."""
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        row = rows[0].row()
+        if 0 <= row < self._model.rowCount():
+            return self._model.entry_at(row)
+        return None
+
+    def _sync_controls(self, *_args: object) -> None:
+        """Enable start/stop/restart/logs for the selected row, per mechanism.
+
+        No selection -> all disabled. A docker job container is not a controllable
+        service and has no service log source, so its controls stay disabled.
+        """
+        entry = self.selected_entry()
+        controllable = entry is not None and entry.mechanism in _CONTROLLABLE
+        loggable = entry is not None and entry.mechanism in _LOGGABLE
+        for btn in (self.start_button, self.stop_button, self.restart_button):
+            btn.setEnabled(controllable)
+        self.logs_button.setEnabled(loggable)
+
+    # -- control actions (AC1/AC3) ----------------------------------------- #
+    def _do_control(self, action: str) -> None:
+        """Run ``action`` on the selected runner off the GUI thread (AC1/AC3).
+
+        Disables the control bar while the action is in flight, then surfaces the
+        :class:`ActionResult` — a status line on success, and additionally a
+        warning dialog on failure. The action itself (``nssm`` / ``systemctl`` /
+        UAC elevation) runs on a thread-pool thread so the window never blocks.
+        """
+        entry = self.selected_entry()
+        if entry is None or entry.mechanism not in _CONTROLLABLE:
+            return
+        self._set_control_buttons_enabled(False)
+        self.status_label.setText(f"{action.capitalize()}ing '{entry.name}'…")
+
+        job = _Job(lambda: self._controller(entry, action))
+        job.signals.finished.connect(self._on_control_done)
+        job.signals.failed.connect(self._on_control_error)
+        self._pool.start(job)
+
+    def _on_control_done(self, result: ActionResult) -> None:
+        self.status_label.setText(result.message)
+        if not result.ok:
+            self._notifier("warning", f"{result.action.capitalize()} failed", result.message)
+        self._sync_controls()
+        self.action_completed.emit(result)
+
+    def _on_control_error(self, message: str) -> None:
+        text = f"The control action could not run: {message}"
+        self.status_label.setText(text)
+        self._notifier("critical", "Control action error", text)
+        self._sync_controls()
+        self.action_failed.emit(message)
+
+    def _set_control_buttons_enabled(self, on: bool) -> None:
+        for btn in (self.start_button, self.stop_button, self.restart_button, self.logs_button):
+            btn.setEnabled(on)
+
+    def _default_notifier(self, level: str, title: str, text: str) -> None:
+        """Surface a message via a modal dialog (the real, non-test notifier)."""
+        fn = getattr(QMessageBox, level, QMessageBox.information)
+        fn(self, title, text)
+
+    # -- log viewing (AC2) ------------------------------------------------- #
+    def _view_logs(self) -> None:
+        """Open a log viewer for the selected runner (reads off the GUI thread)."""
+        entry = self.selected_entry()
+        if entry is None or entry.mechanism not in _LOGGABLE:
+            return
+        viewer = self.open_log_viewer(entry)
+        viewer.show()
+
+    def open_log_viewer(self, entry: RunnerEntry) -> LogViewer:
+        """Build (but do not show) a :class:`LogViewer` for ``entry``.
+
+        The viewer is handed a reader bound to this entry + the configured tail
+        depth; it reads on the shared thread pool. A live reference is retained so
+        the dialog is not garbage-collected while open.
+        """
+        def read() -> LogRead:
+            return self._read_logs(entry, lines=self._log_tail_lines)
+
+        title = f"Logs — {entry.name} ({entry.mechanism})"
+        viewer = LogViewer(title, read, pool=self._pool, parent=self)
+        self._log_viewers.append(viewer)
+        viewer.destroyed.connect(lambda *_: self._forget_viewer(viewer))
+        self.log_viewer_opened.emit(viewer)
+        return viewer
+
+    def _forget_viewer(self, viewer: LogViewer) -> None:
+        if viewer in self._log_viewers:
+            self._log_viewers.remove(viewer)
