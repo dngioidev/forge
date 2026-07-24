@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.17.1 — 2026-07-24
+
+### Fixes
+
+- repo-scoped service name + explicit target so one host serves many repos (#260) (#261) ([#260](https://github.com/dngioidev/forge/issues/260) [#261](https://github.com/dngioidev/forge/issues/261))
+
 ## v0.17.0 — 2026-07-23
 
 ### Fixes
