@@ -2,9 +2,10 @@
 
 Constructs the real QMainWindow under the offscreen Qt platform, asserts the
 three tabs are wired — the live "Runner fleet" fleet overview (#265), the live
-"Usage / cost" dashboard (#274), and the remaining "Terminal" TODO placeholder —
-then tears down, proving the app launches without a desktop session on the CI
-runner.
+"Usage / cost" dashboard (#274), and the live "Terminal" embedded terminal
+(#275) — then tears down, proving the app launches without a desktop session on
+the CI runner. The terminal is built with a fake pty spawn and autostart off, so
+the smoke test never launches a real shell.
 """
 
 from __future__ import annotations
@@ -14,21 +15,29 @@ import pytest
 from forge_cockpit.app import (
     COCKPIT_TABS,
     FLEET_TAB_TITLE,
+    TERMINAL_TAB_TITLE,
     USAGE_TAB_TITLE,
     WINDOW_TITLE,
     CockpitWindow,
 )
 from forge_cockpit.discovery import Fleet
 from forge_cockpit.fleet_view import FleetTab
+from forge_cockpit.terminal import TerminalTab
 from forge_cockpit.usage_view import UsageSnapshot, UsageTab
 
 #: Tab titles that are live panels (not TODO placeholders) — skipped by the
 #: placeholder assertion below.
-_LIVE_TITLES = {FLEET_TAB_TITLE, USAGE_TAB_TITLE}
+_LIVE_TITLES = {FLEET_TAB_TITLE, USAGE_TAB_TITLE, TERMINAL_TAB_TITLE}
+
+
+def _never_spawn(argv, cols, rows):
+    """A pty spawn seam that fails loudly — the smoke test must never spawn one."""
+    raise AssertionError(f"terminal spawned a real shell in the smoke test: {argv!r}")
 
 
 def _make_window() -> CockpitWindow:
-    """A fully hermetic cockpit window: no discovery, no transcript parse, no timers."""
+    """A fully hermetic cockpit window: no discovery, no transcript parse, no timers,
+    and no real shell (fake pty spawn + terminal autostart off)."""
     return CockpitWindow(
         fleet_discover=lambda: Fleet(runners=()),
         fleet_auto_refresh_ms=0,
@@ -36,6 +45,8 @@ def _make_window() -> CockpitWindow:
         usage_load=lambda: UsageSnapshot(),
         usage_auto_refresh_ms=0,
         usage_initial_refresh=False,
+        terminal_spawn=_never_spawn,
+        terminal_autostart=False,
     )
 
 
@@ -74,6 +85,17 @@ def test_usage_cost_tab_is_the_live_usage_view(app, qtbot):
     idx = next(i for i in range(window.tabs.count()) if window.tabs.tabText(i) == USAGE_TAB_TITLE)
     assert isinstance(window.tabs.widget(idx), UsageTab)
     assert window.usage_tab is window.tabs.widget(idx)
+
+
+def test_terminal_tab_is_the_live_terminal_view(app, qtbot):
+    window = _make_window()
+    qtbot.addWidget(window)
+
+    idx = next(
+        i for i in range(window.tabs.count()) if window.tabs.tabText(i) == TERMINAL_TAB_TITLE
+    )
+    assert isinstance(window.tabs.widget(idx), TerminalTab)
+    assert window.terminal_tab is window.tabs.widget(idx)
 
 
 def test_placeholder_tabs_keep_their_todo(app, qtbot):
