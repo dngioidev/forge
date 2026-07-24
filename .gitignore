@@ -5,3 +5,9 @@ runner.env
 *.runner.env
 runner/windows/actions-runner/
 runner/windows/logs/
+
+# forge cockpit (tools/runner-ui/) — Python venv + local state; uv.lock IS committed
+tools/runner-ui/.venv/
+tools/runner-ui/**/__pycache__/
+tools/runner-ui/.pytest_cache/
+*.pyc
