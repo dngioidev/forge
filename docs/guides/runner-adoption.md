@@ -94,6 +94,144 @@ Steady state is **JIT + `--ephemeral`**: the supervisor mints a one-hour, single
    It prepends Git Bash to PATH (so `bash`-shebang tools resolve to Git Bash, not WSL), mints a JIT config per job, and runs one ephemeral job at a time.
 5. Route the Windows leg to it: set `test-windows`'s `runs-on` to `[self-hosted, windows, forge-local]` and `forge.json` `runner.windows` to `"native"`. Keep a nightly hosted `windows-latest` run if you want a clean-image drift check.
 
+## Managing the service
+
+Once the durable service is installed (systemd `--user` on Linux, NSSM on Windows),
+this is the day-to-day runbook for operating it by hand. It is the manual version of
+what the runner UI tool (#262) will later automate. Every service is **repo-scoped**:
+the name is `forge-runner-<owner>-<repo>` (#260), e.g. `forge-runner-dngioidev-forge`,
+so one host can serve several repos side by side. Substitute your own `<owner>`/`<repo>`
+(and `-ServiceName` / `--name` if you installed under a custom name) below.
+
+> **Ephemeral-JIT, so "nothing running" is normal.** The supervisor mints a one-hour,
+> single-job runner per job, so **between jobs the repo shows 0 online runners** even
+> though the service is healthy. Judge health by the *service* being Running, not by a
+> momentary online count.
+
+### Check status
+
+Confirm the service is up:
+
+- **Windows (per-repo + any legacy):** `Get-Service forge-runner*`
+- **Linux:** `systemctl --user status forge-runner-<owner>-<repo>`
+
+Confirm GitHub sees a runner online for this repo (online count; expect 0 at rest, 1
+mid-job):
+
+```sh
+gh api repos/<owner>/<repo>/actions/runners --jq '[.runners[] | select(.status=="online")] | length'
+```
+
+For the full go/no-go across the whole setup (private-repo guard, prerequisites, PAT
+store, registration, scaffold, version), run the preflight:
+
+```sh
+forge:runner-check     # or /forge:runner-check inside Claude Code; prints one READY / NOT READY verdict
+```
+
+### View / tail logs
+
+- **Windows:** NSSM captures the service's stdout/stderr under `runner\windows\logs\`
+  (`service.out.log`, `service.err.log`). Tail the error log:
+
+  ```powershell
+  Get-Content runner\windows\logs\service.err.log -Tail 50 -Wait
+  ```
+
+- **Linux:** the unit logs to the journal:
+
+  ```sh
+  journalctl --user -u forge-runner-<owner>-<repo> -f
+  ```
+
+### Start / stop / restart
+
+- **Windows (elevated shell):**
+
+  ```powershell
+  Restart-Service forge-runner-<owner>-<repo>   # or Stop-Service / Start-Service
+  ```
+
+  (Equivalently `nssm restart|stop|start forge-runner-<owner>-<repo>`.)
+
+- **Linux (no elevation needed for `--user`):**
+
+  ```sh
+  systemctl --user restart forge-runner-<owner>-<repo>   # or stop / start
+  ```
+
+### Inspect the service's target
+
+Useful when a service is running but the repo shows 0 online runners even mid-job -
+the service may be registered to a *different* repo (the classic #260 mis-target the
+ephemeral-JIT model otherwise hides). Read back the resolved `FORGE_RUNNER_OWNER` /
+`FORGE_RUNNER_REPO`:
+
+- **Windows:**
+
+  ```powershell
+  nssm dump forge-runner-<owner>-<repo>                       # full config, INCLUDING the secret
+  nssm get forge-runner-<owner>-<repo> AppEnvironmentExtra    # owner/repo/PATH - INCLUDING the secret
+  ```
+
+  > **Do NOT print the PAT.** `nssm dump` and `nssm get ... AppEnvironmentExtra` both
+  > echo the service environment, which contains `FORGE_RUNNER_PAT=<token>` in the
+  > clear. Never run these where the output is shared, screen-recorded, pasted into an
+  > issue, or written to a log. If you only need the target, eyeball the
+  > `FORGE_RUNNER_OWNER` / `FORGE_RUNNER_REPO` fields and discard the rest; if a PAT is
+  > exposed, revoke it (it is single-repo, Administration-only, and cheap to rotate).
+  > `forge:doctor` / `forge:runner-check` surface the resolved owner/repo **without**
+  > ever reading or printing the PAT - prefer them for a routine target check.
+
+- **Linux:** the PAT lives in the gitignored `~/.forge/runner.env` (loaded via
+  `EnvironmentFile=`), **not** inline in the unit, so viewing the unit is safe:
+
+  ```sh
+  systemctl --user cat forge-runner-<owner>-<repo>   # shows Environment=FORGE_RUNNER_OWNER/REPO; PAT stays in the env file
+  ```
+
+### Uninstall
+
+Removes the service (stop + disable/remove + delete the unit). Your PAT store
+(`~/.forge/runner.env`) is left untouched.
+
+- **Windows (elevated shell):**
+
+  ```powershell
+  cd runner\windows
+  .\setup-runner.ps1 -UninstallService                          # add -ServiceName <name> for a specific service
+  ```
+
+- **Linux:**
+
+  ```sh
+  cd runner/linux
+  bash install-service.sh --uninstall                           # add --name <unit> for a specific unit
+  ```
+
+### Spotting and removing a redundant legacy `forge-runner`
+
+The default service name changed from a bare `forge-runner` to the repo-scoped
+`forge-runner-<owner>-<repo>` (#260), and **nothing is renamed automatically** - an
+install from before the change keeps its old bare `forge-runner` until you re-install.
+After adopting the repo-scoped name you can end up with **both** a `forge-runner` and a
+`forge-runner-<owner>-<repo>` serving the same repo (double registration). Spot it:
+
+- **Windows:** `Get-Service forge-runner*` - a bare `forge-runner` **alongside** the
+  repo-scoped one is the redundant legacy service.
+- **Linux:** `systemctl --user list-units 'forge-runner*'` (or
+  `ls ~/.config/systemd/user/forge-runner*.service`) - a bare `forge-runner.service`
+  next to the repo-scoped unit is the leftover.
+
+Remove the legacy one by passing the old name to the normal uninstaller:
+
+- **Windows (elevated):** `.\setup-runner.ps1 -UninstallService -ServiceName forge-runner`
+- **Linux:** `bash install-service.sh --uninstall --name forge-runner`
+
+(To deliberately *keep* the old bare name instead, pass `-ServiceName forge-runner` /
+`--name forge-runner` at install time - see "Serving multiple repos from one host" in
+`runner/README.md`.)
+
 ## Moving other workflows onto the runner
 
 Any job can move to `runs-on: [self-hosted, linux, forge-local]` — **except `docker://` container actions**, which don't work on the containerized runner (see #238). Replace them with a **pinned, SHA-256-verified binary** step. Examples already converted in this repo:
