@@ -114,12 +114,22 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Show uv + resolved Python
-        # Depend only on `uv` being on PATH; uv discovers/provisions the
-        # interpreter itself, so we never call bare `python` here.
+        # The self-hosted runner service does not inherit the full Machine PATH,
+        # so each step (a fresh shell) prepends the known toolchain dirs itself:
+        # Python 3.12 + uv (WinGet Links). uv then discovers/provisions the
+        # interpreter, so we never call bare `python` here.
+        shell: pwsh
         run: |
+          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
           uv --version
           uv python find
       - name: Sync deps from committed uv.lock
-        run: uv sync --frozen
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
+          uv sync --frozen
       - name: Run cockpit test suite (headless)
-        run: uv run pytest -q
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
+          uv run pytest -q
