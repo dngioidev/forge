@@ -55,8 +55,23 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm verify
+      # The self-hosted runner service does not inherit the full Machine PATH
+      # (its AppEnvironmentExtra replaces rather than extends it), so each step
+      # (a fresh shell) prepends the Machine PATH itself. Without System32 et al.
+      # on PATH, vitest's worker-teardown spawn fails with "The system cannot
+      # find the path specified." and exits 1 even though all tests pass (#278).
+      # Machine PATH goes in FRONT of the step $env:PATH, which already resolves
+      # node/pnpm from setup-node — keep that on the end.
+      - name: Install deps (pnpm)
+        shell: powershell
+        run: |
+          $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + $env:PATH
+          pnpm install --frozen-lockfile
+      - name: Run pnpm verify
+        shell: powershell
+        run: |
+          $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + $env:PATH
+          pnpm verify
 
   # actionlint runs as a pinned, checksum-verified BINARY — not a docker://
   # container action. On the containerized forge-local runner a container action
