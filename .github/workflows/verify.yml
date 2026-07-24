@@ -118,18 +118,18 @@ jobs:
         # so each step (a fresh shell) prepends the known toolchain dirs itself:
         # Python 3.12 + uv (WinGet Links). uv then discovers/provisions the
         # interpreter, so we never call bare `python` here.
-        shell: pwsh
+        shell: powershell
         run: |
           $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
           uv --version
           uv python find
       - name: Sync deps from committed uv.lock
-        shell: pwsh
+        shell: powershell
         run: |
           $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
           uv sync --frozen
       - name: Run cockpit test suite (headless)
-        shell: pwsh
+        shell: powershell
         run: |
           $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
           uv run pytest -q
