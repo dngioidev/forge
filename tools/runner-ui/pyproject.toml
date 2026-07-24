@@ -1,0 +1,31 @@
+[project]
+name = "forge-cockpit"
+version = "0.1.0"
+description = "Forge Claude Code cockpit — native PySide6 desktop app to manage the local self-hosted runner fleet (ADR-0006, epic #262)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "LGPL-3.0-or-later" }
+dependencies = [
+    "PySide6>=6.7",
+    "pywinpty>=2.0; sys_platform == 'win32'",
+    "psutil>=5.9",
+]
+
+[project.scripts]
+forge-cockpit = "forge_cockpit.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["forge_cockpit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

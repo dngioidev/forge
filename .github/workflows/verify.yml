@@ -96,3 +96,40 @@ jobs:
           node-version: 22
       - run: npm install -g @anthropic-ai/claude-code
       - run: claude plugin validate ./plugin --strict
+
+  # Cockpit (tools/runner-ui/) Python suite — Windows self-hosted leg only.
+  # PySide6 + the pywinpty terminal dep live on Windows and the CI target for AC4
+  # is the native Windows runner; the Linux leg is an ephemeral Docker container
+  # with no Python, so this suite is deliberately NOT run there (ADR-0006 #272).
+  # Runs headless via the Qt offscreen platform — no desktop session needed.
+  cockpit-python:
+    permissions:
+      contents: read
+    runs-on: [self-hosted, windows, forge-local]
+    defaults:
+      run:
+        working-directory: tools/runner-ui
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Show uv + resolved Python
+        # The self-hosted runner service does not inherit the full Machine PATH,
+        # so each step (a fresh shell) prepends the known toolchain dirs itself:
+        # Python 3.12 + uv (WinGet Links). uv then discovers/provisions the
+        # interpreter, so we never call bare `python` here.
+        shell: powershell
+        run: |
+          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
+          uv --version
+          uv python find
+      - name: Sync deps from committed uv.lock
+        shell: powershell
+        run: |
+          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
+          uv sync --frozen
+      - name: Run cockpit test suite (headless)
+        shell: powershell
+        run: |
+          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
+          uv run pytest -q
