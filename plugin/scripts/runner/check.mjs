@@ -34,6 +34,7 @@ import { loadConfig, normalizeRunner, CONFIG_RELPATH } from '../lib/config.mjs';
 import {
   ok, warn, fail,
   fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion, windowsLabels,
+  detectRunnerServices, serviceTargetResults,
 } from '../lib/runner-checks.mjs';
 
 const MIN_NODE = [22, 13];
@@ -135,7 +136,7 @@ async function checkScaffold({ cwd, runner, results }) {
  * all degrade to a warn/fail result rather than crashing the command.
  */
 export async function runCheck(ctx) {
-  const { gh, cwd, log, exec = run } = ctx;
+  const { gh, cwd, log, exec = run, detectServices = detectRunnerServices } = ctx;
   const results = [];
 
   const cfg = await loadConfig(cwd);
@@ -175,11 +176,13 @@ export async function runCheck(ctx) {
 
   // Check 5 — registration + online for the configured labels (reused). Skipped only
   // when the private-repo guard couldn't resolve owner/name (no repo → can't probe).
+  let online = null;
   if (vis.ok && vis.owner && vis.name) {
     // offlineLevel:'fail' — for the adoption gate, no online runner means you can't
     // actually run CI, so it's a blocker (not doctor's advisory warn). A gh-api
     // failure still degrades to a warn inside the probe (graceful degradation).
-    results.push(await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner-online', legNote: '(linux leg)', offlineLevel: 'fail' }));
+    online = await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner-online', legNote: '(linux leg)', offlineLevel: 'fail' });
+    results.push(online);
     // Windows leg: when native, a Windows runner must be online too — probe the
     // windows label set (linux → windows). Hosted needs no self-hosted registration.
     if (runner.windows === 'native') {
@@ -188,6 +191,17 @@ export async function runCheck(ctx) {
   } else {
     results.push(warn('runner-online', 'skipped the runner registration probe — repo owner/name unresolved', 'confirm gh is authenticated and you are inside the repo'));
   }
+
+  // Mis-target diagnosis (#260 AC5): surface the local service's resolved owner/repo,
+  // and when a service is present but the configured repo shows 0 online matching
+  // runners, hint that it may be targeting a different repo (JIT-ephemeral hides it).
+  // Best-effort + argv-only (exec is injectable); never crashes, never prints the PAT.
+  try {
+    const services = await detectServices({ exec });
+    for (const r of serviceTargetResults({ services, hasOnline: online?.level === 'ok', configuredOwner: vis.owner, configuredName: vis.name })) {
+      results.push(r);
+    }
+  } catch { /* diagnosis is advisory only */ }
 
   // Check 6 — scaffold present.
   await checkScaffold({ cwd, runner, results });

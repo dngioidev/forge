@@ -63,23 +63,34 @@ verdict with a fix hint per line. It never reads or prints the PAT. Re-run until
    bash install-service.sh
    ```
 
-   It writes `~/.config/systemd/user/forge-runner.service` with
-   `EnvironmentFile=%h/.forge/runner.env`, `Environment=FORGE_RUNNER_CONCURRENCY=1`,
+   It writes a **repo-scoped** unit `~/.config/systemd/user/forge-runner-<owner>-<repo>.service`
+   (e.g. `forge-runner-dngioidev-forge.service`) with
+   `EnvironmentFile=%h/.forge/runner.env`,
+   `Environment=FORGE_RUNNER_OWNER=<owner> FORGE_RUNNER_REPO=<repo>`,
+   `Environment=FORGE_RUNNER_CONCURRENCY=1`,
    `ExecStart=/usr/bin/env node <abs>/supervisor.mjs`, `Restart=on-failure`,
    `RestartSec=10`, `WantedBy=default.target`; runs `systemctl --user daemon-reload`
-   then `systemctl --user enable --now forge-runner`; and attempts
+   then `systemctl --user enable --now <unit>`; and attempts
    `loginctl enable-linger "$USER"` so the service survives logout/reboot. If linger
    needs privileges it prints the exact `sudo loginctl enable-linger <you>` to run
    (it does not hard-fail). It warns if `~/.forge/runner.env` is missing (the
-   service would fail to start). Check it:
+   service would fail to start), and warns (never blocks) if the install target
+   differs from `gh repo view` for the current directory. Check it:
 
    ```sh
-   systemctl --user status forge-runner
-   journalctl --user -u forge-runner -f
+   systemctl --user status forge-runner-<owner>-<repo>
+   journalctl --user -u forge-runner-<owner>-<repo> -f
    ```
 
-   Remove it with `bash install-service.sh --uninstall` (disable --now + delete the
-   unit; your `~/.forge/runner.env` is left untouched).
+   The target owner/repo is resolved from `--owner`/`--repo`, then
+   `FORGE_RUNNER_OWNER`/`FORGE_RUNNER_REPO`, then the scaffold-time defaults; pass
+   `--name <unit>` to override the unit name. Because the name is repo-derived, a
+   **second repo installs a distinct unit** rather than clobbering the first. The
+   installer **refuses** to overwrite a same-named unit that targets a *different*
+   owner/repo unless you pass `--force`. Remove it with
+   `bash install-service.sh --uninstall` (add `--name <unit>` to target a specific
+   unit; disable --now + delete the unit; your `~/.forge/runner.env` is left
+   untouched).
 4. **Quick test (foreground)** — to sanity-check the supervisor before installing
    the service:
 
@@ -107,14 +118,21 @@ verdict with a fix hint per line. It never reads or prints the PAT. Re-run until
    .\setup-runner.ps1 -InstallService
    ```
 
-   This registers a `forge-runner` Windows service via NSSM that runs
-   `.\setup-runner.ps1 -Serve` with `AppDirectory = runner\windows`,
-   `Start = SERVICE_AUTO_START`, restart-on-exit, and
-   `AppEnvironmentExtra=FORGE_RUNNER_PAT=<value from $env:FORGE_RUNNER_PAT>`. The PAT
-   is read from the session env at install time and **never** written to a committed
-   file, `setx /M`, or this repo; the command errors if `$env:FORGE_RUNNER_PAT` is
-   unset or the shell isn't elevated. Remove it with
-   `.\setup-runner.ps1 -UninstallService` (elevated).
+   This registers a **repo-scoped** `forge-runner-<owner>-<repo>` Windows service via
+   NSSM (override with `-ServiceName`) that runs `.\setup-runner.ps1 -Serve` with
+   `AppDirectory = runner\windows`, `Start = SERVICE_AUTO_START`, restart-on-exit, and
+   `AppEnvironmentExtra=FORGE_RUNNER_PAT=<value from $env:FORGE_RUNNER_PAT>;FORGE_RUNNER_OWNER=<owner>;FORGE_RUNNER_REPO=<repo>;PATH=<gh dir>;…`.
+   The explicit `FORGE_RUNNER_OWNER`/`FORGE_RUNNER_REPO` make the service target
+   *explicit* — `-Serve` registers JIT runners to that repo, not to whatever checkout
+   the script happens to live in. The PAT is read from the session env at install time
+   and **never** written to a committed file, `setx /M`, or this repo; the command
+   errors if `$env:FORGE_RUNNER_PAT` is unset or the shell isn't elevated, and warns
+   (never blocks) if the install target differs from `gh repo view` for the current
+   directory. Because the name is repo-derived, a **second repo installs a distinct
+   service** rather than clobbering the first; the install **refuses** to overwrite a
+   same-named service that targets a *different* owner/repo unless you pass `-Force`.
+   Remove it with `.\setup-runner.ps1 -UninstallService` (elevated; add
+   `-ServiceName <name>` to target a specific service).
 3. **Quick test (foreground)** — before installing the service:
 
    ```powershell
@@ -124,6 +142,33 @@ verdict with a fix hint per line. It never reads or prints the PAT. Re-run until
 4. To route `verify.yml`'s Windows leg to this native runner, change the
    `test-windows` job's `runs-on` to `[self-hosted, windows, forge-local]` — that
    makes the per-PR Windows check free too.
+
+## Serving multiple repos from one host
+
+The service/unit name is **repo-derived** (`forge-runner-<owner>-<repo>`, sanitized
+to a valid name), so one host can durably serve **several private repos at once** —
+each `forge:init --runner` + install creates a *distinct* service that no longer
+stops+removes a sibling repo's. Each service carries its own explicit target in its
+environment (`FORGE_RUNNER_OWNER`/`FORGE_RUNNER_REPO`), so a runner always registers
+to the repo it was installed *for* — never silently to the wrong repo (a mistake the
+ephemeral-JIT model otherwise hides, since nothing shows at rest). One fine-grained
+PAT scoped to `Administration: read & write` on **all** the served repos works for
+every service.
+
+- **Guard rails:** the install **warns** if the target differs from `gh repo view`
+  for the current directory, and **refuses** (`-Force` / `--force` to override) to
+  overwrite a same-named service that targets a *different* owner/repo.
+- **Diagnose a mis-target:** `forge:doctor` / `forge:runner-check` surface each local
+  service's *resolved* owner/repo, and warn when a service is running but the
+  configured repo has **0 online** matching runners ("the service may be targeting a
+  different repo").
+
+> **Backward-compat:** the default name changed from a bare `forge-runner` to the
+> repo-derived `forge-runner-<owner>-<repo>`. **Existing installs keep their old
+> `forge-runner` service until you re-install** — nothing is renamed automatically.
+> To keep the old name, pass the override (`-ServiceName forge-runner` on Windows,
+> `--name forge-runner` on Linux). To uninstall a legacy service, pass that same
+> override to `-UninstallService` / `--uninstall`.
 
 ## Isolation notes
 

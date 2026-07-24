@@ -262,6 +262,37 @@ describe('runDoctor — runner health (AC-225.4)', () => {
     expect(byName(res, 'runner')[0].level).toBe('ok');
   });
 
+  it('#260 AC5: service present but 0 online matching runners → mis-target WARN hint', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    // no online runner for the configured repo…
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'offline', labels: FORGE_LABELS }]),
+    }));
+    // …but a local service is installed targeting a DIFFERENT repo (JIT-ephemeral hides this)
+    const detectServices = async () => [{ name: 'forge-runner-dngioidev-iomanage', owner: 'dngioidev', repo: 'iomanage' }];
+    const res = await runDoctor({ gh, cwd, log: noop, detectServices });
+    const svc = byName(res, 'runner-service')[0];
+    expect(svc.level).toBe('warn');
+    expect(svc.msg).toMatch(/different repo/i);
+    expect(svc.msg).toMatch(/dngioidev\/iomanage/);
+    // advisory only — the mis-target hint is a warn, never flips doctor to failing
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('runner-service');
+  });
+
+  it('#260 AC5: online runner + service present → ok surfacing the resolved target', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const detectServices = async () => [{ name: 'forge-runner-dngioidev-forge', owner: 'dngioidev', repo: 'forge' }];
+    const res = await runDoctor({ gh, cwd, log: noop, detectServices });
+    const svc = byName(res, 'runner-service')[0];
+    expect(svc.level).toBe('ok');
+    expect(svc.msg).toMatch(/dngioidev\/forge/);
+  });
+
   it('PAT-looking secret in a committed file → FAIL', async () => {
     const token = 'ghp_' + 'x'.repeat(36); // shape-valid classic PAT, not a real secret
     const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n', files: { 'src/leak.js': `const t = "${token}";\n` } });

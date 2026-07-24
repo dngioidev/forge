@@ -13,6 +13,7 @@ import { getRepoInfo, getProjectFields } from './lib/board.mjs';
 import {
   ok, warn, fail, skip,
   fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion,
+  detectRunnerServices, serviceTargetResults,
 } from './lib/runner-checks.mjs';
 
 /**
@@ -23,27 +24,40 @@ import {
  * call is argv-only (no shell), degrades to a warn (never a crash) when gh lacks
  * scope or the API 4xxs, and never echoes a discovered secret's value.
  */
-async function checkRunner({ gh, cwd, runner, results }) {
+async function checkRunner({ gh, cwd, runner, results, exec = run, detect = detectRunnerServices }) {
   // Private-only guard (decision 3): a self-hosted runner on a PUBLIC repo is a
   // fork-PR RCE. Belt-and-suspenders with init's refusal (#224). Resolved first,
   // but the registration probe is the only gh-dependent leg — the secret-store
   // scan below is git-only and always runs (a committed PAT is unsafe on any repo).
   const vis = await fetchRepoVisibility(gh);
+  let online = null;
   if (!vis.ok) {
     results.push(warn('runner', `enabled, but repo visibility could not be determined (${vis.stderr})`, 'run inside the repo with gh authenticated'));
   } else if (!vis.isPrivate) {
     results.push(fail('runner', 'runner.enabled on a PUBLIC repo — forks can run untrusted code on your machine (fork-PR RCE)', 'set runner.enabled=false, or keep the repo private (ADR-0005 decision 3)'));
   } else {
-    results.push(await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner' }));
+    online = await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner' });
+    results.push(online);
   }
 
   results.push(await checkRunnerSecretStore({ cwd }));
   const version = await checkRunnerVersion({ gh, cwd });
   if (version) results.push(version);
+
+  // Mis-target diagnosis (#260 AC5): surface the local service's resolved owner/repo
+  // and, when the configured repo shows 0 online matching runners, hint that the
+  // service may be targeting a different repo (JIT-ephemeral hides this). Best-effort:
+  // never crashes, degrades to nothing when no service is detectable.
+  try {
+    const services = await detect({ exec });
+    for (const r of serviceTargetResults({ services, hasOnline: online?.level === 'ok', configuredOwner: vis.owner, configuredName: vis.name })) {
+      results.push(r);
+    }
+  } catch { /* diagnosis is advisory only */ }
 }
 
 export async function runDoctor(ctx) {
-  const { gh, cwd, log } = ctx;
+  const { gh, cwd, log, exec = run, detectServices = detectRunnerServices } = ctx;
   const results = [];
 
   // gh auth + project scope
@@ -161,7 +175,7 @@ export async function runDoctor(ctx) {
 
   // local self-hosted runner (ADR-0005 / #225 AC4) — silent unless runner.enabled
   if (cfg.ok && cfg.runner?.enabled === true) {
-    await checkRunner({ gh, cwd, runner: cfg.runner, results });
+    await checkRunner({ gh, cwd, runner: cfg.runner, results, exec, detect: detectServices });
   }
 
   // statusline wired (info-level) — local settings first (that's where init writes it)
