@@ -1,0 +1,2 @@
+{"type":"assistant","sessionId":"sess-C","timestamp":"2026-07-22T00:00:00.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":2,"output_tokens":9,"cache_read_input_tokens":100,"cache_creation_input_tokens":50}}}
+{"type":"assistant","sessionId":"sess-C","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":7,"cache_read_input_tokens":7,"cache_creation_input_tokens":7}}}
