@@ -170,6 +170,11 @@ every service.
 > `--name forge-runner` on Linux). To uninstall a legacy service, pass that same
 > override to `-UninstallService` / `--uninstall`.
 
+> **Operating an installed service day-to-day** (check status, tail logs,
+> start/stop/restart, inspect the target, uninstall, and spotting/removing a redundant
+> legacy `forge-runner`) is covered by the **Managing the service** cheat-sheet in the
+> adoption guide: [`docs/guides/runner-adoption.md`](../docs/guides/runner-adoption.md#managing-the-service).
+
 ## Isolation notes
 
 - **Linux:** ephemeral one-job-per-container (`docker compose run --rm`), fresh
