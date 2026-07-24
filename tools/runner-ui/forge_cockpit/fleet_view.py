@@ -42,6 +42,7 @@ from forge_cockpit.control import ActionResult
 from forge_cockpit.discovery import NSSM, SYSTEMD, Fleet, RunnerEntry
 from forge_cockpit.log_view import LogViewer
 from forge_cockpit.logs import LogRead
+from forge_cockpit.provision_view import ProvisionDialog
 
 #: The discovery entry point the tab drives; injectable so tests stay hermetic.
 Discover = Callable[[], Fleet]
@@ -267,6 +268,8 @@ class FleetTab(QWidget):
     action_failed = Signal(str)
     #: Emitted on the GUI thread when a log viewer is opened (carries the viewer).
     log_viewer_opened = Signal(object)
+    #: Emitted on the GUI thread when the install/uninstall dialog is opened (#267).
+    provision_dialog_opened = Signal(object)
 
     def __init__(
         self,
@@ -279,6 +282,7 @@ class FleetTab(QWidget):
         read_logs: ReadLogs = logs.read_logs,
         notifier: Notifier | None = None,
         log_tail_lines: int = logs.DEFAULT_TAIL_LINES,
+        provisioner: Callable[..., object] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -289,8 +293,11 @@ class FleetTab(QWidget):
         self._read_logs = read_logs
         self._notifier = notifier or self._default_notifier
         self._log_tail_lines = log_tail_lines
+        self._provisioner = provisioner
         #: Live references to opened log viewers so they are not GC'd (AC2).
         self._log_viewers: list[LogViewer] = []
+        #: Live references to opened provision dialogs so they are not GC'd (#267).
+        self._provision_dialogs: list[ProvisionDialog] = []
         #: Thread ident of the last discovery call — proves it ran off the GUI
         #: thread (AC3). ``None`` until the first refresh runs.
         self.last_discovery_thread_ident: int | None = None
@@ -350,6 +357,14 @@ class FleetTab(QWidget):
         for btn in (self.start_button, self.stop_button, self.restart_button, self.logs_button):
             controls.addWidget(btn)
         controls.addStretch(1)
+        # Install / uninstall a runner service (#267) — not tied to a selection; it
+        # opens a dialog to pick the target owner/repo. PAT stays out of band.
+        self.provision_button = QPushButton("Install / uninstall…")
+        self.provision_button.setToolTip(
+            "Install or uninstall a runner service for a repo (drives the setup scripts)"
+        )
+        self.provision_button.clicked.connect(self._open_provision)
+        controls.addWidget(self.provision_button)
         layout.addLayout(controls)
 
         self.table.selectionModel().selectionChanged.connect(self._sync_controls)
@@ -516,3 +531,44 @@ class FleetTab(QWidget):
     def _forget_viewer(self, viewer: LogViewer) -> None:
         if viewer in self._log_viewers:
             self._log_viewers.remove(viewer)
+
+    # -- install / uninstall (#267) ---------------------------------------- #
+    def _open_provision(self) -> None:
+        """Open the install/uninstall dialog, prefilled from the selection."""
+        dialog = self.open_provision_dialog()
+        dialog.show()
+
+    def _current_entries(self) -> tuple[RunnerEntry, ...]:
+        """The current fleet snapshot — feeds the dialog's clobber guard (#267 AC4)."""
+        return tuple(self._model.entry_at(r) for r in range(self._model.rowCount()))
+
+    def open_provision_dialog(self) -> ProvisionDialog:
+        """Build (but do not show) the :class:`ProvisionDialog`, prefilled + wired.
+
+        Prefills owner/repo from the selected runner's target when known, hands the
+        dialog the live fleet snapshot for its clobber/mis-target guard (AC4), and
+        shares this tab's notifier + thread pool. A live reference is retained so the
+        dialog is not garbage-collected while open.
+        """
+        entry = self.selected_entry()
+        owner = entry.target.owner if entry and entry.target.known else ""
+        repo = entry.target.repo if entry and entry.target.known else ""
+        kwargs: dict[str, object] = {
+            "fleet_entries": self._current_entries,
+            "notifier": self._notifier,
+            "default_owner": owner or "",
+            "default_repo": repo or "",
+            "pool": self._pool,
+            "parent": self,
+        }
+        if self._provisioner is not None:
+            kwargs["provisioner"] = self._provisioner
+        dialog = ProvisionDialog(**kwargs)
+        self._provision_dialogs.append(dialog)
+        dialog.destroyed.connect(lambda *_: self._forget_provision_dialog(dialog))
+        self.provision_dialog_opened.emit(dialog)
+        return dialog
+
+    def _forget_provision_dialog(self, dialog: ProvisionDialog) -> None:
+        if dialog in self._provision_dialogs:
+            self._provision_dialogs.remove(dialog)
