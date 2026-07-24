@@ -272,6 +272,30 @@ describe('runCheck — adoption readiness (#245)', () => {
     expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('runner-version');
   });
 
+  it('#260 AC5: a service present but 0 online matching runners → mis-target WARN hint', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: true, windows: 'hosted' });
+    await writeScaffold(cwd);
+    // no online runner for this repo…
+    const { gh } = fakeGh(routes({ runners: runnersResponse([{ id: 1, status: 'offline', labels: FORGE_LINUX }]) }));
+    // …but a local service IS installed, targeting a DIFFERENT repo (JIT-ephemeral hides this)
+    const detectServices = async () => [{ name: 'forge-runner-dngioidev-iomanage', owner: 'dngioidev', repo: 'iomanage' }];
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec(), detectServices });
+    const svc = byName(res, 'runner-service')[0];
+    expect(svc.level).toBe('warn');
+    expect(svc.msg).toMatch(/different repo/i);
+    expect(svc.msg).toMatch(/dngioidev\/iomanage/); // resolved service target surfaced
+  });
+
+  it('#260 AC5: no local service detected → no runner-service result (silent)', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: true, windows: 'hosted' });
+    await writeScaffold(cwd);
+    const { gh } = fakeGh(routes({ runners: runnersResponse([{ id: 1, status: 'online', labels: FORGE_LINUX }]) }));
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec(), detectServices: async () => [] });
+    expect(byName(res, 'runner-service')).toEqual([]);
+  });
+
   it('missing forge.json → NOT READY (config fail pointing at init)', async () => {
     const cwd = await gitRepo();
     // no forge.json written

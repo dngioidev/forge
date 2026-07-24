@@ -33,8 +33,12 @@ param(
   [switch]$Serve,
   [switch]$InstallService,
   [switch]$UninstallService,
+  [switch]$Force,
   [string]$Owner = '{{OWNER}}',
   [string]$Repo = '{{REPO}}',
+  # Service name (#260). Empty -> repo-derived forge-runner-<owner>-<repo>, so a
+  # second repo installs a DISTINCT service instead of clobbering the first.
+  [string]$ServiceName = '',
   [string]$Label = '{{LABEL}}',
   [string]$RunnerVersion = '{{RUNNER_VERSION}}',
   # Published SHA-256 for actions-runner-win-x64-<version>.zip, auto-pinned at
@@ -90,6 +94,11 @@ function Serve-Runner {
   if (-not $env:FORGE_RUNNER_PAT) {
     throw 'FORGE_RUNNER_PAT is not set - the service must supply it (NSSM AppEnvironmentExtra). Refusing to start.'
   }
+  # Explicit target (#260): the service env is authoritative, not the script's
+  # substituted -Owner/-Repo defaults, so a runner registers to the repo the service
+  # was installed FOR - never silently to whatever checkout the script lives in.
+  if ($env:FORGE_RUNNER_OWNER) { $script:Owner = $env:FORGE_RUNNER_OWNER }
+  if ($env:FORGE_RUNNER_REPO) { $script:Repo = $env:FORGE_RUNNER_REPO }
   if ($Owner -like '{{*') { throw 'owner/repo not substituted - re-run forge:init --runner in the target repo.' }
   # Prefer Git Bash's bash over WSL's System32 bash.exe. forge ships a bash-script
   # dispatcher (plugin/bin/forge) and its tests shell out to `bash`; if WSL bash wins
@@ -124,7 +133,42 @@ function Serve-Runner {
   }
 }
 
-$ServiceName = 'forge-runner'
+# Sanitize an owner/repo token into a valid service-name fragment: lowercase, every
+# run of non-alphanumerics collapsed to a single '-', trimmed of edge dashes (#260).
+function ConvertTo-ServiceSlug([string]$Value) {
+  $s = ($Value.ToLower() -replace '[^a-z0-9]+', '-')
+  return $s.Trim('-')
+}
+
+# Repo-derived service name forge-runner-<owner>-<repo> (#260), so a second repo
+# installs a DISTINCT service instead of stopping+removing the first's.
+function Get-DerivedServiceName([string]$O, [string]$R) {
+  $name = 'forge-runner'
+  $os = ConvertTo-ServiceSlug $O
+  $rs = ConvertTo-ServiceSlug $R
+  if ($os) { $name = "$name-$os" }
+  if ($rs) { $name = "$name-$rs" }
+  return $name
+}
+
+# Best-effort: read an existing service's resolved target (owner/repo) from its NSSM
+# AppEnvironmentExtra. Returns 'owner/repo' or $null. NEVER surfaces the PAT - only
+# FORGE_RUNNER_OWNER/REPO are extracted from the captured value.
+function Get-ServiceTarget([string]$Nssm, [string]$Name) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $envExtra = ''
+  try { $envExtra = (& $Nssm get $Name AppEnvironmentExtra 2>$null) -join "`n" } catch { $envExtra = '' }
+  finally { $ErrorActionPreference = $prev }
+  if (-not $envExtra) { return $null }
+  $o = [regex]::Match($envExtra, 'FORGE_RUNNER_OWNER=([^\s;]+)')
+  $r = [regex]::Match($envExtra, 'FORGE_RUNNER_REPO=([^\s;]+)')
+  if ($o.Success -and $r.Success) { return "$($o.Groups[1].Value)/$($r.Groups[1].Value)" }
+  return $null
+}
+
+# Empty -ServiceName -> repo-derived default (#260 AC2).
+if (-not $ServiceName) { $ServiceName = Get-DerivedServiceName $Owner $Repo }
 
 function Assert-Admin {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -156,6 +200,20 @@ function Install-Service {
     throw 'FORGE_RUNNER_PAT is not set in this session. Set it for THIS install session only (from your out-of-band store): $env:FORGE_RUNNER_PAT = ''<token>'' - never setx /M, never a committed file - then re-run -InstallService.'
   }
   $nssm = Get-Nssm
+  $target = "$Owner/$Repo"
+  # AC3 (#260): warn (never block) when the install target differs from the current
+  # directory's repo, so a wrong-checkout install is visible. Best-effort.
+  if (Get-Command gh -ErrorAction SilentlyContinue) {
+    $prevEAP0 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $currentRepo = ''
+    try { $currentRepo = (& gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>$null) } catch { $currentRepo = '' }
+    finally { $ErrorActionPreference = $prevEAP0 }
+    if ($currentRepo) { $currentRepo = ([string]$currentRepo).Trim() }
+    if ($currentRepo -and $currentRepo -ne $target) {
+      Write-Log "WARNING: install target '$target' differs from this directory's repo '$currentRepo' (gh repo view). Installing for '$target' anyway; pass -Owner/-Repo to change the target."
+    }
+  }
   $psExe = (Get-Command powershell -ErrorAction SilentlyContinue).Source
   if (-not $psExe) { $psExe = 'powershell' }
   $script = Join-Path $PSScriptRoot 'setup-runner.ps1'
@@ -183,6 +241,15 @@ function Install-Service {
   $ErrorActionPreference = 'Continue'
   try {
     if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
+      # AC4 (#260): refuse to clobber a same-named service that targets a DIFFERENT
+      # owner/repo unless -Force. A same-target service is an idempotent reinstall.
+      $existingTarget = Get-ServiceTarget $nssm $ServiceName
+      if ($existingTarget -and $existingTarget -ne $target -and -not $Force) {
+        throw "service '$ServiceName' already exists and targets '$existingTarget', but this install targets '$target'. Refusing to clobber a different repo's runner. Re-run with -Force to override, or pass -ServiceName to install a distinct service."
+      }
+      if ($existingTarget -and $existingTarget -ne $target) {
+        Write-Log "WARNING: -Force overriding existing '$ServiceName' (was '$existingTarget', now '$target')"
+      }
       Write-Log "existing '$ServiceName' found - removing before reinstall"
       & $nssm stop $ServiceName confirm 2>&1 | Out-Null
       & $nssm remove $ServiceName confirm 2>&1 | Out-Null
@@ -194,9 +261,10 @@ function Install-Service {
     & $nssm set $ServiceName AppRestartDelay 10000
     & $nssm set $ServiceName AppStdout (Join-Path $logDir 'service.out.log')
     & $nssm set $ServiceName AppStderr (Join-Path $logDir 'service.err.log')
-    # AppEnvironmentExtra = the PAT (from this session env) + a PATH that carries gh to
-    # LocalSystem. Never a literal token, never a committed file.
-    & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT" "PATH=$svcPath"
+    # AppEnvironmentExtra = the PAT (from this session env) + the explicit target
+    # owner/repo (#260, so Serve registers to the intended repo, not the checkout) +
+    # a PATH that carries gh to LocalSystem. Never a literal token, never a file.
+    & $nssm set $ServiceName AppEnvironmentExtra "FORGE_RUNNER_PAT=$env:FORGE_RUNNER_PAT" "FORGE_RUNNER_OWNER=$Owner" "FORGE_RUNNER_REPO=$Repo" "PATH=$svcPath"
     & $nssm start $ServiceName
   } finally {
     $ErrorActionPreference = $prevEAP

@@ -10,7 +10,8 @@
  * a gh/git call fails, and NEVER echoes a discovered secret's value.
  */
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { run } from './exec.mjs';
 import { fetchRunnerPin, parsePinnedVersion, compareVersions } from './runner-release.mjs';
 
@@ -118,6 +119,93 @@ export async function checkRunnerSecretStore({ cwd, checkName = 'runner-secret' 
     return warn(checkName, 'runner.env is not gitignored', 'add runner.env / **/.forge/ to .gitignore (/forge:init --runner does this)');
   }
   return ok(checkName, 'runner.env gitignored + untracked; no PAT in committed files');
+}
+
+/**
+ * Repo-derived local runner service/unit name (#260): forge-runner-<owner>-<repo>,
+ * each token sanitized to a valid service/unit name (lowercase, every run of
+ * non-alphanumerics -> a single '-', edge dashes trimmed). Kept in lockstep with the
+ * scaffold's ConvertTo-ServiceSlug / slugify so doctor can predict the default name.
+ * A second repo derives a DISTINCT name, so its install can't clobber the first's.
+ */
+export function deriveServiceName(owner, repo) {
+  const slug = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const parts = ['forge-runner'];
+  const o = slug(owner);
+  const r = slug(repo);
+  if (o) parts.push(o);
+  if (r) parts.push(r);
+  return parts.join('-');
+}
+
+/** Extract a service's resolved target (owner/repo) from a service-env blob. Only
+ *  FORGE_RUNNER_OWNER/REPO are read; a PAT in the same blob is never surfaced. */
+function extractServiceTarget(blob) {
+  const s = String(blob ?? '');
+  const owner = (s.match(/FORGE_RUNNER_OWNER=([^\s;"']+)/) || [])[1] || null;
+  const repo = (s.match(/FORGE_RUNNER_REPO=([^\s;"']+)/) || [])[1] || null;
+  return { owner, repo };
+}
+
+/**
+ * Best-effort discovery of the local runner service(s) and their RESOLVED target
+ * owner/repo (#260 AC5) — the signal that makes a mis-targeted, JIT-ephemeral runner
+ * diagnosable (nothing shows at rest in the intended repo). Cross-platform-tolerant:
+ *   - Windows: enumerate services named forge-runner* (`sc query`), then read each
+ *     service's target from its NSSM AppEnvironmentExtra.
+ *   - Linux: read forge-runner*.service units under the systemd --user dir and parse
+ *     their Environment=.
+ * Every call is argv-only; ANY failure (no sc/nssm, non-systemd host, unreadable
+ * unit) degrades to []. Never throws, never echoes the PAT. `exec` is injectable so
+ * doctor/runner-check (and tests) can drive it deterministically.
+ */
+export async function detectRunnerServices({ exec = run, platform = process.platform, home = homedir() } = {}) {
+  try {
+    if (platform === 'win32') {
+      const q = await exec('sc', ['query', 'type=', 'service', 'state=', 'all']);
+      if (!q.ok) return [];
+      const names = String(q.stdout || '').split(/\r?\n/)
+        .map((l) => (l.match(/^\s*SERVICE_NAME:\s*(\S+)/) || [])[1])
+        .filter((n) => n && /^forge-runner/i.test(n));
+      const out = [];
+      for (const name of names) {
+        const env = await exec('nssm', ['get', name, 'AppEnvironmentExtra']);
+        out.push({ name, ...extractServiceTarget(env.ok ? env.stdout : '') });
+      }
+      return out;
+    }
+    const dir = join(home, '.config', 'systemd', 'user');
+    let files;
+    try { files = await readdir(dir); } catch { return []; }
+    const out = [];
+    for (const f of files) {
+      if (!/^forge-runner.*\.service$/i.test(f)) continue;
+      const blob = await readFile(join(dir, f), 'utf8').catch(() => '');
+      out.push({ name: f.replace(/\.service$/i, ''), ...extractServiceTarget(blob) });
+    }
+    return out;
+  } catch {
+    return []; // diagnosis is strictly best-effort — never a crash
+  }
+}
+
+/**
+ * Turn detected runner service(s) into a result (#260 AC5). Surfaces each service's
+ * RESOLVED owner/repo; and when a service is present but the CONFIGURED repo shows 0
+ * online matching runners (`hasOnline` false), WARNS that the service may be targeting
+ * a different repo — the symptom JIT-ephemeral otherwise hides. Returns [] when no
+ * service is detected (silent skip). Pure given `services` (easy to unit-test).
+ */
+export function serviceTargetResults({ services, hasOnline, configuredOwner, configuredName, checkName = 'runner-service' }) {
+  if (!Array.isArray(services) || services.length === 0) return [];
+  const configured = configuredOwner && configuredName ? `${configuredOwner}/${configuredName}` : null;
+  const targets = services.map((s) => (s.owner && s.repo ? `${s.owner}/${s.repo}` : `${s.name} (target unknown)`));
+  if (hasOnline) {
+    return [ok(checkName, `local runner service detected, targeting ${targets.join(', ')}`)];
+  }
+  return [warn(checkName,
+    `a runner service is present (targeting ${targets.join(', ')}) but ${configured ?? 'this repo'} has 0 online matching runners - the service may be targeting a different repo (JIT-ephemeral hides this)`,
+    configured ? `confirm the service targets ${configured}, or run /forge:init --runner and enable a repo-scoped service` : 'confirm the service targets this repo')];
 }
 
 /**

@@ -421,3 +421,92 @@ describe('#254 — service install tooling (structural)', () => {
     expect(/^[\x00-\x7F]*$/.test(ps1)).toBe(true);
   });
 });
+
+describe('#260 — multi-repo service name + explicit target + clobber guard (structural)', () => {
+  const tpl = (p) => fileURLToPath(new URL(`../plugin/templates/runner/${p}`, import.meta.url));
+
+  it('linux install-service.sh derives a repo-scoped unit name (not a bare hardcode) + --name override', async () => {
+    const sh = await readFile(tpl('linux/install-service.sh'), 'utf8');
+    // AC2: repo-derived name, sanitized; the old bare `SERVICE=forge-runner` hardcode is gone
+    expect(sh).toContain('derive_service_name');
+    expect(sh).toContain('slugify');
+    expect(sh).toContain('name="forge-runner"'); // base, then -<owner>-<repo> appended
+    expect(sh).toContain('name="$name-$o"');
+    expect(sh).not.toMatch(/^SERVICE=forge-runner$/m); // no bare hardcoded unit name
+    // explicit --name override
+    expect(sh).toContain('--name');
+    expect(sh).toContain('NAME_OVERRIDE');
+  });
+
+  it('linux install-service.sh threads the explicit target into the unit Environment= (AC3)', async () => {
+    const sh = await readFile(tpl('linux/install-service.sh'), 'utf8');
+    expect(sh).toContain('Environment=FORGE_RUNNER_OWNER=$OWNER FORGE_RUNNER_REPO=$REPO');
+    // AC3 mismatch warning against the current directory's repo
+    expect(sh).toContain('gh repo view --json nameWithOwner');
+    expect(sh).toMatch(/differs from this directory/);
+    // scaffold-time default placeholders (substituted by init)
+    expect(sh).toContain('{{OWNER}}');
+    expect(sh).toContain('{{REPO}}');
+  });
+
+  it('linux install-service.sh refuses to clobber a different target unless --force (AC4)', async () => {
+    const sh = await readFile(tpl('linux/install-service.sh'), 'utf8');
+    expect(sh).toContain('existing_unit_target');
+    expect(sh).toMatch(/Refusing to clobber/);
+    expect(sh).toContain('--force');
+    expect(sh).toContain('FORCE');
+    // no PAT ever hardcoded
+    expect(sh).not.toMatch(/github_pat_[A-Za-z0-9_]{20,}/);
+    expect(sh).not.toMatch(/ghp_[A-Za-z0-9]{30,}/);
+  });
+
+  it('windows setup-runner.ps1 parametrizes the service name (repo-derived default + -ServiceName)', async () => {
+    const ps1 = await readFile(tpl('windows/setup-runner.ps1'), 'utf8');
+    // AC2: -ServiceName param + repo-derived default; the old hardcoded local is gone
+    expect(ps1).toContain('[string]$ServiceName');
+    expect(ps1).toContain('Get-DerivedServiceName');
+    expect(ps1).toContain('ConvertTo-ServiceSlug');
+    expect(ps1).toMatch(/if \(-not \$ServiceName\) \{ \$ServiceName = Get-DerivedServiceName/);
+    expect(ps1).not.toMatch(/^\$ServiceName = 'forge-runner'$/m); // bare hardcode removed
+    expect(ps1).toContain('[switch]$Force');
+  });
+
+  it('windows setup-runner.ps1 threads the explicit target into the service env + honors it at Serve (AC3)', async () => {
+    const ps1 = await readFile(tpl('windows/setup-runner.ps1'), 'utf8');
+    // AC3: owner/repo added to AppEnvironmentExtra alongside the PAT + PATH
+    expect(ps1).toContain('FORGE_RUNNER_OWNER=$Owner');
+    expect(ps1).toContain('FORGE_RUNNER_REPO=$Repo');
+    // Serve prefers the service env over the substituted script defaults
+    expect(ps1).toContain('$script:Owner = $env:FORGE_RUNNER_OWNER');
+    expect(ps1).toContain('$script:Repo = $env:FORGE_RUNNER_REPO');
+    // AC3 mismatch warning against the current directory's repo
+    expect(ps1).toContain('gh repo view --json nameWithOwner');
+    expect(ps1).toMatch(/differs from this directory/);
+  });
+
+  it('windows setup-runner.ps1 refuses to clobber a different target unless -Force (AC4)', async () => {
+    const ps1 = await readFile(tpl('windows/setup-runner.ps1'), 'utf8');
+    expect(ps1).toContain('Get-ServiceTarget');
+    expect(ps1).toMatch(/Refusing to clobber/);
+    expect(ps1).toMatch(/-eq \$target -and -not \$Force|-ne \$target -and -not \$Force/);
+    // AppEnvironmentExtra still never persists a literal token
+    expect(ps1).not.toMatch(/github_pat_[A-Za-z0-9_]{20,}/);
+    // stays ASCII-only (#240)
+    expect(/^[\x00-\x7F]*$/.test(ps1)).toBe(true);
+  });
+
+  it('scaffolds a repo-substituted install-service.sh (real owner/repo defaults, no placeholders)', async () => {
+    const cwd = await tmpCwd();
+    const { gh } = fakeGh(privateRoutes());
+    const res = await runRunnerInit({ gh, cwd }, parseArgs([]), noop);
+    expect(res.ok).toBe(true);
+    const sh = await readFile(join(cwd, 'runner', 'linux', 'install-service.sh'), 'utf8');
+    // owner/repo substituted into the scaffold-time defaults; no placeholder left
+    expect(sh).toContain('OWNER_DEFAULT="dngioidev"');
+    expect(sh).toContain('REPO_DEFAULT="forge"');
+    expect(sh).not.toContain('{{OWNER}}');
+    expect(sh).not.toContain('{{REPO}}');
+    // still derives the repo-scoped name (multi-repo safe out of the box)
+    expect(sh).toContain('derive_service_name');
+  });
+});
