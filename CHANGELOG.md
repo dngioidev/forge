@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.18.0 — 2026-07-24
+
+### Features
+
+- embedded pywinpty terminal + WSL session (#275) (#287) ([#275](https://github.com/dngioidev/forge/issues/275) [#287](https://github.com/dngioidev/forge/issues/287))
+- usage/cost/token QtCharts panel (#274) (#286) ([#274](https://github.com/dngioidev/forge/issues/274) [#286](https://github.com/dngioidev/forge/issues/286))
+- Claude usage/cost/token data core (#273) (#285) ([#273](https://github.com/dngioidev/forge/issues/273) [#285](https://github.com/dngioidev/forge/issues/285))
+- packaging + cross-platform run docs (#268) (#284) ([#268](https://github.com/dngioidev/forge/issues/268) [#284](https://github.com/dngioidev/forge/issues/284))
+- install/uninstall a runner service from the UI, secret-safe (#267) (#283) ([#267](https://github.com/dngioidev/forge/issues/267) [#283](https://github.com/dngioidev/forge/issues/283))
+- runner control actions + log viewing (#266) (#282) ([#266](https://github.com/dngioidev/forge/issues/266) [#282](https://github.com/dngioidev/forge/issues/282))
+- fleet overview screen with mis-target flags (#265) (#281) ([#265](https://github.com/dngioidev/forge/issues/265) [#281](https://github.com/dngioidev/forge/issues/281))
+- fleet discovery + status core (#264) (#277) ([#264](https://github.com/dngioidev/forge/issues/264) [#277](https://github.com/dngioidev/forge/issues/277))
+- PySide6 app shell + uv scaffold + interop helper (#272) (#276) ([#272](https://github.com/dngioidev/forge/issues/272) [#276](https://github.com/dngioidev/forge/issues/276))
+
+### Fixes
+
+- make test-windows PATH-self-sufficient on the stripped self-hosted runner env (#278) (#279) ([#278](https://github.com/dngioidev/forge/issues/278) [#279](https://github.com/dngioidev/forge/issues/279))
+
+### Docs
+
+- ADR-0006 accepted — PySide6 desktop cockpit, phased (#263) (#271) ([#263](https://github.com/dngioidev/forge/issues/263) [#271](https://github.com/dngioidev/forge/issues/271))
+- managing-the-service cheat-sheet (#269) (#270) ([#269](https://github.com/dngioidev/forge/issues/269) [#270](https://github.com/dngioidev/forge/issues/270))
+
 ## v0.17.1 — 2026-07-24
 
 ### Fixes
