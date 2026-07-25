@@ -1,140 +1,160 @@
-# ADR-0007 - Cross-GAI forge: MCP-first portable core + per-host instruction adapters
+# ADR-0007 - Cross-GAI forge: MCP-first portable core + full host-native adapters
 
-**Date:** 2026-07-25 - **Status:** **Proposed** (AC1 gate; needs owner sign-off before any build) - **Ticket:** #174 - **Route:** spike (deliverable = this decision record; the throwaway spike branch `spike/174-cross-gai-mcp-first` never merges - it is graduated to main after owner sign-off)
+**Date:** 2026-07-25 (revised 2026-07-26) - **Status:** **Proposed** (AC1 gate; needs owner sign-off before build) - **Ticket:** #174 - **Route:** spike (deliverable = this decision record; the throwaway spike branch `spike/174-cross-gai-mcp-first` never merges - it graduates to main after owner sign-off)
+
+## Goal (owner-set, 2026-07-26)
+
+**One forge plugin. Install it into a project whose team uses Claude Code, Codex, *or* Antigravity - and it works the same.** The owner explicitly raised the bar to **full parity with a host-native wrapper**: not "portable capabilities + degraded automation," but the automation layer re-homed into each host's own native mechanism. The only accepted trade is the one deliberate policy line below (auto-merge stays Claude-only, owner decision).
 
 ## Context
 
-Epic #174 proposes making forge natively runnable on GAI hosts other than Claude Code - concretely **Codex** (AGENTS.md) and **Antigravity/Gemini** (GEMINI.md) - by inverting the current architecture into an **MCP-first core**. Today only the graph is exposed over MCP (`plugin/mcp/graph/server.mjs`); the rest of the engine is reachable only as node CLIs invoked by Claude-Code skills, or as the `forge` bash dispatcher (`plugin/bin/forge`). Everything that orchestrates those CLIs - skills, agent cards, hooks, slash commands - is Claude-Code-native and does not port.
+Epic #174 makes forge natively runnable on GAI hosts other than Claude Code - concretely **Codex** and **Antigravity/Gemini** - by inverting the architecture into an **MCP-first core** plus per-host adapter emission. Today only the graph is exposed over MCP (`plugin/mcp/graph/server.mjs`); the rest of the engine is reachable only as node CLIs invoked by Claude-Code skills, or via the `forge` bash dispatcher (`plugin/bin/forge`). Everything that orchestrates those CLIs - skills, agent cards, hooks, slash commands - is Claude-Code-native today.
 
-AC1 is the gate: a design spike must resolve four things and the owner must approve before any build. This ADR is that spike's deliverable. Every recommendation below is grounded in the actual repo, not invented (crazy-mode ground gate). Where a cut line is a product/architecture decision rather than an engine fact, it is flagged and routed to the owner sign-off section instead of being decided here.
+AC1 is the gate: a design spike must resolve the architecture and the owner must approve before any build. This ADR is that spike's deliverable, grounded in (1) the actual repo and (2) **researched, current (2026-07-26) capability facts for both target hosts** - not assumptions.
 
 ### The repo as it actually is (grounded)
 
-- **Existing MCP server** - `plugin/mcp/graph/server.mjs`: a hand-rolled, zero-dependency JSON-RPC 2.0 server over newline-delimited stdio. It implements exactly `initialize`, `ping`, `tools/list`, `tools/call`. It exposes 6 read-only graph tools (`find_component`, `who_uses`, `similar_props`, `blast_radius`, `code_for_ticket`, `reuse_candidates`), each with an `inputSchema`, a local `validateInput` validator, and repo-root path canonicalization. Tool results are returned as `{ content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], isError }`. It re-reads `features.graph` from `.claude/forge.json` on every call (`makeGraphState`) so a config toggle needs no restart, and fails soft (teaching error) when the feature is off. Supporting layers: `db.mjs`, `indexer.mjs`, `queries.mjs`.
-- **MCP registration** - `plugin/.claude-plugin/plugin.json` -> `mcpServers.forge-graph = { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/mcp/graph/server.mjs"] }`. This is the only registration surface today and it is Claude-Code-plugin-manifest-shaped.
-- **The portable engine (node CLIs under `plugin/scripts/`)**, every one an ESM module exporting a pure-ish `runX(ctx, args)` that returns a structured `{ ok, ... }` object and only self-executes under an `isMain` guard:
-  - `board/` - `create, move, comment, close, digest, escalate, log, receipt, reparent, status`. Stateful: they mutate a GitHub Projects v2 board via `gh`. `move` returns `{ ok, changed, verified }`; `comment` takes a fixed `PHASES` enum and upserts a marker-keyed trail comment; `escalate` opens a decision (board -> blocked + decision comment + journal + pending file). All build a `makeBoardCtx` first (board IDs from `forge.json`).
-  - `gates/` - `acgate, depguard, docsync, groundgate, plandrift, situationgate, testintent`. Evaluators that read machine evidence (e.g. `acgate` parses vitest JSON) and return structured pass/fail. Mostly pure given inputs.
-  - `release/` - `core, readiness, release`. `computeReadiness` returns an `items[]` checklist of `{ name, level: pass|skip|fail, msg }`.
-  - `autopilot/` - `select, merge, ledger, newwork, perms, readiness`. `select.selectNext` is a pure ranking function; `merge` exposes `BAR_SIGNALS = ['ship','gates','reviewer','security','ci']` as a pure merge bar; `ledger` is the append-only run record.
-- **Shell dispatcher already exists** - `plugin/bin/forge`: `forge <area> <command> [args]` over areas `board, gate, autopilot, care, deploy, design, graph, learn, backends, agy, review`, plus `init|doctor|statusline|release`. It is a thin bash wrapper over `node "$ROOT/scripts/<area>/<cmd>.mjs"`. It is bash - a portability caveat on non-bash hosts (see Decision c).
-- **The Claude-Code-native layer that does NOT port** - `plugin/.claude-plugin/plugin.json` (manifest), `plugin/skills/**` (21 skills incl. autopilot/deliver/execute-agents - the orchestration prose + Skill auto-invocation), `plugin/agents/**` (12 role cards: scoper, planner, implementer, reviewer, security, test-architect, ...), `plugin/hooks/hooks.json` + `hooks/denylist.mjs` + `hooks/capture.mjs` (PreToolUse Bash denylist / PostToolUse Bash capture-to-journal), `plugin/commands/**` (slash commands), `plugin/monitors/**` (ci-watch, decisions-watch background watchers), statusline. None of these has an MCP or config equivalent - they are host-runtime features of Claude Code.
-- **`init` today** - `plugin/scripts/init.mjs` bootstraps the board (project, fields, delivery-log issue), writes `.claude/forge.json`, `.gitignore`, `.gitattributes`, and a verify CI template. **It does NOT emit AGENTS.md or GEMINI.md today.** Those two files exist in the repo root carrying a `<!-- forge:context:begin -->...<!-- forge:context:end -->` managed block (forge conventions + Windows-first shell rules), but no code writes them - they are currently hand-maintained. The mechanism to generate them exists and is proven: `plugin/scripts/lib/markers.mjs` `upsertBlock(text, marker, content)` rewrites only the marked span and preserves everything outside byte-for-byte (already used for the board `digest` block). This is the exact hook per-host adapter emission extends.
-- **Existing Antigravity integration is the INVERSE of this epic** - `plugin/scripts/agy/core.mjs`: forge *calls* headless Gemini (`agy --print <prompt> --add-dir <cwd> --model gemini-3.1-pro-high --mode plan --dangerously-skip-permissions`) as an opt-in, advisory, read-only second opinion (never gates, never edits). This epic is the reverse - forge running *on* Antigravity/Codex. The reusable knowledge is only the headless-CLI shape and the `features.agy` opt-in convention, not the call path.
+- **Existing MCP server** - `plugin/mcp/graph/server.mjs`: a hand-rolled, zero-dependency JSON-RPC 2.0 server over newline-delimited stdio. Implements `initialize`, `ping`, `tools/list`, `tools/call`; exposes 6 read-only graph tools each with an `inputSchema`, local `validateInput`, and repo-root path canonicalization. Results return as `{ content: [{ type:'text', text: JSON.stringify(payload,null,2) }], isError }`. Re-reads `features.graph` from `.claude/forge.json` per call; fails soft when off. Supporting layers: `db.mjs`, `indexer.mjs`, `queries.mjs`.
+- **MCP registration** - `plugin/.claude-plugin/plugin.json` -> `mcpServers.forge-graph = { command:"node", args:["${CLAUDE_PLUGIN_ROOT}/mcp/graph/server.mjs"] }`. The only registration surface today; Claude-plugin-manifest-shaped.
+- **The portable engine (node CLIs under `plugin/scripts/`)** - every one an ESM module exporting `runX(ctx, args) -> { ok, ... }`, self-executing only under an `isMain` guard: `board/` (create, move, comment, close, digest, escalate, log, receipt, reparent, status), `gates/` (acgate, depguard, docsync, groundgate, plandrift, situationgate, testintent), `release/` (core, readiness, release), `autopilot/` (select, merge, ledger, newwork, perms, readiness). Depend only on `node`, `gh`, `git`, and `.claude/forge.json`. **None imports a Claude-Code runtime API.**
+- **Shell dispatcher** - `plugin/bin/forge`: `forge <area> <command> [args]`, a thin **bash** wrapper over `node scripts/<area>/<cmd>.mjs`. Bash is the one portability caveat (Decision c).
+- **The Claude-Code-native layer** - `plugin/.claude-plugin/plugin.json`, `plugin/skills/**` (21 skills - orchestration prose + auto-invocation), `plugin/agents/**` (12 role cards), `plugin/hooks/hooks.json` + `hooks/denylist.mjs` + `hooks/capture.mjs` (PreToolUse Bash denylist / PostToolUse capture-to-journal), `plugin/commands/**` (slash commands), `plugin/monitors/**` (ci-watch, decisions-watch), statusline. **Key insight for this ADR: `denylist.mjs` and `capture.mjs` are already portable node scripts** - only their *registration* (Claude's `hooks.json` + Claude's stdin/stdout hook contract) is Claude-specific. The role cards are portable prompt text; only their frontmatter format is Claude-specific.
+- **`init` today** - `plugin/scripts/init.mjs` bootstraps the board, writes `.claude/forge.json`, `.gitignore`, `.gitattributes`, verify CI template. **Does NOT emit AGENTS.md/GEMINI.md today** - those exist hand-maintained with a `<!-- forge:context:begin -->...<!-- forge:context:end -->` block. The generator mechanism is proven: `plugin/scripts/lib/markers.mjs` `upsertBlock(text, marker, content)` rewrites only the marked span, byte-for-byte-preserving everything outside. This is exactly what per-host adapter emission extends.
 
-**Grounding verdict:** the portable engine IS genuinely host-agnostic. Every `scripts/**` CLI depends only on `node`, `gh`, `git`, and `.claude/forge.json` - nothing in the CLIs imports a Claude-Code runtime API. The MCP-first direction is therefore NOT blocked. The two honest portability caveats, addressed below, are (1) the dispatcher is bash, and (2) the auto-orchestration + safety layer is Claude-native with no portable equivalent.
+**Grounding verdict:** the portable engine IS genuinely host-agnostic. The MCP-first direction is not blocked. The one real caveat is the bash dispatcher (addressed in c).
 
 ---
 
-## (a) The split - portable core vs Claude-native orchestration
+## Host capability reality (researched 2026-07-26)
 
-Every high-value engine capability, and what it becomes off-Claude:
+The 2025 pessimism ("Codex/Antigravity can't re-home Claude's hooks or subagents") is **obsolete**. Both hosts shipped the full extension surface. This is the single most important finding of the spike and it is what makes full parity achievable.
 
-| Capability | Where it lives today | Portable? | Off-Claude form |
-| --- | --- | --- | --- |
-| Board create/move/comment/close/reparent/status | `scripts/board/*.mjs` (stateful gh mutations) | Portable (node CLI) | MCP tool (structured return) OR `forge board <cmd>` shell |
-| Board digest / receipt / log | `scripts/board/{digest,receipt,log}.mjs` | Portable | MCP tool or shell |
-| Escalate (halt-and-ask) | `scripts/board/escalate.mjs` | Portable | MCP tool (structured return needed) |
-| Mechanical gates (ac/dep/docsync/ground/plandrift/situation/testintent) | `scripts/gates/*.mjs` | Portable | MCP tools (structured pass/fail) |
-| Release readiness + cut | `scripts/release/*.mjs` | Portable | MCP tool (readiness) + shell (cut) |
-| Autopilot select / merge-bar / ledger | `scripts/autopilot/*.mjs` | Portable (pure fns) | MCP tools (structured return) |
-| Graph RAG queries | `mcp/graph/server.mjs` | Already MCP | Same MCP server (host-registered) |
-| Init / doctor / statusline wiring | `scripts/{init,doctor,statusline}.mjs` | Portable (node CLI) | `forge init` shell (emits per-host files) |
-| Skill auto-invocation (skill fires itself on trigger) | `plugin/skills/**` + Claude Skill runtime | Claude-native | LOST -> explicit invocation (host tells model to call the tool/skill) |
-| Subagent role fan-out (Task tool spawns scoper/planner/implementer/reviewer) | `plugin/agents/**` + Claude Task tool | Claude-native | DEGRADED -> single-context sequential, or host-native subagents where they exist |
-| Safety denylist (PreToolUse Bash block) | `plugin/hooks/denylist.mjs` + `hooks.json` | Claude-native hook wiring | PARTIAL/LOST -> re-implement in each host's hook mechanism, else manual discipline |
-| Journal capture (PostToolUse Bash capture) | `plugin/hooks/capture.mjs` + `hooks.json` | Claude-native hook wiring | PARTIAL/LOST -> host hook if present, else no auto-capture |
-| Slash commands (/forge:init etc.) | `plugin/commands/**` | Claude-native | LOST as slash UX -> `forge <cmd>` shell / MCP tool |
-| Background monitors (ci-watch, decisions-watch) | `plugin/monitors/**` | Claude-native trigger | LOST as auto-watch -> manual polling or external cron |
-| Statusline | `scripts/statusline.mjs` + settings | Claude-native surface | LOST off-Claude (no statusline API) |
+| Claude Code mechanism | Codex CLI native equivalent | Antigravity / Gemini CLI native equivalent |
+| --- | --- | --- |
+| **MCP tool servers** | `[mcp_servers.<name>]` in `~/.codex/config.toml` (stdio via `command`/`args`; project `.codex/config.toml`; `codex mcp add` helper) | Gemini CLI: `mcpServers` in `~/.gemini/settings.json`. Antigravity: `mcpServers` in `~/.gemini/config/mcp_config.json` or `.agents/mcp_config.json` (**no `httpUrl`/`timeout`; env-expansion buggy**) |
+| **Instructions file** (board law) | `AGENTS.md` (repo-root + `~/.codex/`, concatenated root->cwd) | `GEMINI.md` (+ honors portable `AGENTS.md`); Antigravity Rules under `.agents/rules/` |
+| **Slash commands** | `~/.codex/prompts/*.md` -> `/prompts:<name>` (deprecated in favor of **Skills**) | Gemini CLI: **TOML** in `.gemini/commands/*.toml` -> `/name`. Antigravity: markdown **Workflows** `/workflow-name` + `SKILL.md` skills |
+| **Hooks: deny + capture** | **`hooks.json`** (or `[hooks]` in config.toml): `PreToolUse` -> `permissionDecision:"deny"` / exit 2; `PostToolUse` -> capture. JSON on stdin. Search `~/.codex/` + `.codex/` | Gemini CLI: `hooks` in `settings.json` (`BeforeTool`/`AfterTool`, exit 2 or `"decision":"deny"`). Antigravity: `.agents/hooks.json` (`PreToolUse`/`PostToolUse`, `allow`/`deny`/`ask`) |
+| **Parallel subagents** | native subagents, **<=6 concurrent/session**; roles in `~/.codex/agents/*.toml` (`explorer`/`worker`/`default`) | Gemini CLI subagents (md+YAML in `.gemini/agents/`, parallel); Antigravity **Agent Manager** = genuine parallel orchestrator |
 
-The dividing line is clean: **anything that is a node CLI returning structured JSON is portable; anything that is Claude-Code runtime wiring (auto-invocation, Task fan-out, PreToolUse/PostToolUse hooks, slash UX, monitors, statusline) is native and either re-homes into the host's own mechanism or is honestly lost.**
+**Two caveats that shape the build, not blockers:**
+1. **No host has a *declarative* command denylist.** On all three (and on Claude), the denylist is *a hook script that inspects the command and returns deny*. forge already ships that script (`denylist.mjs`) - so parity here is "teach the script each host's stdin/stdout contract + register it," not "reimplement."
+2. **Antigravity CLI specifics are newer/less stable** than Gemini CLI's (several facts come from Google-employee blogs, and env-var expansion in its MCP config is currently buggy). The adapter must **version-gate** and prefer the portable `AGENTS.md` layer where formats diverge.
+
+---
+
+## (a) The split - portable core vs re-homable orchestration
+
+| Capability | Where it lives today | Off-Claude form (revised to full-parity) |
+| --- | --- | --- |
+| Board create/move/comment/close/reparent/status/digest/receipt/log | `scripts/board/*.mjs` | MCP tool (structured) OR `forge board <cmd>` shell - **Full** |
+| Escalate (halt-and-ask) | `scripts/board/escalate.mjs` | MCP tool - **Full** |
+| Mechanical gates (7) | `scripts/gates/*.mjs` | MCP tools - **Full** |
+| Release readiness + cut | `scripts/release/*.mjs` | MCP tool (readiness) + shell (cut) - **Full** |
+| Autopilot select / merge-bar / ledger | `scripts/autopilot/*.mjs` | MCP tools - **Full** (compute); live *merge action* Claude-only by policy |
+| Graph RAG | `mcp/graph/server.mjs` | Same server, host-registered - **Full** |
+| Init / doctor / statusline wiring | `scripts/{init,doctor,statusline}.mjs` | `forge init` emits per-host files - **Full** (statusline surface itself Claude-only) |
+| **Safety denylist** (block force-push/hard-reset) | `hooks/denylist.mjs` + Claude `hooks.json` | **Full** - same script, re-registered in Codex `hooks.json` / Gemini+Antigravity hooks (PreToolUse deny) |
+| **Journal capture** (learning loop) | `hooks/capture.mjs` + Claude `hooks.json` | **Full** - same script, re-registered as PostToolUse/AfterTool |
+| **Subagent role fan-out** (scoper/planner/implementer/reviewer) | `plugin/agents/**` + Task tool | **Full** - role prompts emitted as Codex `agents/*.toml` (<=6) / Gemini `agents/*.md` / Antigravity agents |
+| **Slash-command UX** | `plugin/commands/**` | **Full** - emitted as Codex prompts/skills / Gemini TOML commands / Antigravity workflows |
+| Skill auto-invocation | skills + Claude runtime | **Near-full** - model-driven on all hosts (prose + skill descriptions nudge, not runtime-enforced trigger) |
+| Background monitors (ci-watch/decisions-watch) | `plugin/monitors/**` | **Partial** - host session events (`SessionStart`/notify) where present, else manual/cron |
+| Statusline | `scripts/statusline.mjs` + settings | **Lost** off-Claude (no statusline API anywhere) - cosmetic only |
+
+The dividing line is no longer "portable vs Claude-native." It is: **one portable source of truth (node CLIs, MCP tools, hook scripts, role prompts) that `init` re-registers into whatever config shape the target host expects.** Only the statusline (cosmetic) and the runtime-*enforced* skill-trigger have no equivalent - and skill invocation is model-driven everywhere, so that gap is soft.
 
 ---
 
 ## (b) The MCP tool surface to expose
 
-**Recommendation on server home:** add a **sibling** `mcp/forge` server (new `plugin/mcp/forge/server.mjs`), NOT an extension of `mcp/graph`. Rationale grounded in the code: `mcp/graph` is single-feature, gated entirely on `features.graph`, and its `makeHandler`/`makeGraphState` are graph-db-specific. The board/gate/autopilot tools have a different lifecycle (they need `makeBoardCtx` + `gh`, not the graph db) and a different feature gate. Keep `forge-graph` exactly as is; add `forge-core` as a second server that reuses the *protocol skeleton* (the ~50-line JSON-RPC loop, `validateInput`, `canonicalize`, the `toolText` result shape) - factor those into `mcp/lib/rpc.mjs` so both servers share one hardened transport and neither regresses.
+**Server home:** add a **sibling** `mcp/forge` server (`plugin/mcp/forge/server.mjs`), NOT an extension of `mcp/graph`. `mcp/graph` is single-feature, gated on `features.graph`, and graph-db-specific; board/gate/autopilot tools have a different lifecycle (`makeBoardCtx` + `gh`) and gate. Keep `forge-graph` untouched; add `forge-core` as a second server reusing the *protocol skeleton* factored into **`mcp/lib/rpc.mjs`** (the ~50-line JSON-RPC loop, `validateInput`, `canonicalize`, `toolText`) so both share one hardened transport and neither regresses.
 
-**MUST-be-MCP vs can-stay-shell rule:** a capability MUST be an MCP tool when the *caller needs the structured return to make its next decision* - the model has to read a typed result (pass/fail, changed/verified, the merge-bar signal vector, the readiness checklist) and branch on it. A capability can stay a plain `forge <area> <cmd>` shell call when it is fire-and-forget or its exit code is enough. Structured-return tools cannot rely on the model scraping stdout prose across hosts; shell calls can.
+**MUST-be-MCP rule:** a capability is an MCP tool when the *caller needs the structured return to decide its next move* (pass/fail, changed/verified, the merge-bar vector, the readiness checklist). Fire-and-forget stays `forge <area> <cmd>` shell.
 
-Proposed `forge-core` MCP tools (beyond the 6 existing graph tools):
+Proposed `forge-core` tools (beyond the 6 graph tools):
 
-| Tool name | Input | Structured return | Why MCP (not shell) |
+| Tool | Input | Structured return | Why MCP |
 | --- | --- | --- | --- |
-| `board_move` | `{ issue:int, status:string }` | `{ ok, changed, verified, status }` | Caller branches on `verified`; already returns this shape |
-| `board_comment` | `{ issue:int, phase:enum, body:string, actor?, session? }` | `{ ok, action }` | Trail law is a decision point; `phase` enum needs validation |
-| `board_create` | `{ title, body?, type?, priority?, size?, area?, parent? }` | `{ ok, number, url }` | Caller needs the new issue number to continue |
-| `board_escalate` | `{ issue:int, reason:string, options:string[>=2], recommend?, context? }` | `{ ok, id, boardNote, pending }` | The halt-and-ask spine; caller must know it parked |
-| `board_status` | `{ issue?:int }` | `{ ok, items[] }` | Read-model the model reasons over |
-| `gate_run` | `{ gate:enum(ac|dep|docsync|ground|plandrift|situation|testintent), ...gateArgs }` | `{ ok, level:pass\|fail, findings[] }` | Gates ARE decision points - pass/fail drives flow |
-| `release_readiness` | `{}` | `{ ok, items:[{name,level,msg}] }` | Checklist the model must evaluate item-by-item |
-| `autopilot_select` | `{ area?, shape? }` | `{ ok, next:{number,status,action,title}\|null, queue[] }` | Picks the next ticket - pure fn, structured return is the point |
-| `autopilot_merge_bar` | `{ signals:{ship,gates,reviewer,security,ci} }` | `{ ok, merge:bool, blockedOn[] }` | The trust-reversal bar; MUST be typed, never stdout-scraped |
+| `board_move` | `{ issue, status }` | `{ ok, changed, verified, status }` | Caller branches on `verified` |
+| `board_comment` | `{ issue, phase:enum, body, actor?, session? }` | `{ ok, action }` | Trail law; `phase` enum validated |
+| `board_create` | `{ title, body?, type?, priority?, size?, area?, parent? }` | `{ ok, number, url }` | Caller needs the new number |
+| `board_escalate` | `{ issue, reason, options[>=2], recommend?, context? }` | `{ ok, id, boardNote, pending }` | The halt-and-ask spine |
+| `board_status` | `{ issue? }` | `{ ok, items[] }` | Read-model to reason over |
+| `gate_run` | `{ gate:enum(ac|dep|docsync|ground|plandrift|situation|testintent), ...args }` | `{ ok, level:pass\|fail, findings[] }` | Gates ARE decision points |
+| `release_readiness` | `{}` | `{ ok, items:[{name,level,msg}] }` | Checklist evaluated item-by-item |
+| `autopilot_select` | `{ area?, shape? }` | `{ ok, next\|null, queue[] }` | Picks next ticket; structured return is the point |
+| `autopilot_merge_bar` | `{ signals:{ship,gates,reviewer,security,ci} }` | `{ ok, merge:bool, blockedOn[] }` | The trust bar; typed, never stdout-scraped |
 
-Can stay `forge <area> <cmd>` shell (no structured branch needed): `board close`, `board digest`, `board receipt`, `board log`, `board reparent`, `release release` (the actual cut, after readiness passes), `graph rebuild/reindex` (graphctl), `init`, `doctor`, `learn`. These either mutate-and-done or their exit code suffices.
+Stay shell: `board close/digest/receipt/log/reparent`, `release release` (the cut), `graph rebuild/reindex`, `init`, `doctor`, `learn`.
 
-**Cut-line note (for owner):** exposing `board_create`/`board_escalate` as MCP tools gives an off-Claude host the ability to open tickets and to halt-and-ask. Whether autopilot's `merge_bar` should be an MCP tool a non-Claude host can call (i.e. letting Codex/Antigravity auto-merge) is a trust decision, not an engine decision - see sign-off.
-
-**Registration reuse:** the `forge-core` server registers on Claude Code by adding one more entry to `mcpServers` in the plugin manifest (identical shape to `forge-graph`). Per-host registration is Decision (c).
+**Claude-only auto-merge (owner decision, 2026-07-26).** `autopilot_merge_bar` is exposed on every host as a *computation* (a host may see whether the bar is green). But the plugin does **NOT** wire an unattended merge action on non-Claude hosts: on Codex/Antigravity, forge stops at an **open, green PR / awaiting-human**. The live `gh pr merge` remains Claude-only, where the full auto-safety stack (denylist hook + merge authority grant) is proven. This is the one deliberate parity exception, and it is a policy line, not an engine limit.
 
 ---
 
 ## (c) Per-host adapters, concretely
 
-`init` gains a per-host emission step (reusing `markers.upsertBlock` so re-runs refresh, never duplicate, and never touch user-authored prose outside the block). Windows-first shell rules from the current managed block are preserved verbatim in every emitted file.
+`init` gains a `--host` mode (or auto-detect from present config dirs) that emits, from **one portable source of truth**, the config shape each host expects. All emission uses `markers.upsertBlock` so re-runs refresh in place and never touch user prose outside the block. Windows-first shell rules (argv-array spawns, no POSIX `%TEMP%` assumptions) are preserved verbatim in every emitted file. All emitted `.ps1`/`.cmd`/`.md` stay ASCII-only.
 
-### Codex (AGENTS.md)
+**Five things `init` emits per host (the host-native wrapper):**
 
-- **What `init` emits:** the existing `<!-- forge:context:begin -->` managed block, PLUS a forge-tools section that (1) points the model at the `forge-core` + `forge-graph` MCP tools by name and says "prefer these over raw `gh`/`git` for board/gate/release/autopilot work," (2) points at the `forge <area> <cmd>` dispatcher for the shell-tier capabilities, (3) states the board law (only Epic/Program at top level; every item is a child of an epic; always trail-comment the driving issue at each lifecycle moment). Windows-first shell rules stay.
-- **MCP registration on Codex:** Codex reads MCP servers from its own config (`~/.codex/config.toml`, `[mcp_servers.forge_core]` with `command`/`args`), NOT from the Claude plugin manifest. `init` emits (or prints for the user to paste) a `forge-core`/`forge-graph` stanza pointing at `node <plugin>/mcp/*/server.mjs`. Confirm the exact Codex MCP config path/schema at build time before generating it (flag for owner - see sign-off).
-- **Hook mechanism:** Codex has no PreToolUse/PostToolUse hook equivalent to re-home the denylist/capture into. Off-Codex the safety denylist degrades to prose ("never force-push, never hard-reset protected branches" written into AGENTS.md) + reliance on Codex's own sandbox/approval mode. This is a real loss (see degradation matrix).
+| Layer | Source of truth | Claude | Codex | Antigravity/Gemini |
+| --- | --- | --- | --- | --- |
+| Instructions / board law | managed context block | `CLAUDE.md` | `AGENTS.md` | `GEMINI.md` (+ portable `AGENTS.md`) |
+| MCP registration | `forge-core`/`forge-graph` server paths | plugin manifest | `[mcp_servers.*]` in `~/.codex/config.toml` | `mcpServers` in `~/.gemini/settings.json` / `.agents/mcp_config.json` |
+| Deny + capture hooks | `hooks/denylist.mjs`, `hooks/capture.mjs` (already portable) | `hooks.json` | `hooks.json` PreToolUse/PostToolUse | Gemini `settings.json` hooks / Antigravity `.agents/hooks.json` |
+| Role subagents | `plugin/agents/**` prompt text | agent cards | `~/.codex/agents/*.toml` (<=6) | `.gemini/agents/*.md` / Antigravity agents |
+| Slash commands | `plugin/commands/**` / skill prose | commands | `~/.codex/prompts/*.md` or Skills | Gemini `.gemini/commands/*.toml` / Antigravity Workflows |
 
-### Antigravity / Gemini (GEMINI.md)
+**Hook contract shim (the one piece of real new code beyond registration):** `denylist.mjs`/`capture.mjs` currently read Claude's hook stdin JSON and emit Claude's decision shape. Codex, Gemini, and Antigravity each pass tool context as JSON on stdin and read a deny/allow decision back - *close but not identical* shapes. The adapter adds a thin I/O normalization layer (or per-host entry shims) so the same denylist/capture logic speaks each host's contract. The denylist *rules* stay in one place.
 
-- **What `init` emits:** same managed block + forge-tools section as AGENTS.md, keyed to Antigravity. The `agy` integration (`scripts/agy/core.mjs`) already proves the headless-Gemini CLI contract, so the Windows-first spawn rules are known-good here.
-- **MCP registration on Antigravity:** Antigravity/Gemini registers MCP servers via its own settings (Gemini CLI uses a `.gemini/settings.json` `mcpServers` map with `command`/`args` - close in shape to the Claude manifest). `init` emits that stanza. Confirm exact path/schema at build time (flag for owner).
-- **Hook mechanism:** Antigravity likewise has no guaranteed PreToolUse Bash-denylist equivalent; same degradation as Codex - safety rails become prose + host approval mode.
+**The `forge` dispatcher:** `plugin/bin/forge` is bash. Adapter work is a sibling `forge.cmd`/`forge.ps1` (or "run under node/Git-Bash") so `forge board create ...` works on a bare Windows shell. No CLI logic changes.
 
-### The `forge <area> <cmd>` dispatcher shape
-
-`plugin/bin/forge` already implements exactly this contract. The only cross-host gap: it is **bash** (`#!/usr/bin/env bash`), so a host on a bare Windows shell without Git-Bash cannot run it directly. Adapter work is a small sibling `forge.cmd`/`forge.ps1` (or documenting "run under Git-Bash / node") so `forge board create ...` works on every host. No CLI logic changes - it stays a thin wrapper over `node scripts/<area>/<cmd>.mjs`. Windows-first rule: emitted files must instruct argv-array spawns and never assume POSIX `%TEMP%` expansion, matching the current managed block.
+**Build-time confirmation:** exact config paths/schemas above are researched-current but MUST be re-verified against the installed host versions before `init` writes them (Codex has had MCP-config regressions; Antigravity CLI is young). `init` should emit + also print the stanza for the user to verify, and `forge doctor --host <h>` should validate what landed.
 
 ---
 
-## (d) The honest degradation matrix
+## (d) The parity matrix (revised - was "degradation")
 
-For each forge capability, per host. Full = works as on Claude; Partial = works with manual steps or reduced automation; Manual = human must drive each step; Lost = not available.
+Full = works as on Claude; Near = model-driven equivalent; Partial = reduced/manual; Lost = unavailable.
 
 | Capability | Claude Code | Codex | Antigravity/Gemini |
 | --- | --- | --- | --- |
-| Board law (create/move/comment/escalate) | Full (MCP + shell) | Full (MCP + shell) | Full (MCP + shell) |
-| Mechanical gates (ac/dep/ground/...) | Full | Full (MCP tools) | Full (MCP tools) |
-| Graph RAG | Full | Full (register `forge-graph`) | Full (register `forge-graph`) |
-| Release readiness + cut | Full | Full | Full |
-| Pipeline / deliver (spec->plan->execute->ship) | Full (skills auto-orchestrate) | Partial (explicit tool calls, no auto-flow) | Partial (explicit tool calls) |
-| Autopilot board fan-out (parallel subagents) | Full (Task tool spawns role subagents) | **Manual/Lost** (single context; sequential) | **Manual/Lost** (single context; sequential) |
-| Skill auto-invocation | Full | **Lost** (explicit invocation only) | **Lost** (explicit invocation only) |
-| Safety denylist (block force-push/hard-reset) | Full (PreToolUse hook) | **Partial/Lost** (prose + host sandbox) | **Partial/Lost** (prose + host sandbox) |
-| Journal capture (auto learning-loop) | Full (PostToolUse hook) | **Lost** (no auto-capture) | **Lost** (no auto-capture) |
-| Slash-command UX | Full | Lost (use `forge <cmd>` / MCP) | Lost (use `forge <cmd>` / MCP) |
-| Background monitors (ci-watch/decisions-watch) | Full | Lost (manual poll) | Lost (manual poll) |
-| Statusline | Full | Lost | Lost |
+| Board law (create/move/comment/escalate) | Full | **Full** (MCP+shell) | **Full** (MCP+shell) |
+| Mechanical gates (7) | Full | **Full** (MCP) | **Full** (MCP) |
+| Graph RAG | Full | **Full** (register server) | **Full** (register server) |
+| Release readiness + cut | Full | **Full** | **Full** |
+| Safety denylist (block force-push/hard-reset) | Full | **Full** (PreToolUse deny hook) | **Full** (BeforeTool/PreToolUse deny) |
+| Journal capture (learning loop) | Full | **Full** (PostToolUse hook) | **Full** (AfterTool/PostToolUse) |
+| Parallel subagent fan-out | Full | **Full** (native subagents, <=6) | **Full** (subagents / Agent Manager) |
+| Slash-command UX | Full | **Full** (prompts/Skills) | **Full** (TOML commands / Workflows) |
+| Pipeline / deliver (spec->plan->execute->ship) | Full (auto) | **Near** (model orchestrates via tools + instructions) | **Near** (model orchestrates) |
+| Skill auto-invocation | Full (runtime trigger) | **Near** (model-driven) | **Near** (model-driven) |
+| Autopilot unattended auto-merge on green | Full | **Stops at green PR** (owner policy, not a limit) | **Stops at green PR** (owner policy) |
+| Background monitors (ci-watch/decisions-watch) | Full | **Partial** (session events / cron) | **Partial** |
+| Statusline | Full | Lost (no API) | Lost (no API) |
 
-**The two sharpest losses, called out:**
-1. **Automatic safety rails.** The PreToolUse denylist (`hooks/denylist.mjs`) that mechanically blocks force-push / hard-reset / protected-branch delete has NO portable equivalent. Off-Claude it degrades to written guidance + whatever sandbox/approval the host offers. This is the single biggest risk of running forge on another host and must be an explicit owner-accepted trade, not silent.
-2. **Parallel subagent fan-out.** Autopilot's throughput comes from spawning fresh-context role subagents (scoper/planner/implementer/reviewer) via the Claude Task tool. Codex/Antigravity have no equivalent guaranteed today, so autopilot collapses to single-context sequential work - functionally it becomes "one ticket, one context," losing the parallelism that makes hands-off board-burndown fast.
+**What actually differs, honestly:** (1) auto-merge is *deliberately* Claude-only (policy). (2) The pipeline/skill *auto-flow* is runtime-triggered on Claude but model-driven elsewhere - same capability, invoked because the instructions tell the model to, not because a runtime trigger fires it; in practice near-identical for an agent following AGENTS.md. (3) Background monitors degrade to session events/cron. (4) The statusline is cosmetic and Claude-only. **Everything load-bearing - board law, all seven gates, the safety denylist, journal capture, parallel fan-out - reaches Full parity.** The 2025 "two sharpest losses" are gone.
 
 ---
 
-## Owner sign-off (AC1) - decisions to approve or amend before build
+## Owner sign-off (AC1) - decisions
 
-Per AC1 ("Owner approves before build"), the following are product/architecture calls that are NOT the engine's to make. Build (AC2-AC5) is blocked until the owner rules on each:
+Resolved with the owner (2026-07-26):
+- **Parity bar** = **full parity, host-native wrapper** (this ADR's target). [DECIDED]
+- **Auto-merge trust** = **Claude-only**; non-Claude hosts stop at green PR / awaiting-human. `autopilot_merge_bar` computes everywhere, live merge Claude-only. [DECIDED]
+- **MCP server home** = sibling `mcp/forge` (`forge-core`) sharing a factored `mcp/lib/rpc.mjs` with `forge-graph`. [RECOMMEND - approve or pick]
+- **MCP tool cut line** = the 9 `forge-core` tools above. [RECOMMEND - approve or pick]
 
-1. **MCP server home** - RECOMMEND a sibling `mcp/forge` (`forge-core`) server sharing a factored-out `mcp/lib/rpc.mjs` transport with `forge-graph`. Options: (a) sibling server [recommended], (b) extend `mcp/graph` into one multi-feature server, (c) one server, feature-gated tool groups. Approve (a) or pick.
-2. **The MCP tool-surface cut line** - RECOMMEND the 9 `forge-core` tools in (b), with `board_create`/`board_escalate` included and everything fire-and-forget left as shell. The specific escalation-worthy sub-decision: **should `autopilot_merge_bar` be callable by a non-Claude host at all** (i.e. may Codex/Antigravity auto-merge)? Options: expose it everywhere / expose read-only everywhere but gate the live merge to Claude / do not port auto-merge off-Claude [conservative]. Owner picks.
-3. **Per-host rail strategy for the two Claude-native rails** - RECOMMEND: safety denylist -> re-implement in each host's hook mechanism *if one exists*, else ship as prose + rely on host sandbox and accept the degradation; journal capture -> same. Owner must explicitly accept that off-Claude forge runs with weaker automatic safety rails (matrix loss #1), or require build to gate forge-on-other-hosts behind a host that has a real PreToolUse-equivalent.
-4. **Scope of AC2-AC5** - confirm the build order: AC2 = build `mcp/forge` server + factor shared transport; AC3 = extend `init` to emit AGENTS.md/GEMINI.md forge-tools sections + per-host MCP registration stanzas + cross-host dispatcher shim; AC4 = per-host rail decision implementation; AC5 = the documented degradation matrix shipped in-repo. Owner confirms or re-cuts.
-5. **Host confirmation at build time** - the exact Codex (`~/.codex/config.toml`) and Antigravity/Gemini (`.gemini/settings.json`) MCP-registration schemas must be verified against the live tools before `init` generates them. Owner acknowledges these are confirm-at-build, not assumed.
+Open confirmations (not blockers, but owner should acknowledge):
+1. **Which non-Claude host to prove first (AC4 dogfood).** RECOMMEND **Antigravity** (the owner already runs `agy`), driving one real ticket through forge end-to-end on it before generalizing to Codex.
+2. **Host schemas are confirm-at-build.** Codex `~/.codex/config.toml` + `hooks.json` and Antigravity/Gemini `settings.json`/`.agents/*` shapes are researched-current but MUST be re-verified against installed versions before `init` writes them (Codex MCP-config regressions; young Antigravity CLI).
 
-Until the owner rules, this ADR stays **Proposed** and epic #174 is parked (escalation `esc-174`).
+## Build plan (AC2-AC5)
+
+- **AC2 - MCP core.** Factor `mcp/lib/rpc.mjs` out of `mcp/graph`; build `mcp/forge/server.mjs` exposing the 9 `forge-core` tools over it; register `forge-core` in the Claude manifest. Tests: tool contract + structured-return shape per tool.
+- **AC3 - `init` host-native emission.** `forge init --host <claude|codex|antigravity>` (+ auto-detect) emits the five-layer wrapper (instructions / MCP registration / deny+capture hooks / role subagents / slash commands) via `upsertBlock`, from the portable source of truth. Includes the hook-contract shim for `denylist.mjs`/`capture.mjs` and the `forge.cmd`/`.ps1` dispatcher shim.
+- **AC4 - dogfood on one non-Claude host.** Drive one real ticket through forge on Antigravity (owner's runnable host) end-to-end - board move, a gate, an escalate, stop-at-green-PR - proving the wrapper.
+- **AC5 - docs.** Ship the cross-GAI guide + this parity matrix + README wiring so an adopter can install forge on any of the three.
+
+Until the owner rules on the two RECOMMENDs + the AC4 host, this ADR stays **Proposed** and epic #174 is parked.
