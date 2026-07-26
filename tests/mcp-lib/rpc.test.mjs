@@ -28,6 +28,31 @@ describe('AC-296.1: serve() caps stdio line length against unbounded buffering',
     expect(handled).toEqual([{ jsonrpc: '2.0', id: 7, method: 'ping' }]);
   });
 
+  it('AC-296.1: a complete, over-cap, newline-terminated line in one chunk is rejected, not handled', async () => {
+    const { input, written, handled } = harness({ maxLineLength: 100 });
+    // The common client pattern: assemble the full JSON payload, then one write(json + "\n").
+    input.push('x'.repeat(250) + '\n');
+    await flush();
+    expect(handled).toHaveLength(0); // the oversized complete line never reaches the handler
+    expect(written.some((w) => /parse error/.test(w) && /limit/.test(w))).toBe(true);
+    // the loop stays alive: a valid line right after it is still parsed
+    input.push(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'ping' }) + '\n');
+    await flush();
+    expect(handled).toEqual([{ jsonrpc: '2.0', id: 4, method: 'ping' }]);
+  });
+
+  it('AC-296.1: a growing unterminated over-cap line is answered exactly once (no response amplification)', async () => {
+    const { input, written, handled } = harness({ maxLineLength: 100 });
+    // Stream far more than the cap, in several chunks, with no newline until the end.
+    for (let i = 0; i < 5; i++) input.push('y'.repeat(80));
+    await flush();
+    input.push('\n' + JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'ping' }) + '\n');
+    await flush();
+    const errors = written.filter((w) => /parse error/.test(w) && /limit/.test(w));
+    expect(errors).toHaveLength(1); // one rejected line -> one error, not one per chunk
+    expect(handled).toEqual([{ jsonrpc: '2.0', id: 5, method: 'ping' }]);
+  });
+
   it('AC-296.1: a line exactly at the cap is still accepted (the cap is an over-limit guard, not a floor)', async () => {
     const payload = { jsonrpc: '2.0', id: 3, method: 'ping' };
     const line = JSON.stringify(payload);

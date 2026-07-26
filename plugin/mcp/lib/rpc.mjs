@@ -19,10 +19,11 @@ import { resolve, sep } from 'node:path';
 export const PROTOCOL_VERSION = '2024-11-05';
 
 /**
- * Cap on a single newline-delimited JSON-RPC line (4 MiB). Large enough for any
- * legitimate tool payload (a glob fan-out, a batch of file paths, an escalation
- * body), bounded against an unterminated line that would otherwise buffer without
- * limit and exhaust memory (#296/AC1 — a DoS vector shared by both servers).
+ * Cap on a single newline-delimited JSON-RPC line, measured in characters
+ * (4,194,304 — ~4 MiB for ASCII payloads). Large enough for any legitimate tool
+ * payload (a glob fan-out, a batch of file paths, an escalation body), bounded
+ * against a line — terminated or not — that would otherwise buffer without limit
+ * and exhaust memory (#296/AC1 — a DoS vector shared by both servers).
  */
 export const MAX_LINE_LENGTH = 4 * 1024 * 1024;
 
@@ -123,6 +124,9 @@ export function serve(handle, { input = process.stdin, output = process.stdout, 
     if (res) output.write(JSON.stringify(res) + '\n');
   };
 
+  const rejectOverLong = () =>
+    output.write(JSON.stringify(rpcError(null, -32700, `parse error: line exceeds the ${maxLineLength}-character limit`)) + '\n');
+
   input.on('data', (chunk) => {
     buf += chunk;
     let nl;
@@ -130,12 +134,16 @@ export function serve(handle, { input = process.stdin, output = process.stdout, 
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
       if (dropping) { dropping = false; continue; } // tail of an over-long line — already answered
+      if (line.length > maxLineLength) { rejectOverLong(); continue; } // a complete-but-oversized line: reject, never parse
       processLine(line);
     }
-    if (buf.length > maxLineLength) {
-      output.write(JSON.stringify(rpcError(null, -32700, `parse error: line exceeds the ${maxLineLength}-byte limit`)) + '\n');
+    // buf now holds the unterminated remainder (no newline yet).
+    if (dropping) {
+      buf = ''; // still discarding the tail of an already-rejected line — drop without re-answering
+    } else if (buf.length > maxLineLength) {
+      rejectOverLong(); // an unterminated line grew past the cap: answer ONCE, then drop to the next newline
       buf = '';
-      dropping = true; // everything up to the next newline belongs to the rejected line
+      dropping = true;
     }
   });
 
