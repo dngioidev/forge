@@ -167,11 +167,14 @@ Open confirmations (not blockers, but owner should acknowledge):
 1. **Which non-Claude host to prove first (AC4 dogfood).** RECOMMEND **Antigravity** (the owner already runs `agy`), driving one real ticket through forge end-to-end on it before generalizing to Codex.
 2. **Host schemas are confirm-at-build.** Codex `~/.codex/config.toml` + `hooks.json` and Antigravity/Gemini `settings.json`/`.agents/*` shapes are researched-current but MUST be re-verified against installed versions before `init` writes them (Codex MCP-config regressions; young Antigravity CLI).
 
-## Build plan (AC2-AC5)
+## Build plan - decomposed, **agy-only** (owner decision 2026-07-26)
 
-- **AC2 - MCP core.** Factor `mcp/lib/rpc.mjs` out of `mcp/graph`; build `mcp/forge/server.mjs` exposing the 9 `forge-core` tools over it; register `forge-core` in the Claude manifest. Tests: tool contract + structured-return shape per tool.
-- **AC3 - host-native packaging (revised per live agy verification).** For **Antigravity**: `forge init --host antigravity` stages forge as an agy plugin (co-located `plugin.json` + component dirs, all at a short path to dodge MAX_PATH) and emits the two files agy needs - `mcp_config.json` (`forge-graph`/`forge-core` server defs) and `hooks.json` (named-hook schema, matcher `run_command`) - then either runs `agy plugin install <dir>` or writes into `.agents/plugins/forge/`. Skills/agents/commands need **no conversion** (agy ingests them). For **Codex**: emit `AGENTS.md` + `~/.codex/config.toml` `[mcp_servers.*]` + `hooks.json` per the researched shape (verify live first). Shared: the `denylist.mjs`/`capture.mjs` **host-mode I/O shim** (read `toolCall.args.CommandLine`, emit `{"decision":"deny",...}` for agy) and the `forge.cmd`/`.ps1` dispatcher shim.
-- **AC4 - dogfood on one non-Claude host.** Drive one real ticket through forge on Antigravity (owner's runnable host) end-to-end - board move, a gate, an escalate, stop-at-green-PR - proving the wrapper.
-- **AC5 - docs.** Ship the cross-GAI guide + this parity matrix + README wiring so an adopter can install forge on any of the three.
+Scope narrowed to **Antigravity (`agy`) only** because it is the host the owner can actually run and test; Codex is deferred to a follow-up (#292) until agy parity is proven. Child tickets filed under #174:
 
-Until the owner rules on the two RECOMMENDs + the AC4 host, this ADR stays **Proposed** and epic #174 is parked.
+- **#289 (AC3) - `forge init --host agy` emits the agy plugin package** [Ready, p0, L] - the enabler; the spike already **proved the output** on live agy (all 5 component types green, denylist verified). Productizes `docs/decisions/0007-agy-adapter/`: co-located `plugin.json` + components, generated `mcp_config.json` + `hooks.json`, the `agy-deny.mjs`/`agy-capture.mjs` host-mode shims, computed paths, short-path staging (MAX_PATH), and anchoring the `denylist.mjs`/`capture.mjs` self-exec guards.
+- **#288 (AC2) - `forge-core` MCP server** [Ready, p1, L] - factor `mcp/lib/rpc.mjs` out of `mcp/graph`; build `mcp/forge/server.mjs` with the 9 tools; register alongside `forge-graph`. Structured-return enhancement (agy's shell tier already runs the CLIs without it).
+- **#290 (AC4) - dogfood** [Backlog, p1, M] - drive one real ticket through forge from inside an `agy` session end-to-end (board move + gate + live denylist + stop-at-green-PR).
+- **#291 (AC5) - docs** [Backlog, p2, M] - cross-GAI (agy) guide + this parity matrix + README.
+- **#292 - Codex adapter** [Backlog, p2, L] - DEFERRED; mirrors the agy work once proven, after live-verifying Codex's config schemas.
+
+**Spike status:** AC1 delivered and **verified on live agy v1.1.5**. Owner decisions locked (full-parity bar; Claude-only merge; agy-first). Ready to graduate this ADR to **Accepted** on main on the owner's word; the build proceeds via #289 + #288.
