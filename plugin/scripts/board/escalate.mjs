@@ -28,10 +28,35 @@ export function parseArgs(argv) {
   return a;
 }
 
+/**
+ * The CLI passes a pipe-joined string (`--options "a|b|c"`); the MCP surface
+ * passes a structured array. Only the string form is split on '|' — an array
+ * element keeps any embedded '|' as literal text, so it cannot reconstitute
+ * into extra downstream options and defeat the caller's maxItems bound (#300 AC.1).
+ */
+export function normalizeOptions(raw) {
+  const arr = Array.isArray(raw) ? raw : String(raw ?? '').split('|');
+  return arr.map((s) => String(s).trim()).filter(Boolean);
+}
+
+/**
+ * Neutralize caller-supplied text before it lands in the trusted decision
+ * comment (#300 AC.2). Escapes backslash + Markdown/HTML control punctuation so
+ * caller text cannot forge block structure (headings, list items, a fake
+ * "recommended" tag) or inject a `<!-- forge:... -->` marker. Includes both
+ * setext underline chars (`-` and `=`) so an embedded-newline payload cannot
+ * forge an H1/H2 heading.
+ */
+export function escapeMd(s) {
+  return String(s ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/([`*_{}\[\]()#+.<>|~=-])/g, '\\$1');
+}
+
 export async function runEscalate(ctx, args, log = console.log) {
   if (!Number.isInteger(args.issue)) return { ok: false, error: '--issue <number> is required' };
   if (!args.reason) return { ok: false, error: '--reason is required' };
-  const options = (args.options ?? '').split('|').map((s) => s.trim()).filter(Boolean);
+  const options = normalizeOptions(args.options);
   if (options.length < 2) return { ok: false, error: '--options "a|b[|c…]" needs at least two options' };
 
   const id = `esc-${args.issue}-${Date.now().toString(36)}`;
@@ -49,11 +74,11 @@ export async function runEscalate(ctx, args, log = console.log) {
   const lines = [
     `🚩 **Decision needed** (\`${id}\`)`,
     '',
-    `**Why halted:** ${args.reason}`,
-    ...(args.context ? ['', args.context] : []),
+    `**Why halted:** ${escapeMd(args.reason)}`,
+    ...(args.context ? ['', escapeMd(args.context)] : []),
     '',
     '**Options:**',
-    ...options.map((o, i) => `${i + 1}. ${o}${args.recommend === o || args.recommend === String(i + 1) ? ' ← **recommended**' : ''}`),
+    ...options.map((o, i) => `${i + 1}. ${escapeMd(o)}${args.recommend === o || args.recommend === String(i + 1) ? ' ← **recommended**' : ''}`),
     '',
     '_Reply in this thread with your choice (number or text). The pipeline is halted until then (spec §7)._',
   ];

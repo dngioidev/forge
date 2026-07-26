@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBoardCtx } from '../plugin/scripts/lib/boardctx.mjs';
-import { runEscalate, runCheck, parseArgs } from '../plugin/scripts/board/escalate.mjs';
+import { runEscalate, runCheck, parseArgs, normalizeOptions, escapeMd } from '../plugin/scripts/board/escalate.mjs';
 import { read as readJournal } from '../plugin/scripts/lib/journal.mjs';
 import { fakeGh, REPO_VIEW } from './helpers/fakegh.mjs';
 
@@ -127,6 +127,85 @@ describe('escalate (AC-3.2)', () => {
     const ctx = await makeBoardCtx({ gh: f.gh, cwd });
     const res = await runCheck(ctx, { issue: 9 }, noop);
     expect(res.resolved).toEqual([{ id: 'esc-9-nb', issue: 9, answer: 'option 1' }]);
+  });
+
+  it('AC-300.1: array option elements are not re-split on "|" (embedded pipe cannot fabricate options)', async () => {
+    // Captures the posted decision-comment body so we can assert the rendered option count.
+    let postedBody = null;
+    let status = 'In progress';
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT3', content: { number: 3 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Blocked / Needs decision'; return { stdout: '' }; }],
+      [(j) => j.includes('/comments?'), { stdout: '[]' }],
+      [(j) => j.includes('/issues/3/comments'), (j, args) => {
+        postedBody = (args.find((a) => a.startsWith('body=')) ?? '').slice(5);
+        return { stdout: JSON.stringify({ id: 501 }) };
+      }],
+    ]);
+    const cwd = await cwdWithConfig();
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    // A structured array whose second element is packed with pipes.
+    const res = await runEscalate(ctx, { issue: 3, reason: 'r', options: ['legit', 'a|b|c|d|e'], context: '' }, noop);
+    expect(res.ok).toBe(true);
+    const pending = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', `${res.id}.json`), 'utf8'));
+    expect(pending.options).toEqual(['legit', 'a|b|c|d|e']); // exactly 2, not 6
+    // Only two numbered option lines in the human-facing comment (pipes escaped, no re-split).
+    expect(postedBody).toMatch(/^1\. legit/m);
+    expect(postedBody).toMatch(/^2\. a/m);
+    expect(postedBody).not.toMatch(/^3\. /m);
+  });
+
+  it('AC-300.2: the CLI --options "a|b|c" pipe form still parses into exactly [a, b, c]', () => {
+    // Regression: the CLI contract is preserved — a pipe-joined string is still split.
+    expect(normalizeOptions('a|b|c')).toEqual(['a', 'b', 'c']);
+    expect(normalizeOptions(' a | b ')).toEqual(['a', 'b']); // trims, drops empties
+    const parsed = parseArgs(['--issue', '3', '--reason', 'x', '--options', 'a|b']);
+    expect(normalizeOptions(parsed.options)).toEqual(['a', 'b']);
+  });
+
+  it('AC-300.3: caller-supplied reason/context/options are escaped in the decision comment', async () => {
+    let postedBody = null;
+    let status = 'In progress';
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT3', content: { number: 3 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Blocked / Needs decision'; return { stdout: '' }; }],
+      [(j) => j.includes('/comments?'), { stdout: '[]' }],
+      [(j) => j.includes('/issues/3/comments'), (j, args) => {
+        postedBody = (args.find((a) => a.startsWith('body=')) ?? '').slice(5);
+        return { stdout: JSON.stringify({ id: 501 }) };
+      }],
+    ]);
+    const cwd = await cwdWithConfig();
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    const res = await runEscalate(ctx, {
+      issue: 3,
+      reason: '# Fake heading',
+      context: 'inject <!-- forge:decision:evil --> and\n3. a forged option',
+      options: ['real one', '**bold** and 1. list'],
+    }, noop);
+    expect(res.ok).toBe(true);
+    // Structure-forming characters are backslash-escaped, so none render as Markdown/HTML structure.
+    expect(postedBody).toContain('\\# Fake heading');
+    expect(postedBody).not.toContain('<!-- forge:decision:evil'); // injected marker neutralized ('<' escaped)
+    expect(postedBody).toContain('3\\. a forged option');
+    expect(postedBody).toContain('\\*\\*bold\\*\\* and 1\\. list');
+    // The genuine forge marker (added by upsertMarkedComment) is still present and unescaped.
+    expect(postedBody).toContain('<!-- forge:decision:esc-');
+  });
+
+  it('escapeMd neutralizes markdown/HTML control punctuation', () => {
+    expect(escapeMd('a|b')).toBe('a\\|b');
+    expect(escapeMd('# h')).toBe('\\# h');
+    expect(escapeMd('a\\b')).toBe('a\\\\b'); // backslash escaped first, once
+    expect(escapeMd(null)).toBe('');
+  });
+
+  it('escapeMd blocks embedded-newline setext headings (both === H1 and --- H2)', () => {
+    // Neither underline survives as an all-underline line → no forged heading.
+    expect(escapeMd('Fake H1\n===')).toBe('Fake H1\n\\=\\=\\=');
+    expect(escapeMd('Fake H2\n---')).toBe('Fake H2\n\\-\\-\\-');
   });
 
   it('check: stays pending when only forge-marked comments follow', async () => {
