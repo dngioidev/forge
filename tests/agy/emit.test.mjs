@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
 import {
   emitAgyPlugin, buildMcpConfig, buildHooksConfig, buildPluginMarker, toPosix, longPath, pluginRoot, unsafeDestReason,
+  rewriteAgyRuntimePaths,
 } from '../../plugin/scripts/agy/emit.mjs';
 import { runInit, parseArgs } from '../../plugin/scripts/init.mjs';
 
@@ -294,5 +296,70 @@ describe('AC-289.4: paths are computed, ASCII-only, Windows-first, long-path awa
     expect(res.ok).toBe(true);
     expect(dest.length).toBeGreaterThan(260);
     await expect(access(longPath(join(dest, 'hooks.json')))).resolves.toBeUndefined();
+  });
+});
+
+// Recursively collect every `.md` file under `root`.
+async function collectMd(root) {
+  const out = [];
+  const walk = async (dir) => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (e.name.toLowerCase().endsWith('.md')) out.push(p);
+    }
+  };
+  await walk(root);
+  return out;
+}
+
+describe('AC-294: emitted agy skills/commands carry no unresolved ${CLAUDE_PLUGIN_ROOT}', () => {
+  it('AC-294.1: no emitted skill/command file contains ${CLAUDE_PLUGIN_ROOT} after emit', async () => {
+    const { dest, res } = await emitTo();
+    expect(res.ok).toBe(true);
+    // the emitter actually rewrote real files (guards against a silent no-op transform).
+    expect(res.rewritten).toBeGreaterThan(0);
+
+    const files = [
+      ...await collectMd(join(dest, 'skills')),
+      ...await collectMd(join(dest, 'commands')),
+    ];
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const body = await readFile(f, 'utf8');
+      expect(body, `${f} still hardcodes the Claude-only runtime variable`).not.toContain('${CLAUDE_PLUGIN_ROOT}');
+    }
+  });
+
+  it('AC-294.2: the emitted shell-out form is plugin-root-relative (agy resolves via CWD)', async () => {
+    const { dest } = await emitTo();
+    // a known offender in the source: skills/board/SKILL.md shells out to scripts/board/*.
+    const board = await readFile(join(dest, 'skills', 'board', 'SKILL.md'), 'utf8');
+    expect(board).toContain('node "scripts/board/');       // rewritten, root-relative
+    expect(board).not.toContain('${CLAUDE_PLUGIN_ROOT}');   // variable gone
+
+    // pure, deterministic transform — the exact mapping the emitter applies.
+    expect(rewriteAgyRuntimePaths('node "${CLAUDE_PLUGIN_ROOT}/scripts/board/create.mjs" --title x'))
+      .toBe('node "scripts/board/create.mjs" --title x');
+    // covers every area uniformly, including scripts the `forge` dispatcher does not map.
+    expect(rewriteAgyRuntimePaths('node "${CLAUDE_PLUGIN_ROOT}/scripts/runner/check.mjs"'))
+      .toBe('node "scripts/runner/check.mjs"');
+    // a bare, non-slash reference collapses to the plugin root itself.
+    expect(rewriteAgyRuntimePaths('cd ${CLAUDE_PLUGIN_ROOT} && ls')).toBe('cd . && ls');
+    // idempotent + a no-var string is unchanged.
+    const once = rewriteAgyRuntimePaths('node "${CLAUDE_PLUGIN_ROOT}/scripts/x.mjs"');
+    expect(rewriteAgyRuntimePaths(once)).toBe(once);
+    expect(rewriteAgyRuntimePaths('forge board create')).toBe('forge board create');
+  });
+
+  it('AC-294.3: the Claude plugin source is untouched by the emitter (only the copy changes)', async () => {
+    const src = join(pluginRoot(), 'skills', 'board', 'SKILL.md');
+    const before = await readFile(src, 'utf8');
+    expect(before).toContain('${CLAUDE_PLUGIN_ROOT}'); // sanity: source really is the Claude form
+    await emitTo();
+    const after = await readFile(src, 'utf8');
+    expect(after).toBe(before); // byte-identical: emit reads source, writes only into dest
+    expect(after).toContain('${CLAUDE_PLUGIN_ROOT}');
   });
 });

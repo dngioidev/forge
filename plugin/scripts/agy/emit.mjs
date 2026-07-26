@@ -114,6 +114,59 @@ export function buildPluginMarker(sourceManifest) {
   return marker;
 }
 
+/**
+ * Rewrite Claude-Code runtime variables in emitted agy skill/command prose to an
+ * agy-resolvable form (#294).
+ *
+ * `${CLAUDE_PLUGIN_ROOT}` is a Claude-Code-runtime variable: Claude substitutes it
+ * with the installed plugin's root when a skill shells out. agy does NOT substitute
+ * it, and (verified against the installed agy CLI docs) exposes no plugin-root
+ * variable of its own. The one documented agy rule for a plugin command locating
+ * plugin-relative files is the working directory: agy runs a plugin's shell-out with
+ * CWD set to the plugin root (hooks.md: a hook command's "working directory is set to
+ * the directory containing hooks.json" = the plugin root; skills.md documents plugin
+ * scripts as paths relative to the plugin, e.g. `./scripts/...`). So we DROP the
+ * variable and leave a plugin-root-relative path:
+ *   node "${CLAUDE_PLUGIN_ROOT}/scripts/board/create.mjs"  ->  node "scripts/board/create.mjs"
+ *
+ * Why not an absolute path: `agy plugin install` COPIES the package to
+ * `~/.gemini/config/plugins/forge/`, so any staging-time absolute path would be stale
+ * post-install. Why not the `forge <area> <cmd>` dispatcher on PATH: agy does not add
+ * a plugin's `bin/` to PATH (plugins.md ingests skills/rules/hooks/MCP only), so the
+ * dispatcher is not resolvable inside an agy session. The relative form is install-
+ * location-independent and uniform for skills and commands. Runtime confirmation of the
+ * skill-shell-out CWD is pending the #290 dogfood; this is the most-defensible form now.
+ */
+export function rewriteAgyRuntimePaths(text) {
+  return text
+    // "${CLAUDE_PLUGIN_ROOT}/scripts/x.mjs" -> "scripts/x.mjs" (plugin-root-relative)
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}\//g, '')
+    // any bare, non-slash-suffixed reference -> the plugin root itself
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, '.');
+}
+
+/**
+ * Rewrite `${CLAUDE_PLUGIN_ROOT}` (and any other Claude-only runtime vars) in every
+ * emitted `.md` under `root`, in place. Operates only on the emitted COPY tree — the
+ * Claude plugin source is never touched. Returns the count of files changed.
+ */
+async function rewriteRuntimePathsInTree(root) {
+  let changed = 0;
+  const walk = async (dir) => {
+    const entries = await readdir(longPath(dir), { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { await walk(p); continue; }
+      if (!e.name.toLowerCase().endsWith('.md')) continue;
+      const before = await readFile(longPath(p), 'utf8');
+      const after = rewriteAgyRuntimePaths(before);
+      if (after !== before) { await writeFile(longPath(p), after, 'utf8'); changed++; }
+    }
+  };
+  await walk(root);
+  return changed;
+}
+
 // Component dirs agy ingests natively (skills/agents/commands, zero conversion) + the
 // trees the configs and skills point at: mcp (server), hooks (shims), scripts + bin
 // (the `forge <area> <cmd>` shell tier the skills shell out to — copied so the paths
@@ -156,6 +209,17 @@ export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = pr
     written.push(`${d}/`);
   }
 
+  // #294: the copied skill/command prose hardcodes `${CLAUDE_PLUGIN_ROOT}` (a Claude-
+  // only runtime variable agy does not substitute). Rewrite the emitted COPIES to a
+  // plugin-root-relative form agy resolves via CWD; the Claude plugin source stays
+  // untouched. Skills and commands only — agents carry no such shell-outs.
+  let rewritten = 0;
+  for (const d of ['skills', 'commands']) {
+    const t = join(dest, d);
+    try { await access(L(t)); } catch { continue; }
+    rewritten += await rewriteRuntimePathsInTree(t);
+  }
+
   // Co-located plugin.json marker.
   const manifest = JSON.parse(await readFile(L(join(srcRoot, '.claude-plugin', 'plugin.json')), 'utf8'));
   await writeFile(L(join(dest, 'plugin.json')), JSON.stringify(buildPluginMarker(manifest), null, 2) + '\n', 'utf8');
@@ -174,8 +238,9 @@ export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = pr
 
   log(`agy: emitted forge plugin package at ${dest}`);
   log(`agy: wrote ${written.join(', ')}${hasForgeCore ? ' (forge-graph + forge-core)' : ' (forge-graph)'}`);
+  log(`agy: rewrote \${CLAUDE_PLUGIN_ROOT} -> plugin-root-relative in ${rewritten} emitted skill/command file(s)`);
   log('agy: install with  agy plugin install "' + dest + '" (or discover under .agents/plugins/forge/)');
-  return { ok: true, dest, written, hasForgeCore };
+  return { ok: true, dest, written, hasForgeCore, rewritten };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
