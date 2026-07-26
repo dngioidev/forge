@@ -111,5 +111,8 @@ async function main() {
   return 0;
 }
 
+// Self-exec guard is ANCHORED via exact module-URL identity (AC-289.3): main()
+// only fires when THIS file is the entry point, so importing capture.mjs (or a
+// host shim importing it) has zero side effects — no stdin consumption, no exit.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isMain) main().then((code) => process.exit(code)).catch(() => process.exit(0)); // fail open

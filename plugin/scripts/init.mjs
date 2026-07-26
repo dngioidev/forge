@@ -20,7 +20,7 @@ import { runRunnerInit, parseArgs as parseRunnerArgs } from './runner/init.mjs';
 const DELIVERY_LOG_TITLE = 'Delivery log';
 
 export function parseArgs(argv) {
-  const args = { project: null, createProject: null, statusline: false, skipDoctor: false, runner: false, label: null };
+  const args = { project: null, createProject: null, statusline: false, skipDoctor: false, runner: false, label: null, host: null, out: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--project') args.project = Number(argv[++i]);
@@ -29,6 +29,8 @@ export function parseArgs(argv) {
     else if (a === '--skip-doctor') args.skipDoctor = true;
     else if (a === '--runner') args.runner = true;
     else if (a === '--label') args.label = argv[++i];
+    else if (a === '--host') args.host = argv[++i];
+    else if (a === '--out') args.out = argv[++i];
   }
   return args;
 }
@@ -42,6 +44,20 @@ export async function runInit(ctx) {
   if (args.runner) {
     return runRunnerInit({ gh, cwd }, parseRunnerArgs(args.label ? ['--label', args.label] : []), log);
   }
+
+  // --host is a distinct emit mode (ADR-0007 AC3): stage forge as a host-native
+  // plugin package. It needs no board/gh — it only emits files — so it short-
+  // circuits before the board bootstrap. agy only; Codex is deferred to #292.
+  if (args.host) {
+    if (args.host !== 'agy') {
+      return { ok: false, error: `unsupported --host '${args.host}' — only 'agy' is implemented (Codex deferred to #292)`, actions: [] };
+    }
+    const { emitAgyPlugin } = await import('./agy/emit.mjs');
+    const destRoot = args.out ? resolve(cwd, args.out) : join(cwd, '.agents', 'plugins', 'forge');
+    const res = await emitAgyPlugin({ destRoot, log });
+    return { ...res, host: 'agy', actions: res.written ? res.written.map((w) => `agy: emitted ${w}`) : [] };
+  }
+
   const actions = [];
   const say = (m) => { actions.push(m); log(m); };
 
