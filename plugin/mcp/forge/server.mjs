@@ -17,7 +17,7 @@
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { validateInput, rpcError, toolText, makeRpcHandler, serve } from '../lib/rpc.mjs';
+import { validateInput, canonicalize, rpcError, toolText, makeRpcHandler, serve } from '../lib/rpc.mjs';
 import { run, makeGh } from '../../scripts/lib/exec.mjs';
 import { makeBoardCtx } from '../../scripts/lib/boardctx.mjs';
 import { loadConfig } from '../../scripts/lib/config.mjs';
@@ -199,6 +199,39 @@ function definedOnly(obj) {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
 }
 
+/** A git-ref-safe token: no shell chars, no leading dash (so it can't pose as a git option). */
+const REF_SAFE = /^[A-Za-z0-9._/-]+$/;
+function refSafe(v) {
+  return typeof v === 'string' && REF_SAFE.test(v) && !v.startsWith('-');
+}
+
+/**
+ * Harden the caller-supplied gate args before they reach filesystem reads and
+ * git revision-specs. Path args are confined to the repo root (the same
+ * blast_radius precedent in forge-graph); base/branch are ref-validated so an
+ * adversarial value can't slip in as a git option through a single argv token.
+ * Returns { args } on success or { error } with a teaching message.
+ */
+function sanitizeGateArgs(root, raw) {
+  let args = raw;
+  for (const key of ['plan', 'manifest']) {
+    if (args[key] != null) {
+      const rel = canonicalize(root, args[key]);
+      if (rel == null) return { error: `'${key}' must stay inside the repo root` };
+      args = { ...args, [key]: rel };
+    }
+  }
+  if (Array.isArray(args.results)) {
+    const rels = args.results.map((f) => canonicalize(root, f));
+    if (rels.some((r) => r == null)) return { error: "'results' paths must stay inside the repo root" };
+    args = { ...args, results: rels };
+  }
+  for (const key of ['base', 'branch']) {
+    if (args[key] != null && !refSafe(args[key])) return { error: `'${key}' must be a git-ref-safe name (letters, digits, . _ / -, no leading dash)` };
+  }
+  return { args };
+}
+
 /**
  * Build the forge-core protocol handler. `getCtx()` resolves the board context
  * lazily (gh + forge.json), so gate/merge-bar tools that need neither still work
@@ -237,7 +270,8 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
             const spec = withDefaults(definedOnly({ title: args.title, body: args.body, type: args.type, priority: args.priority, size: args.size, area: args.area, parent: args.parent }));
             const r = await deps.runCreate(ctx, spec, noop);
             if (!r.ok) return teach(id, r.error);
-            const url = r.url ?? `https://github.com/${ctx.owner}/${ctx.repo}/issues/${r.number}`;
+            // runCreate returns the number; synthesize the canonical issue URL.
+            const url = `https://github.com/${ctx.owner}/${ctx.repo}/issues/${r.number}`;
             return toolText(id, { ok: true, number: r.number, url, resumed: r.resumed ?? false, parentless: r.parentless ?? false });
           });
 
@@ -259,9 +293,11 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
           });
 
         case 'gate_run': {
+          const clean = sanitizeGateArgs(root, args);
+          if (clean.error) return rpcError(id, -32602, `invalid arguments for gate_run: ${clean.error}`);
           const spec = GATE_SPEC[args.gate];
           const fn = deps.gates[args.gate];
-          const r = await spec.invoke(fn, args, root);
+          const r = await spec.invoke(fn, clean.args, root);
           if (r.error) return teach(id, r.error); // operational/teaching failure (bad args, unreadable input)
           const { level, findings } = spec.verdict(r);
           return toolText(id, { ok: true, gate: args.gate, level, findings });

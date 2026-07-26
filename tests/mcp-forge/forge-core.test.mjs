@@ -205,6 +205,18 @@ describe('AC-288.4: at least one failure path per tool group', () => {
     expect(out).toEqual({ ok: true, next: null, queue: [] });
   });
 
+  it('AC-288.4: gate group — gate_run confines path args to the repo root and ref-validates base', async () => {
+    let invoked = false;
+    const h = build({ deps: { gates: { plandrift: async () => { invoked = true; return { ok: true, deviations: [] }; } } } });
+    // path traversal in a gate path arg is refused before the gate runs
+    expect((await call(h, 'gate_run', { gate: 'plandrift', plan: '../../etc/passwd' })).error.message).toMatch(/inside the repo root/);
+    // a base that could pose as a git option is refused
+    expect((await call(h, 'gate_run', { gate: 'plandrift', plan: '.forge/plan.md', base: '--output=x' })).error.message).toMatch(/git-ref-safe/);
+    expect(invoked).toBe(false); // neither malformed call reached the gate
+    // a clean repo-relative path + normal base passes through
+    expect(body(await call(h, 'gate_run', { gate: 'plandrift', plan: '.forge/plan.md', base: 'main' }))).toEqual({ ok: true, gate: 'plandrift', level: 'pass', findings: [] });
+  });
+
   it('AC-288.4: an unexpected throw inside a tool is caught and returned as isError, never crashes the server', async () => {
     const h = build({ deps: { evaluateMergeBar: () => { throw new Error('boom'); } } });
     const res = await call(h, 'autopilot_merge_bar', { signals: { ci: true } });
