@@ -19,8 +19,8 @@
  * Windows-first + ASCII-only emitted files; long-path aware so `agy plugin install`
  * (which hit MAX_PATH on long source paths during the spike) can stage cleanly.
  */
-import { cp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
+import { cp, mkdir, writeFile, readFile, rm, access, stat, readdir } from 'node:fs/promises';
+import { join, resolve, dirname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** The forge plugin source root — computed from this file (plugin/scripts/agy/emit.mjs -> plugin/). */
@@ -43,6 +43,41 @@ export function longPath(p) {
 /** Forward-slash a path for JSON configs — agy reads these; forward slashes are safe on Windows. */
 export function toPosix(p) {
   return p.replace(/\\/g, '/');
+}
+
+/** True when `child` is `parent` itself or nested under it (both resolved). */
+function isAtOrUnder(parent, child) {
+  const p = resolve(parent);
+  const c = resolve(child);
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+}
+
+/**
+ * Blast-radius guard (AC-289.4): the emitter recursively clears its dest, so it must
+ * NEVER be pointed at a directory forge does not own. Returns a refusal string, or
+ * null when `dest` is safe to emit into. Caught cases:
+ *   - a filesystem root;
+ *   - the current working dir or any ancestor of it (`--out .` / `--out ..` would
+ *     delete the operator's working tree, incl. .git);
+ *   - a dir that contains the forge plugin source;
+ *   - a path with shell-unsafe characters (they would also break the hooks.json
+ *     command string, which agy's contract requires to be a quoted string).
+ */
+export function unsafeDestReason(dest, { cwd, srcRoot }) {
+  const d = resolve(dest);
+  if (dirname(d) === d) return `refusing to emit into a filesystem root: ${d}`;
+  if (isAtOrUnder(d, cwd)) return `refusing to emit into '${d}': it is the current directory or an ancestor of it (a re-emit would delete your working tree). Pass --out <a dedicated subdirectory>.`;
+  if (isAtOrUnder(d, srcRoot)) return `refusing to emit into '${d}': it contains the forge plugin source. Choose a separate --out dir.`;
+  if (/["\r\n\t`]/.test(d)) return `refusing to emit into a path with shell-unsafe characters: ${d}`;
+  return null;
+}
+
+/** A dir counts as forge-owned (safe to clear) only when it carries the emitted plugin.json marker. */
+async function isForgeOwned(dest) {
+  try {
+    const marker = JSON.parse(await readFile(longPath(join(dest, 'plugin.json')), 'utf8'));
+    return marker?.name === 'forge';
+  } catch { return false; }
 }
 
 /** Build the agy MCP registration. forge-core is guarded on server existence (#288 is separate). */
@@ -79,21 +114,38 @@ export function buildPluginMarker(sourceManifest) {
   return marker;
 }
 
-// Component dirs agy ingests natively (zero conversion) + the trees the configs point at.
-const COMPONENT_DIRS = ['skills', 'agents', 'commands', 'mcp', 'hooks'];
+// Component dirs agy ingests natively (skills/agents/commands, zero conversion) + the
+// trees the configs and skills point at: mcp (server), hooks (shims), scripts + bin
+// (the `forge <area> <cmd>` shell tier the skills shell out to — copied so the paths
+// they reference physically exist in the package).
+const COMPONENT_DIRS = ['skills', 'agents', 'commands', 'mcp', 'hooks', 'scripts', 'bin'];
 
 /**
  * Emit the agy plugin package into `destRoot`. Fully manages its own output dir
  * (a clean re-emit each run). Paths in the generated configs are computed from the
  * resolved dest — no hardcoded install path.
  */
-export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, log = () => {} } = {}) {
+export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = process.cwd(), log = () => {} } = {}) {
   if (!destRoot) return { ok: false, error: 'destRoot is required' };
+  srcRoot = resolve(srcRoot);
   const dest = resolve(destRoot);
   const L = longPath;
 
-  // Clean re-emit: forge fully owns this dir, so a rebuild never leaves stale files.
-  await rm(L(dest), { recursive: true, force: true });
+  // Blast-radius guard: never recursively delete a dir forge does not own.
+  const reason = unsafeDestReason(dest, { cwd, srcRoot });
+  if (reason) return { ok: false, error: reason };
+
+  const existing = await stat(L(dest)).catch(() => null);
+  if (existing) {
+    if (!existing.isDirectory()) return { ok: false, error: `refusing to overwrite non-directory: ${dest}` };
+    const owned = await isForgeOwned(dest);
+    const entries = await readdir(L(dest)).catch(() => []);
+    if (!owned && entries.length > 0) {
+      return { ok: false, error: `refusing to overwrite ${dest}: it is not empty and carries no forge plugin.json marker (not a forge-emitted package). Choose an empty or dedicated --out dir.` };
+    }
+    // Clean re-emit only over a dir forge itself previously emitted — never leaves stale files.
+    if (owned) await rm(L(dest), { recursive: true, force: true });
+  }
   await mkdir(L(dest), { recursive: true });
 
   const written = [];
@@ -115,13 +167,14 @@ export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, log = ()
   await writeFile(L(join(dest, 'mcp_config.json')), JSON.stringify(buildMcpConfig(dest, { hasForgeCore }), null, 2) + '\n', 'utf8');
   written.push('mcp_config.json');
 
-  // hooks.json — agy named-hook schema; overrides the copied Claude hooks/hooks.json at the ROOT.
+  // hooks.json — agy named-hook schema at the plugin ROOT (agy reads this, not the
+  // Claude-format hooks/hooks.json that came along in the hooks/ copy).
   await writeFile(L(join(dest, 'hooks.json')), JSON.stringify(buildHooksConfig(dest), null, 2) + '\n', 'utf8');
   written.push('hooks.json');
 
   log(`agy: emitted forge plugin package at ${dest}`);
   log(`agy: wrote ${written.join(', ')}${hasForgeCore ? ' (forge-graph + forge-core)' : ' (forge-graph)'}`);
-  log('agy: install with  agy plugin install "' + dest + '"  (or discover under .agents/plugins/forge/)');
+  log('agy: install with  agy plugin install "' + dest + '" (or discover under .agents/plugins/forge/)');
   return { ok: true, dest, written, hasForgeCore };
 }
 

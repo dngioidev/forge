@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
-  emitAgyPlugin, buildMcpConfig, buildHooksConfig, buildPluginMarker, toPosix, longPath, pluginRoot,
+  emitAgyPlugin, buildMcpConfig, buildHooksConfig, buildPluginMarker, toPosix, longPath, pluginRoot, unsafeDestReason,
 } from '../../plugin/scripts/agy/emit.mjs';
 import { runInit, parseArgs } from '../../plugin/scripts/init.mjs';
 
@@ -124,12 +124,20 @@ describe('AC-289.2: the emitted denylist shim honors the agy I/O contract with C
     expect(JSON.parse(garbage.stdout)).toEqual({ decision: 'allow' });
   });
 
-  it('AC-289.2: the capture shim emits {} and never blocks', async () => {
-    const { dest } = await emitTo();
+  it('AC-289.2: the capture shim emits {} and never blocks; journals metadata-only, bounded error', async () => {
+    const { dir, dest } = await emitTo();
     const capture = join(dest, 'hooks', 'agy-capture.mjs');
-    const out = await runNode(capture, JSON.stringify({ stepIdx: 1, workspacePaths: [dest] }));
+    const ws = join(dir, 'workspace');
+    await mkdir(ws, { recursive: true });
+    const longErr = 'SECRET_TOKEN_' + 'x'.repeat(1000);
+    const out = await runNode(capture, JSON.stringify({ stepIdx: 1, workspacePaths: [ws], error: longErr }));
     expect(out.stdout.trim()).toBe('{}');
     expect(out.code).toBe(0);
+    // the journal line exists and the error is bounded to <=200 chars (no unbounded content leak)
+    const journal = await readFile(join(ws, '.forge', 'agy-journal.jsonl'), 'utf8');
+    const rec = JSON.parse(journal.trim().split('\n').pop());
+    expect(rec.host).toBe('agy');
+    expect(rec.error.length).toBeLessThanOrEqual(200);
   });
 });
 
@@ -221,6 +229,59 @@ describe('AC-289.4: paths are computed, ASCII-only, Windows-first, long-path awa
     } else {
       expect(out).toBe(p);
     }
+  });
+
+  it('AC-289.4: refuses a dest that is cwd or an ancestor of it — no working-tree deletion via --out .', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'agy-guard-'));
+    // seed a user file that must survive a refused emit
+    await writeFile(join(cwd, 'IMPORTANT-USER-FILE.txt'), 'do not delete me', 'utf8');
+
+    // dest === cwd (`--out .`)
+    const here = await emitAgyPlugin({ destRoot: cwd, cwd, log: noop });
+    expect(here.ok).toBe(false);
+    expect(here.error).toMatch(/current directory or an ancestor/);
+    // dest is an ancestor of cwd (`--out ..`)
+    const up = await emitAgyPlugin({ destRoot: join(cwd, '..'), cwd, log: noop });
+    expect(up.ok).toBe(false);
+    // the user file is untouched
+    await expect(access(join(cwd, 'IMPORTANT-USER-FILE.txt'))).resolves.toBeUndefined();
+
+    // pure guard: reports the same refusals + rejects shell-unsafe chars
+    expect(unsafeDestReason(cwd, { cwd, srcRoot: pluginRoot() })).toMatch(/current directory/);
+    expect(unsafeDestReason('C:/x/for"ge', { cwd: 'C:/other', srcRoot: 'C:/src' })).toMatch(/shell-unsafe/);
+  });
+
+  it('AC-289.4: refuses to overwrite a non-empty dir that is not a forge-emitted package', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'agy-guard-'));
+    const dest = join(base, 'somebody-elses-dir');
+    await mkdir(dest, { recursive: true });
+    await writeFile(join(dest, 'their-file.txt'), 'keep me', 'utf8');
+
+    const res = await emitAgyPlugin({ destRoot: dest, cwd: base, log: noop });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/not a forge-emitted package|carries no forge/);
+    await expect(access(join(dest, 'their-file.txt'))).resolves.toBeUndefined(); // untouched
+  });
+
+  it('AC-289.4: a re-emit over a forge-owned package succeeds and never touches siblings', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'agy-guard-'));
+    const dest = join(base, 'forge');
+    const sibling = join(base, 'sibling.txt');
+    await writeFile(sibling, 'untouched', 'utf8');
+
+    const first = await emitAgyPlugin({ destRoot: dest, cwd: base, log: noop });
+    expect(first.ok).toBe(true);
+    // second run: dest now carries the forge plugin.json marker -> clean re-emit allowed
+    const second = await emitAgyPlugin({ destRoot: dest, cwd: base, log: noop });
+    expect(second.ok).toBe(true);
+    await expect(access(join(dest, 'hooks.json'))).resolves.toBeUndefined();
+    expect(await readFile(sibling, 'utf8')).toBe('untouched'); // sibling never deleted
+  });
+
+  it('AC-289.1: copies the scripts/ + bin/ tier the emitted skills shell out to', async () => {
+    const { dest } = await emitTo();
+    await expect(access(join(dest, 'scripts', 'board', 'create.mjs'))).resolves.toBeUndefined();
+    await expect(access(join(dest, 'bin', 'forge'))).resolves.toBeUndefined();
   });
 
   it('AC-289.4: emits cleanly to a long (>260 char) dest path — MAX_PATH staging', async () => {

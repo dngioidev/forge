@@ -54,7 +54,7 @@ export async function runInit(ctx) {
     }
     const { emitAgyPlugin } = await import('./agy/emit.mjs');
     const destRoot = args.out ? resolve(cwd, args.out) : join(cwd, '.agents', 'plugins', 'forge');
-    const res = await emitAgyPlugin({ destRoot, log });
+    const res = await emitAgyPlugin({ destRoot, cwd, log });
     return { ...res, host: 'agy', actions: res.written ? res.written.map((w) => `agy: emitted ${w}`) : [] };
   }
 
