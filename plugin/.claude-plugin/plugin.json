@@ -23,6 +23,10 @@
     "forge-graph": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/graph/server.mjs"]
+    },
+    "forge-core": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/forge/server.mjs"]
     }
   }
 }
