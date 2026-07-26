@@ -1,0 +1,30 @@
+{
+  "forge-safety": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/dngioi/.gemini/config/plugins/forge/hooks/agy-deny.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "forge-capture": {
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/dngioi/.gemini/config/plugins/forge/hooks/agy-capture.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
