@@ -226,6 +226,65 @@ describe('AC-288.4: at least one failure path per tool group', () => {
 });
 
 // =========================================================================
+describe('AC-296.2: forge-core arg size bounds cap per-call fan-out and comment size', () => {
+  it('AC-296.2: gate_run.results is capped by count and per-path length', async () => {
+    const h = build();
+    const many = Array.from({ length: 257 }, (_, i) => `r${i}.json`);
+    expect((await call(h, 'gate_run', { gate: 'ac', results: many })).error.message).toMatch(/'results' must be an array with <= 256 items/);
+    expect((await call(h, 'gate_run', { gate: 'ac', results: ['x'.repeat(1100)] })).error.message).toMatch(/'results' items must each be a string of length <= 1024/);
+  });
+
+  it('AC-296.2: board_escalate.options is capped by count and per-option length; reason size is bounded', async () => {
+    const h = build();
+    const opts = Array.from({ length: 21 }, (_, i) => `opt ${i}`);
+    expect((await call(h, 'board_escalate', { issue: 1, reason: 'r', options: opts })).error.message).toMatch(/'options' must be an array with <= 20 items/);
+    expect((await call(h, 'board_escalate', { issue: 1, reason: 'r', options: ['ok', 'x'.repeat(2100)] })).error.message).toMatch(/'options' items must each be a string of length <= 2000/);
+    expect((await call(h, 'board_escalate', { issue: 1, reason: 'x'.repeat(2100), options: ['a', 'b'] })).error.message).toMatch(/'reason' must be a string of length <= 2000/);
+  });
+
+  it('AC-296.2: in-bounds fan-out args still pass (a ceiling was added, not a new floor)', async () => {
+    const h = build({ deps: { runEscalate: async () => ({ ok: true, id: 'e1', boardNote: null, pending: true }) } });
+    expect(body(await call(h, 'board_escalate', { issue: 1, reason: 'ok', options: ['a', 'b'] })).ok).toBe(true);
+  });
+});
+
+// =========================================================================
+describe('AC-296.3: release_readiness teaches on a missing/broken forge.json instead of degrading', () => {
+  it('AC-296.3: a missing config surfaces a teaching error and never evaluates against empty config', async () => {
+    let ran = false;
+    const h = build({ deps: {
+      loadConfig: async () => ({ ok: false, missing: true, errors: ['.claude/forge.json not found — run /forge:init'], config: null }),
+      computeReadiness: async () => { ran = true; return { ok: true, items: [] }; },
+    } });
+    const res = await call(h, 'release_readiness', {});
+    expect(res.result.isError).toBe(true);
+    expect(body(res)).toMatchObject({ ok: false });
+    expect(body(res).error).toMatch(/\.claude\/forge\.json is missing/);
+    expect(body(res).error).toMatch(/forge:init/);
+    expect(ran).toBe(false); // did NOT silently degrade into computeReadiness with config:{}
+  });
+
+  it('AC-296.3: a broken (invalid) config teaches with the validation detail', async () => {
+    const h = build({ deps: {
+      loadConfig: async () => ({ ok: false, missing: false, errors: ['board: missing block'], config: { foo: 1 } }),
+      computeReadiness: async () => ({ ok: true, items: [] }),
+    } });
+    const res = await call(h, 'release_readiness', {});
+    expect(res.result.isError).toBe(true);
+    expect(body(res).error).toMatch(/\.claude\/forge\.json is broken/);
+    expect(body(res).error).toMatch(/board: missing block/);
+  });
+
+  it('AC-296.3: a healthy config still evaluates the checklist as before', async () => {
+    const h = build({ deps: {
+      loadConfig: async () => ({ ok: true, config: { conventions: { verify: 'pnpm verify' } } }),
+      computeReadiness: async () => ({ ok: true, items: [{ name: 'branch', level: 'pass', msg: 'on main' }] }),
+    } });
+    expect(body(await call(h, 'release_readiness', {}))).toEqual({ ok: true, items: [{ name: 'branch', level: 'pass', msg: 'on main' }] });
+  });
+});
+
+// =========================================================================
 describe('makeCtxResolver memoization', () => {
   it('resolves once on success and does NOT cache a failed resolution', async () => {
     let n = 0;

@@ -91,10 +91,11 @@ export const TOOLS = [
       type: 'object',
       properties: {
         issue: { type: 'integer' },
-        reason: { type: 'string', minLength: 1 },
-        options: { type: 'array', items: { type: 'string' }, minItems: 2 },
-        recommend: { type: 'string' },
-        context: { type: 'string' },
+        reason: { type: 'string', minLength: 1, maxLength: 2000 },
+        // Bounded fan-out/size (#296/AC2): a decision has a handful of options, each a short label.
+        options: { type: 'array', items: { type: 'string', maxLength: 2000 }, minItems: 2, maxItems: 20 },
+        recommend: { type: 'string', maxLength: 2000 },
+        context: { type: 'string', maxLength: 10000 },
       },
       required: ['issue', 'reason', 'options'],
     },
@@ -114,7 +115,8 @@ export const TOOLS = [
         // union of per-gate args; each gate reads only its own and teaches on a miss
         plan: { type: 'string' },
         ticket: { type: 'integer' },
-        results: { type: 'array', items: { type: 'string' } },
+        // Bounded fan-out (#296/AC2): each entry is a vitest-json path fed to glob/readFile; cap the count and path length.
+        results: { type: 'array', items: { type: 'string', maxLength: 1024 }, maxItems: 256 },
         acs: { type: 'string' },
         base: { type: 'string' },
         manifest: { type: 'string' },
@@ -305,7 +307,14 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
 
         case 'release_readiness': {
           const cfg = await deps.loadConfig(root);
-          const config = cfg.ok ? cfg.config : {};
+          // #296/AC3: a missing/broken forge.json used to be swallowed as config:{}, hiding
+          // the breakage and evaluating readiness against empty config. Teach the caller instead.
+          if (!cfg.ok) {
+            const why = cfg.missing ? '.claude/forge.json is missing' : '.claude/forge.json is broken';
+            const detail = (cfg.errors ?? []).join('; ');
+            return teach(id, `release-readiness cannot evaluate: ${why}${detail ? ` (${detail})` : ''} — run /forge:init to repair it`);
+          }
+          const config = cfg.config;
           const r = await deps.computeReadiness({ cwd: root, execFn: deps.execFn, config, verifyCmd: config.conventions?.verify });
           return toolText(id, { ok: r.ok, items: r.items });
         }

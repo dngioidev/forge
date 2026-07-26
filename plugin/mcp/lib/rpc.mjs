@@ -14,10 +14,17 @@
  * Per-server tool logic is injected via `onCall`; nothing here is graph- or
  * board-specific, so neither server can regress the other's transport.
  */
-import { createInterface } from 'node:readline';
 import { resolve, sep } from 'node:path';
 
 export const PROTOCOL_VERSION = '2024-11-05';
+
+/**
+ * Cap on a single newline-delimited JSON-RPC line (4 MiB). Large enough for any
+ * legitimate tool payload (a glob fan-out, a batch of file paths, an escalation
+ * body), bounded against an unterminated line that would otherwise buffer without
+ * limit and exhaust memory (#296/AC1 — a DoS vector shared by both servers).
+ */
+export const MAX_LINE_LENGTH = 4 * 1024 * 1024;
 
 /** JSON-RPC response builders (id-parameterized; pure). */
 export const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
@@ -32,15 +39,20 @@ export function validateInput(schema, args) {
   for (const [key, val] of Object.entries(args)) {
     const prop = schema.properties[key];
     if (!prop) return `unknown argument '${key}'`;
-    if (prop.type === 'string' && (typeof val !== 'string' || val.length < (prop.minLength ?? 0))) {
-      return `'${key}' must be a string of length >= ${prop.minLength ?? 0}`;
+    if (prop.type === 'string') {
+      if (typeof val !== 'string' || val.length < (prop.minLength ?? 0)) return `'${key}' must be a string of length >= ${prop.minLength ?? 0}`;
+      if (prop.maxLength != null && val.length > prop.maxLength) return `'${key}' must be a string of length <= ${prop.maxLength}`;
     }
     if (prop.type === 'integer' && !Number.isInteger(val)) return `'${key}' must be an integer`;
     if (prop.type === 'boolean' && typeof val !== 'boolean') return `'${key}' must be a boolean`;
     if (prop.enum && !prop.enum.includes(val)) return `'${key}' must be one of: ${prop.enum.join(', ')}`;
     if (prop.type === 'array') {
       if (!Array.isArray(val) || val.length < (prop.minItems ?? 0)) return `'${key}' must be an array with >= ${prop.minItems ?? 0} items`;
-      if (prop.items?.type === 'string' && !val.every((v) => typeof v === 'string')) return `'${key}' items must be strings`;
+      if (prop.maxItems != null && val.length > prop.maxItems) return `'${key}' must be an array with <= ${prop.maxItems} items`;
+      if (prop.items?.type === 'string') {
+        if (!val.every((v) => typeof v === 'string')) return `'${key}' items must be strings`;
+        if (prop.items.maxLength != null && !val.every((v) => v.length <= prop.items.maxLength)) return `'${key}' items must each be a string of length <= ${prop.items.maxLength}`;
+      }
     }
     if (prop.type === 'object' && (val == null || typeof val !== 'object' || Array.isArray(val))) return `'${key}' must be an object`;
   }
@@ -89,16 +101,43 @@ export function makeRpcHandler({ serverInfo, tools, onCall, protocolVersion = PR
  * Newline-delimited JSON-RPC stdio loop. `handle(msg)` may return a response
  * object, `null` (notification), or a Promise of either. A malformed line
  * answers with a parse error and never crashes the loop.
+ *
+ * The line splitter is hand-rolled (rather than node:readline) so it can enforce
+ * `maxLineLength`: an unterminated line that grows past the cap is answered with a
+ * parse error and its bytes are dropped up to the next newline, instead of
+ * buffering without bound and exhausting memory (#296/AC1). Windows `\r\n` line
+ * endings are tolerated (a trailing `\r` is stripped before parsing).
  */
-export function serve(handle, { input = process.stdin, output = process.stdout } = {}) {
-  const rl = createInterface({ input, terminal: false });
-  rl.on('line', async (line) => {
+export function serve(handle, { input = process.stdin, output = process.stdout, maxLineLength = MAX_LINE_LENGTH } = {}) {
+  let buf = '';
+  let dropping = false; // current line already exceeded the cap; discard bytes until the next newline
+  input.setEncoding('utf8');
+
+  const processLine = async (raw) => {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
     if (!line.trim()) return;
     let msg;
     try { msg = JSON.parse(line); }
     catch { output.write(JSON.stringify(rpcError(null, -32700, 'parse error')) + '\n'); return; }
     const res = await handle(msg);
     if (res) output.write(JSON.stringify(res) + '\n');
+  };
+
+  input.on('data', (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (dropping) { dropping = false; continue; } // tail of an over-long line — already answered
+      processLine(line);
+    }
+    if (buf.length > maxLineLength) {
+      output.write(JSON.stringify(rpcError(null, -32700, `parse error: line exceeds the ${maxLineLength}-byte limit`)) + '\n');
+      buf = '';
+      dropping = true; // everything up to the next newline belongs to the rejected line
+    }
   });
-  return rl;
+
+  return input;
 }
