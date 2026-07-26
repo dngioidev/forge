@@ -39,7 +39,24 @@ The 2025 pessimism ("Codex/Antigravity can't re-home Claude's hooks or subagents
 
 **Two caveats that shape the build, not blockers:**
 1. **No host has a *declarative* command denylist.** On all three (and on Claude), the denylist is *a hook script that inspects the command and returns deny*. forge already ships that script (`denylist.mjs`) - so parity here is "teach the script each host's stdin/stdout contract + register it," not "reimplement."
-2. **Antigravity CLI specifics are newer/less stable** than Gemini CLI's (several facts come from Google-employee blogs, and env-var expansion in its MCP config is currently buggy). The adapter must **version-gate** and prefer the portable `AGENTS.md` layer where formats diverge.
+2. **Antigravity CLI specifics are newer/less stable** than Gemini CLI's. The adapter must **version-gate** and prefer the portable layer where formats diverge.
+
+---
+
+## Spike verification on real `agy` v1.1.5 (2026-07-26) - the blog research was PARTLY OBSOLETE
+
+The owner has `agy` installed, so the Antigravity claims were tested against the live CLI instead of trusted from blogs. Findings materially **improve** the design and correct three points.
+
+**What is objectively true (proven, not researched):**
+- **agy has a first-class plugin system that ingests the Claude plugin format directly.** `agy plugin validate`/`install` on forge's plugin (with `plugin.json` co-located with the component dirs) reported: **`skills: 20 processed`, `agents: 12 processed`, `commands: 8 processed (converted to skills)`**. forge is now actually installed in agy (`agy plugin list` shows it, source `antigravity`, 40 components). **This means skills, agents, and slash commands port with ZERO conversion code** - agy imports them and auto-converts commands to skills. My earlier "emit AGENTS.md + convert role cards to TOML + convert slash commands" plan for this host is **obsolete**; the delivery mechanism is *an agy-native plugin package*.
+- **The plugin contract is documented and authoritative** (agy ships `builtin/skills/agy-customizations/docs/{plugins,hooks,mcp_servers}.md`). A plugin dir is: `plugin.json` (marker, `{"name":"forge"}`) + `skills/` + optional `rules/` + optional **`mcp_config.json`** + optional **`hooks.json`**, discovered under `.agents/plugins/<name>/` or `~/.gemini/config/plugins/<name>/`. When enabled, hooks and MCP servers are **auto-wired** - no manual registration.
+- **MCP: agy does NOT read the `mcpServers` key from `plugin.json`** (validate said `mcpServers: skipped (not found)`). It reads a sibling **`mcp_config.json`** = `{ "mcpServers": { "<name>": { command, args, env } } }` (stdio) - *same content as Claude's inline block, different file*. Plugin-scoped MCP (`plugins/forge/mcp_config.json`) is cleaner than the global-`settings.json` edit the research implied.
+- **Hooks: full parity, exact contract now known** (refutes the 2025 "lost"). agy reads a plugin-root **`hooks.json`**, schema = top-level **hook-name** keys (not Claude's `"hooks"` wrapper), `PreToolUse`/`PostToolUse` with `matcher` on the **tool name `run_command`** (not Claude's `"Bash"`), the command at `toolCall.args.CommandLine`. **I/O contract:** JSON on stdin (`{toolCall:{name,args:{CommandLine}}, stepIdx, ...camelCase}`), decision on stdout **`{"decision":"deny"|"allow"|"ask"|"force_ask","reason"}`** (Claude uses `permissionDecision`/exit-2). So `denylist.mjs`/`capture.mjs` need a **host-mode I/O shim** - exactly the small piece the ADR predicted, now fully specified. (Proven live: the forge Claude denylist even blocked one of my own `rm -rf` commands mid-spike.)
+- **Shell/node CLIs are directly runnable on agy** (the agent has a `run_command` tool), so the entire `forge <area> <cmd>` shell tier works on agy **without** MCP. MCP (`forge-core`) is therefore a *structured-return enhancement* for board/gate/autopilot branching, **not a hard requirement** for agy to operate forge. This softens the "MUST be MCP" framing in (b) for this host.
+
+**Corrections to the research (blog-sourced, now overridden by the live CLI):** there is **no `agy inspect`** command; hooks/MCP for a plugin live in the plugin-root `hooks.json`/`mcp_config.json` (auto-wired), not only `.agents/`-global; agy models list includes `claude-*` and `gpt-oss-*` alongside Gemini. **Real Windows gotcha found:** `agy plugin install` hit **MAX_PATH** failures when the source sat under a long temp path - `init` must stage/emit adapter files at short paths (or use the `\\?\` prefix).
+
+**Net:** for Antigravity the adapter collapses to *package forge as an agy plugin* = reshuffle layout + emit two small files (`mcp_config.json`, `hooks.json`) + a hook I/O shim. Skills/agents/commands are free. The Codex adapter (separate `~/.codex/` config + `hooks.json`) still follows the researched shape and should get the same live-verification treatment before its build.
 
 ---
 
@@ -153,7 +170,7 @@ Open confirmations (not blockers, but owner should acknowledge):
 ## Build plan (AC2-AC5)
 
 - **AC2 - MCP core.** Factor `mcp/lib/rpc.mjs` out of `mcp/graph`; build `mcp/forge/server.mjs` exposing the 9 `forge-core` tools over it; register `forge-core` in the Claude manifest. Tests: tool contract + structured-return shape per tool.
-- **AC3 - `init` host-native emission.** `forge init --host <claude|codex|antigravity>` (+ auto-detect) emits the five-layer wrapper (instructions / MCP registration / deny+capture hooks / role subagents / slash commands) via `upsertBlock`, from the portable source of truth. Includes the hook-contract shim for `denylist.mjs`/`capture.mjs` and the `forge.cmd`/`.ps1` dispatcher shim.
+- **AC3 - host-native packaging (revised per live agy verification).** For **Antigravity**: `forge init --host antigravity` stages forge as an agy plugin (co-located `plugin.json` + component dirs, all at a short path to dodge MAX_PATH) and emits the two files agy needs - `mcp_config.json` (`forge-graph`/`forge-core` server defs) and `hooks.json` (named-hook schema, matcher `run_command`) - then either runs `agy plugin install <dir>` or writes into `.agents/plugins/forge/`. Skills/agents/commands need **no conversion** (agy ingests them). For **Codex**: emit `AGENTS.md` + `~/.codex/config.toml` `[mcp_servers.*]` + `hooks.json` per the researched shape (verify live first). Shared: the `denylist.mjs`/`capture.mjs` **host-mode I/O shim** (read `toolCall.args.CommandLine`, emit `{"decision":"deny",...}` for agy) and the `forge.cmd`/`.ps1` dispatcher shim.
 - **AC4 - dogfood on one non-Claude host.** Drive one real ticket through forge on Antigravity (owner's runnable host) end-to-end - board move, a gate, an escalate, stop-at-green-PR - proving the wrapper.
 - **AC5 - docs.** Ship the cross-GAI guide + this parity matrix + README wiring so an adopter can install forge on any of the three.
 
