@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "forge-graph": {
+      "command": "node",
+      "args": ["C:/Users/dngioi/.gemini/config/plugins/forge/mcp/graph/server.mjs"]
+    }
+  }
+}
