@@ -69,7 +69,9 @@ export async function runEscalate(ctx, args, log = console.log) {
   });
 
   log(`escalated #${args.issue} (${id}) — ${boardNote}, decision comment posted`);
-  return { ok: true, id };
+  // pending is always true on a fresh open — a pending decision file was just
+  // written and the pipeline is halted until the human replies (spec §7).
+  return { ok: true, id, boardNote, pending: true };
 }
 
 /** Scan pending decisions for a human reply (a later comment with no forge marker). */
