@@ -156,6 +156,10 @@ async function rewriteRuntimePathsInTree(root) {
     const entries = await readdir(longPath(dir), { withFileTypes: true }).catch(() => []);
     for (const e of entries) {
       const p = join(dir, e.name);
+      // Never follow a symlink: readFile/writeFile dereference, so a *.md symlink
+      // could turn this read-modify-write loop into an arbitrary-file write. The
+      // forge source tree carries none; skip defensively regardless (Dirent guard).
+      if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) { await walk(p); continue; }
       if (!e.name.toLowerCase().endsWith('.md')) continue;
       const before = await readFile(longPath(p), 'utf8');
