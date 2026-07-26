@@ -71,12 +71,22 @@ describe('AC-288.2: every tool is callable and returns its documented structured
     expect(seen).toMatchObject({ title: 'a new ticket', type: 'item', priority: 'p1', size: 'm', status: 'backlog' });
   });
 
-  it('AC-288.2: board_escalate -> {ok,id,boardNote,pending}; array options are pipe-joined for the engine', async () => {
+  it('AC-288.2: board_escalate -> {ok,id,boardNote,pending}; array options pass through structured (#300)', async () => {
     let seen;
     const h = build({ deps: { runEscalate: async (_ctx, a) => { seen = a; return { ok: true, id: 'esc-288-x', boardNote: 'board -> blocked', pending: true }; } } });
     const out = body(await call(h, 'board_escalate', { issue: 288, reason: 'infra choice', options: ['keep bash', 'rewrite in node'] }));
     expect(out).toEqual({ ok: true, id: 'esc-288-x', boardNote: 'board -> blocked', pending: true });
-    expect(seen.options).toBe('keep bash|rewrite in node');
+    // Structured array end-to-end (#300 AC.1): no pipe-join for an embedded '|' to re-split past.
+    expect(seen.options).toEqual(['keep bash', 'rewrite in node']);
+  });
+
+  it('AC-300.1: an option element containing "|" cannot fabricate extra downstream options', async () => {
+    let seen;
+    const h = build({ deps: { runEscalate: async (_ctx, a) => { seen = a; return { ok: true, id: 'esc-300-x', boardNote: null, pending: true }; } } });
+    // A malicious single element packed with pipes: array pass-through keeps it as ONE option.
+    const out = body(await call(h, 'board_escalate', { issue: 300, reason: 'r', options: ['legit', 'a|b|c|d|e|f'] }));
+    expect(out.ok).toBe(true);
+    expect(seen.options).toEqual(['legit', 'a|b|c|d|e|f']); // still 2 options, not 7
   });
 
   it('AC-288.2: board_status -> {ok,items[]} filtered by issue', async () => {

@@ -279,8 +279,9 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
 
         case 'board_escalate':
           return board(id, async (ctx) => {
-            // The engine parses options from a pipe-joined string; the MCP surface takes a typed array.
-            const r = await deps.runEscalate(ctx, { issue: args.issue, reason: args.reason, options: args.options.join('|'), recommend: args.recommend ?? null, context: args.context ?? '' }, noop);
+            // Pass the typed array straight through (#300 AC.1): the schema's maxItems
+            // bound then genuinely holds — no pipe-join for an embedded '|' to re-split past.
+            const r = await deps.runEscalate(ctx, { issue: args.issue, reason: args.reason, options: args.options, recommend: args.recommend ?? null, context: args.context ?? '' }, noop);
             if (!r.ok) return teach(id, r.error);
             return toolText(id, { ok: true, id: r.id, boardNote: r.boardNote ?? null, pending: r.pending ?? true });
           });
