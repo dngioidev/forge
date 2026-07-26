@@ -202,6 +202,12 @@ describe('escalate (AC-3.2)', () => {
     expect(escapeMd(null)).toBe('');
   });
 
+  it('escapeMd blocks embedded-newline setext headings (both === H1 and --- H2)', () => {
+    // Neither underline survives as an all-underline line → no forged heading.
+    expect(escapeMd('Fake H1\n===')).toBe('Fake H1\n\\=\\=\\=');
+    expect(escapeMd('Fake H2\n---')).toBe('Fake H2\n\\-\\-\\-');
+  });
+
   it('check: stays pending when only forge-marked comments follow', async () => {
     const cwd = await cwdWithConfig();
     await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });

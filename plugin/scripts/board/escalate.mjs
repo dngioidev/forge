@@ -43,12 +43,14 @@ export function normalizeOptions(raw) {
  * Neutralize caller-supplied text before it lands in the trusted decision
  * comment (#300 AC.2). Escapes backslash + Markdown/HTML control punctuation so
  * caller text cannot forge block structure (headings, list items, a fake
- * "recommended" tag) or inject a `<!-- forge:... -->` marker.
+ * "recommended" tag) or inject a `<!-- forge:... -->` marker. Includes both
+ * setext underline chars (`-` and `=`) so an embedded-newline payload cannot
+ * forge an H1/H2 heading.
  */
 export function escapeMd(s) {
   return String(s ?? '')
     .replace(/\\/g, '\\\\')
-    .replace(/([`*_{}\[\]()#+.<>|~-])/g, '\\$1');
+    .replace(/([`*_{}\[\]()#+.<>|~=-])/g, '\\$1');
 }
 
 export async function runEscalate(ctx, args, log = console.log) {
