@@ -1,6 +1,6 @@
 # forge
 
-> A portable AI development platform that runs inside Claude Code — turning a backlog into merged, reviewed, gated pull requests.
+> A portable AI development platform that runs inside Claude Code — and now on Antigravity (`agy`) — turning a backlog into merged, reviewed, gated pull requests.
 
 [![verify](https://github.com/dngioidev/forge/actions/workflows/verify.yml/badge.svg)](https://github.com/dngioidev/forge/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -41,6 +41,25 @@ forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code)
 - **Mechanical ship gates** — AC mapping, plan-drift, doc-sync, test-intent, and a reviewer + security pass — enforced as scripts, not opinions.
 - **Learning loop + graph RAG** — a distill flow that turns journal evidence into approved lessons, and a SQLite/ts-morph structural index (`graph-rag`) that answers reuse and blast-radius questions before new code is written.
 
+## Runs on your host (Claude Code + Antigravity)
+
+forge's engine — board automation, the seven gates, graph RAG, the safety
+denylist, and the journal-capture learning loop — is host-agnostic Node, so the
+same plugin runs on more than one GAI host. **Claude Code** is the primary host.
+**Antigravity (`agy`)** is proven today: `forge init --host agy` emits a native
+agy plugin package (co-located `plugin.json`, generated `mcp_config.json` +
+`hooks.json`, and the deny/capture I/O shims) that `agy plugin install` ingests
+with zero conversion. Everything load-bearing reaches full parity on agy. **Codex
+is deferred** ([#292](https://github.com/dngioidev/forge/issues/292)) and not yet
+built. See the **[cross-GAI guide](docs/guides/cross-gai.md)** for the end-to-end
+agy flow and the honest capability/parity matrix.
+
+**Auto-merge is Claude-only, by policy.** On non-Claude hosts forge computes the
+merge bar but stops at an open, green PR / awaiting-human — it does not run an
+unattended `gh pr merge`. The live merge stays on Claude Code, where the full
+auto-safety stack is proven. This is a deliberate policy line, not an engine
+limit ([ADR-0007](docs/decisions/0007-cross-gai-mcp-first.md)).
+
 ## The pipeline builds itself
 
 forge is built *by its own pipeline*. Every feature here was ticketed, planned, gated, trailed, and merged through the same skills it ships — so the README, the gates, and the roster you're reading about are also the ones that produced this repo.
@@ -49,12 +68,13 @@ forge is built *by its own pipeline*. Every feature here was ticketed, planned, 
 
 - **[Install guide](docs/guides/install.md)** — prerequisites, adopt-vs-create, per-feature wiring, troubleshooting.
 - **[Handbook](docs/guides/handbook.md)** — daily use: every flow, every gate, and exactly where the human is needed.
+- **[Cross-GAI guide](docs/guides/cross-gai.md)** — running forge on Antigravity (`agy`): the emit flow, plugin layout, hooks/MCP wiring, gotchas, and the capability/parity matrix.
 - **[Docs route index](docs/README.md)** — every spec, plan, ADR, and guide, one line each.
 - **[Platform design spec](docs/specs/2026-07-15-forge-platform-design.md)** — the whole design in one document.
 
 ## Laws worth knowing before you disagree with a gate
 
-Ticket-first, always — silent side-work is forbidden. The owner merges every PR. Situations (incident, security-response) change what's *allowed*, not what's suggested. Gates are mechanical scripts — run them, don't argue with them. `"Unknown" is a valid answer.`
+Ticket-first, always — silent side-work is forbidden. The owner merges every PR — and unattended auto-merge is Claude-only by policy; other hosts stop at a green PR. Situations (incident, security-response) change what's *allowed*, not what's suggested. Gates are mechanical scripts — run them, don't argue with them. `"Unknown" is a valid answer.`
 
 ## Contributing & community
 
