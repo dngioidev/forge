@@ -1,6 +1,6 @@
 # ADR-0007 - Cross-GAI forge: MCP-first portable core + full host-native adapters
 
-**Date:** 2026-07-25 (revised 2026-07-26) - **Status:** **Proposed** (AC1 gate; needs owner sign-off before build) - **Ticket:** #174 - **Route:** spike (deliverable = this decision record; the throwaway spike branch `spike/174-cross-gai-mcp-first` never merges - it graduates to main after owner sign-off)
+**Date:** 2026-07-25 (revised + owner-accepted 2026-07-26) - **Status:** **Accepted** (AC1 owner sign-off given 2026-07-26: full host-native parity bar, Claude-only auto-merge, agy-first scope; verified on live agy v1.1.5) - **Ticket:** #174 - **Route:** spike graduated to main on sign-off. Build proceeds via #289 (AC3) + #288 (AC2).
 
 ## Goal (owner-set, 2026-07-26)
 
