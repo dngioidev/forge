@@ -98,5 +98,9 @@ async function main() {
   return res.code;
 }
 
-const isHookRun = process.argv[1] && /denylist\.mjs$/.test(process.argv[1]);
+// Self-exec guard is ANCHORED to the basename (AC-289.3): only fire main() when
+// THIS file is the entry point. The old `/denylist\.mjs$/` was unanchored and
+// re-fired on import from any `*denylist.mjs` importer, consuming its stdin — the
+// agy PreToolUse shim depends on importing check() with zero side effects.
+const isHookRun = process.argv[1] && /(^|[\\/])denylist\.mjs$/.test(process.argv[1]);
 if (isHookRun) main().then((code) => process.exit(code)).catch(() => process.exit(0)); // fail open
