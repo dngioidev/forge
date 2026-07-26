@@ -35,10 +35,12 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [C7 — Alerts](plans/2026-07-19-c7-alerts.md) — alerts on session/queue events.
 - [C8 — Quota panel](plans/2026-07-19-c8-quota-panel.md) — Claude Code quota panel in the console.
 - [Batch close](plans/2026-07-20-batch-close.md) — tasks for #123: comma-separated `--issue` in `board/close.mjs`.
+- [#289 — agy init emit](plans/2026-07-26-289-agy-init-emit.md) — tasks for #289 (ADR-0007 AC3): `forge init --host agy` emits the proven agy plugin package (co-located `plugin.json`, generated `mcp_config.json` + `hooks.json`, deny/capture shims, short-path staging).
 
 ## Spikes
 
 - [Plugin capabilities](spikes/2026-07-21-plugin-capabilities.md) — research on the full Claude Code plugin surface vs. forge's usage; the tiered enhancement plan behind epic #148 (monitors, bin/, themes, LSP, manifest, `${CLAUDE_PLUGIN_DATA}`).
+- [forge self-audit](spikes/2026-07-21-forge-self-audit.md) — whole-plugin self-audit at v0.15.0: findings across skills, gates, board, and hooks.
 
 ## Design specs
 
@@ -50,12 +52,16 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [ADR-0002 — Console/control distribution](decisions/0002-console-control-distribution.md) — *(superseded by ADR-0003)* the console + control plane ship as repo tooling run from a checkout, not in the packaged plugin (#91).
 - [ADR-0003 — Remove forge-control + console](decisions/0003-remove-control-console.md) — the local control plane + console are removed (unused for a solo interactive workflow; token/scope reduction). Preserved in the v0.5.0 tag; the pipeline (skills/board/gates/care) is unaffected (#95).
 - [ADR-0004 — Remove the multi-backend plane](decisions/0004-remove-multi-backend-plane.md) — the CLI role-swap / multi-backend plane (Plane B) is removed as unwired dead weight; role subagents stay Claude-native. Preserved in the v0.5.0 tag (#99).
+- [ADR-0005 — Local self-hosted runner](decisions/0005-local-self-hosted-runner.md) — PAT/secret model, sharing path, isolation, OS coverage, and advanced-CI decisions for the local self-hosted runner (epic #180).
 - [ADR-0006 — Runner fleet cockpit](decisions/0006-runner-ui.md) — a native PySide6 (Qt) desktop "cockpit" for the local self-hosted runner fleet: Python 3.12 + `uv`, shell-out-only + WSL2 interop, PAT-free read-only default, in-repo at `tools/runner-ui/` (epic #262).
+- [ADR-0007 — Cross-GAI: MCP-first core + host adapters](decisions/0007-cross-gai-mcp-first.md) — invert forge into a host-agnostic engine + per-host adapter emission; full parity on Antigravity (`agy`, proven), auto-merge Claude-only by policy, Codex deferred to #292 (epic #174).
+- [ADR-0007 agy-adapter reference](decisions/0007-agy-adapter/README.md) — the verified-working spike output (`mcp_config.json`, `hooks.json`, deny/capture shims) that `forge init --host agy` productizes (#174).
 
 ## Guides
 
 - [Install](guides/install.md) — forge into any project: prerequisites, marketplace install, init adopt-vs-create, doctor, per-feature wiring, superpowers migration.
 - [Handbook](guides/handbook.md) — daily use: the laws, the cockpit, the Build loop, every human interaction point, care/knowledge/scale flows, gates + situations tables.
+- [Cross-GAI (agy)](guides/cross-gai.md) — run forge on Antigravity: `forge init --host agy` emit flow, plugin layout, MCP/hooks wiring, the deny/capture shims, Windows gotchas (MAX_PATH), and the honest capability/parity matrix.
 - [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, environment.
 - [Runner adoption](guides/runner-adoption.md) — give a private repo free CI on a local self-hosted runner: adopt (new + existing), per-OS host setup, the cockpit, the manual service runbook, and a known-issues table.
 - [Runner cockpit](../tools/runner-ui/README.md) — the native PySide6 desktop app (`tools/runner-ui/`) that manages the runner fleet: install (Python 3.12 + `uv`), `uv run forge-cockpit`, fleet view / control / logs / install (ADR-0006).
@@ -65,6 +71,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 ## Security
 
 - [OSS CI & repo hardening](security/oss-ci-hardening.md) — #214: fork-PR safety analysis of `verify.yml` (pwn-request class), self-hosted-runner private-only guard (#180), and the owner runbook to apply branch protection + Dependabot + secret scanning/push protection + private vuln reporting at the public flip (epic #209).
+- [OSS secret scan](security/oss-secret-scan.md) — #210: full-history secret & credential scan of the repo before the public flip.
 
 ## Feedback
 
