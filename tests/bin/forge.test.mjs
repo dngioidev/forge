@@ -1,17 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const bin = join(root, 'plugin', 'bin', 'forge');
+// Relative (forward-slash) path so bash resolves it in every environment:
+// passing a Windows-absolute path (C:\...) as an argv to bash fails in some
+// shells (found in the #302 agy dogfood). vitest runs with CWD = repo root.
+const bin = './plugin/bin/forge';
 
 function bashAvailable() {
   try { execFileSync('bash', ['-c', 'true'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
 const HAS_BASH = bashAvailable();
-const dry = (args) => execFileSync('bash', [bin, ...args], { env: { ...process.env, FORGE_DRY: '1' }, encoding: 'utf8' }).trim();
+const dry = (args) => execFileSync('bash', ['-c', `FORGE_DRY=1 bash ./plugin/bin/forge ${args.map(a => `'${a}'`).join(' ')}`], { encoding: 'utf8' }).trim();
 
 describe('forge dispatcher (#150)', () => {
   it('is a bash script with a usage block and the FORGE_DRY hook', () => {
