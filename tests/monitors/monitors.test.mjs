@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rollupState, transition, poll as ciPoll } from '../../plugin/scripts/monitors/ci-watch.mjs';
-import { newlyResolved } from '../../plugin/scripts/monitors/decisions-watch.mjs';
+import { rollupState, transition, poll as ciPoll, isNoPr } from '../../plugin/scripts/monitors/ci-watch.mjs';
+import { newlyResolved, poll as decisionsPoll } from '../../plugin/scripts/monitors/decisions-watch.mjs';
+import { trackFailure, freshGuard, FAILURE_THRESHOLD, REEMIT_EVERY } from '../../plugin/scripts/monitors/poll-guard.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -44,6 +46,75 @@ describe('decisions monitor (#151)', () => {
     expect(fresh.map((d) => d.id)).toEqual(['b']);
     fresh.forEach((d) => seen.add(d.id));
     expect(newlyResolved(seen, decisions)).toEqual([]); // already surfaced
+  });
+});
+
+describe('monitor persistent-error surfacing (#318)', () => {
+  // Drive the pure guard over a poll sequence, collecting every surfaced line.
+  const drive = (results, name = 'forge-ci') => {
+    let guard = freshGuard();
+    const lines = [];
+    for (const ok of results) {
+      guard = trackFailure(guard, ok, { name, reason: 'boom' });
+      if (guard.line) lines.push(guard.line);
+    }
+    return { guard, lines };
+  };
+
+  it('AC-318.1: N consecutive failures surface exactly one error line, polling continues', () => {
+    const seq = Array(FAILURE_THRESHOLD).fill(false); // exactly N failed polls
+    const { lines, guard } = drive(seq);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe(`forge-ci error: boom (${FAILURE_THRESHOLD} consecutive polls)`);
+    expect(guard.fails).toBe(FAILURE_THRESHOLD); // the loop kept counting — it did not stop
+  });
+
+  it('AC-318.1: a lasting outage is throttled — not one line per poll', () => {
+    const { lines } = drive(Array(FAILURE_THRESHOLD + REEMIT_EVERY).fill(false));
+    // one at the threshold, one more after REEMIT_EVERY further failures — never spam
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain(`(${FAILURE_THRESHOLD + REEMIT_EVERY} consecutive polls)`);
+  });
+
+  it('AC-318.2: a single/transient failure surfaces nothing', () => {
+    expect(drive([false]).lines).toEqual([]);
+    expect(drive(Array(FAILURE_THRESHOLD - 1).fill(false)).lines).toEqual([]); // still under threshold
+  });
+
+  it('AC-318.2: a success resets the counter — an occasional blip never accumulates', () => {
+    // fail just below threshold, recover, repeat: the reset means we never surface.
+    const blips = [];
+    for (let i = 0; i < 4; i++) { for (let j = 0; j < FAILURE_THRESHOLD - 1; j++) blips.push(false); blips.push(true); }
+    const { lines, guard } = drive(blips);
+    expect(lines).toEqual([]);
+    expect(guard.fails).toBe(0); // last poll was a success → clean slate
+  });
+
+  it('AC-318.2: ci poll marks a real gh failure ok:false but stays ok on no-PR', async () => {
+    const authFail = await ciPoll(async () => ({ ok: false, stderr: 'gh: To authenticate, run: gh auth login' }), null);
+    expect(authFail.ok).toBe(false);
+    expect(authFail.line).toBe(null); // poll itself is silent; the guard decides surfacing
+    const noPr = await ciPoll(async () => ({ ok: false, stderr: 'no pull requests found for branch "x"' }), null);
+    expect(noPr.ok).toBe(true);
+    expect(isNoPr({ stderr: '' })).toBe(true); // empty stderr treated as benign no-PR
+  });
+
+  it('AC-318.1: decisions poll marks a real fs error ok:false (and stays ok normally)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-dec-'));
+    // .forge/decisions as a FILE, not a dir → readdir throws ENOTDIR (a real fs error)
+    await mkdir(join(dir, '.forge'), { recursive: true });
+    await writeFile(join(dir, '.forge', 'decisions'), 'not a dir');
+    const bad = await decisionsPoll(dir, new Set());
+    expect(bad.ok).toBe(false);
+    expect(bad.lines).toEqual([]);
+
+    // a healthy poll keeps the { lines, ok:true } shape and still emits resolved lines
+    const good = await mkdtemp(join(tmpdir(), 'forge-dec-'));
+    await mkdir(join(good, '.forge', 'decisions'), { recursive: true });
+    await writeFile(join(good, '.forge', 'decisions', 'd1.json'), JSON.stringify({ id: 'd1', issue: 9, status: 'resolved', answer: 'go' }));
+    const ok = await decisionsPoll(good, new Set());
+    expect(ok.ok).toBe(true);
+    expect(ok.lines).toEqual(['Decision d1 (#9) resolved: go']);
   });
 });
 
