@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.19.0 — 2026-08-02
+
+### Features
+
+- add --date override for the changelog/release date (#340) ([#340](https://github.com/dngioidev/forge/issues/340))
+- reject empty/garbage commit subjects in a conventions gate (#310) (#328) ([#310](https://github.com/dngioidev/forge/issues/310) [#328](https://github.com/dngioidev/forge/issues/328))
+- guard README version-badge drift in the docsync gate (#327) ([#327](https://github.com/dngioidev/forge/issues/327))
+- harden forge-core transport — line cap, arg bounds, config teaching (#296) (#299) ([#296](https://github.com/dngioidev/forge/issues/296) [#299](https://github.com/dngioidev/forge/issues/299))
+- forge-core MCP server + factored rpc.mjs transport (#288) (#295) ([#288](https://github.com/dngioidev/forge/issues/288) [#295](https://github.com/dngioidev/forge/issues/295))
+- forge init --host agy emits the proven agy plugin package (#289) (#293) ([#289](https://github.com/dngioidev/forge/issues/289) [#293](https://github.com/dngioidev/forge/issues/293))
+
+### Tests
+
+- cover issues.mjs error + upsertMarkedComment idempotency (#322) (#337) ([#322](https://github.com/dngioidev/forge/issues/322) [#337](https://github.com/dngioidev/forge/issues/337))
+- contract-test agy safety shims (agy-deny + agy-capture) (#313) (#325) ([#313](https://github.com/dngioidev/forge/issues/313) [#325](https://github.com/dngioidev/forge/issues/325))
+
+### Refactoring
+
+- single-source the denylist escalate message (#321) (#336) ([#321](https://github.com/dngioidev/forge/issues/321) [#336](https://github.com/dngioidev/forge/issues/336))
+- single shared shell-segment splitter (#320) (#335) ([#320](https://github.com/dngioidev/forge/issues/320) [#335](https://github.com/dngioidev/forge/issues/335))
+
+### Docs
+
+- narrow denylist header comment to its actual scope (#334) ([#334](https://github.com/dngioidev/forge/issues/334))
+
+### Fixes
+
+- watchdog for the return-then-resume stall (#333) ([#333](https://github.com/dngioidev/forge/issues/333))
+- surface persistent poll failures instead of silent catch (#332) ([#332](https://github.com/dngioidev/forge/issues/332))
+- wire the runaway backstop (guardTripped) into the loop (#331) ([#331](https://github.com/dngioidev/forge/issues/331))
+- enforce the in-session merge-auth preflight in code (#330) ([#330](https://github.com/dngioidev/forge/issues/330))
+- gate the live merge through the tested merge bar (#329) ([#329](https://github.com/dngioidev/forge/issues/329))
+- sync README version badge to package.json + guard test (#308) (#326) ([#308](https://github.com/dngioidev/forge/issues/308) [#326](https://github.com/dngioidev/forge/issues/326))
+- block rm long flags (--recursive --force) in denylist (#324) ([#324](https://github.com/dngioidev/forge/issues/324))
+- block pipe-to-shell / eval RCE in denylist (#311) (#323) ([#311](https://github.com/dngioidev/forge/issues/311) [#323](https://github.com/dngioidev/forge/issues/323))
+- make forge dispatcher test bash-path portable (#302 dogfood) (#306) ([#302](https://github.com/dngioidev/forge/issues/302) [#306](https://github.com/dngioidev/forge/issues/306))
+- board_escalate options bypass + escape decision-comment markdown (#300) (#301) ([#300](https://github.com/dngioidev/forge/issues/300) [#301](https://github.com/dngioidev/forge/issues/301))
+- resolve ${CLAUDE_PLUGIN_ROOT} in emitted agy skills/commands (#294) (#298) ([#294](https://github.com/dngioidev/forge/issues/294) [#298](https://github.com/dngioidev/forge/issues/298))
+
 ## v0.18.0 — 2026-07-24
 
 ### Features
