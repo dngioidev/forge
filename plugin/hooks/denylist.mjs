@@ -1,9 +1,18 @@
 #!/usr/bin/env node
 /**
  * PreToolUse denylist hook (spec §7 trigger + §13 blast-radius; plan T4).
- * Blocks destructive commands with an escalate-instead message. Exit 2 =
- * block (stderr shown to the model); any internal error fails OPEN (exit 0)
- * — a safety hook must never take the session down (AC-3.4).
+ *
+ * A TARGETED backstop — NOT a general destructive-command sandbox. It matches a
+ * fixed set of high-blast-radius shell patterns and nothing else: git history/
+ * branch operations (force-push, protected-branch delete, hard-reset, clean -f,
+ * filter-branch/-repo), `rm` recursive-force outside build/temp dirs, and
+ * pipe-to-shell / eval-of-substitution RCE (see RULES). Anything not in that list
+ * — including most ways to destroy data — passes through untouched.
+ *
+ * It FAILS OPEN by design: a matched command exits 2 (block; stderr shown to the
+ * model), but a non-match, unknown input, or any internal error returns exit 0 so
+ * a safety hook can never take the session down (AC-3.4). Treat it as a tripwire
+ * for a few known-catastrophic commands, not a security boundary.
  */
 
 const SAFE_RM_TARGETS = /(node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)/i;
