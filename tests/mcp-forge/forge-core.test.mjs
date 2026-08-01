@@ -35,7 +35,7 @@ describe('AC-288.1: rpc.mjs is the shared transport (forge-graph regression-free
     expect(init.result.serverInfo.name).toBe('forge-core');
     const list = await h({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     expect(list.result.tools.map((t) => t.name).sort()).toEqual(
-      ['autopilot_merge_bar', 'autopilot_select', 'board_comment', 'board_create', 'board_escalate', 'board_move', 'board_status', 'gate_run', 'release_readiness'],
+      ['autopilot_merge', 'autopilot_merge_bar', 'autopilot_select', 'board_comment', 'board_create', 'board_escalate', 'board_move', 'board_status', 'gate_run', 'release_readiness'],
     );
     expect((await call(h, 'nope_tool', {})).error.code).toBe(-32602);
     expect((await h({ jsonrpc: '2.0', id: 9, method: 'bogus' })).error.code).toBe(-32601);
@@ -43,8 +43,8 @@ describe('AC-288.1: rpc.mjs is the shared transport (forge-graph regression-free
     expect(await h({ jsonrpc: '2.0', method: 'notifications/initialized' })).toBe(null);
   });
 
-  it('exposes exactly the 9 documented tools and the 8 gate names', () => {
-    expect(TOOLS).toHaveLength(9);
+  it('exposes exactly the 10 documented tools and the 8 gate names', () => {
+    expect(TOOLS).toHaveLength(10);
     expect(GATE_NAMES).toEqual(['ac', 'conventions', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent']);
   });
 });
@@ -175,6 +175,68 @@ describe('AC-288.3: autopilot_merge_bar returns the typed {merge,blockedOn} vect
     const h = build({ deps: { evaluateMergeBar: (s, o) => { calls++; return { merge: false, blockedOn: ['ci'], escalate: !!o.critical }; } } });
     body(await call(h, 'autopilot_merge_bar', { signals: { ci: false } }));
     expect(calls).toBe(1);
+  });
+});
+
+// =========================================================================
+describe('AC-315.1 / AC-315.2: autopilot_merge funnels the live merge through the tested bar (fail-closed)', () => {
+  // A ctx double: pr view returns a controllable CI rollup; every other gh call (incl. pr merge) records + succeeds.
+  const mergeCtx = (rollup) => {
+    const calls = [];
+    const ctx = {
+      ok: true,
+      config: {},
+      gh: async (a) => {
+        calls.push(a.join(' '));
+        if (a[0] === 'pr' && a[1] === 'view') return { ok: true, json: { statusCheckRollup: rollup } };
+        return { ok: true };
+      },
+    };
+    return { calls, ctx };
+  };
+  const green = [{ conclusion: 'SUCCESS' }];
+  const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
+
+  it('AC-315.1: the tool executes the live merge only via runMerge — all green squash-merges', async () => {
+    const { calls, ctx } = mergeCtx(green); // real DEFAULT_DEPS.runMerge
+    const h = build({ getCtx: async () => ctx });
+    const out = body(await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: heldVerdicts }));
+    expect(out).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
+    expect(calls).toContain('pr merge 9 --squash --delete-branch');
+  });
+
+  it('AC-315.1: autopilot_merge funnels to runMerge (the canonical path), passing issue/pr/signals/critical through', async () => {
+    let seen = null;
+    const h = build({ deps: { runMerge: async (_ctx, a) => { seen = a; return { ok: true, merged: true, outcome: 'merged' }; } } });
+    body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts, critical: false }));
+    expect(seen).toEqual({ issue: 7, pr: 3, signals: heldVerdicts, critical: false });
+  });
+
+  it('AC-315.2: any red/undefined signal is mechanically unmergeable through the tool — no pr merge call', async () => {
+    for (const s of ['ship', 'gates', 'reviewer', 'security']) {
+      const { calls, ctx } = mergeCtx(green);
+      const h = build({ getCtx: async () => ctx });
+      const out = body(await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: { ...heldVerdicts, [s]: false } }));
+      expect(out.merged, `${s}=false must not merge`).toBe(false);
+      expect(out.blockedOn).toContain(s);
+      expect(calls.some((c) => c.startsWith('pr merge')), `${s}=false must not squash-merge`).toBe(false);
+    }
+    // CI undefined/red (empty rollup) fails closed on ci even with every held verdict green.
+    const { calls, ctx } = mergeCtx([]);
+    const h = build({ getCtx: async () => ctx });
+    const out = body(await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: heldVerdicts }));
+    expect(out.merged).toBe(false);
+    expect(out.blockedOn).toContain('ci');
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('AC-315.2: critical=true forces no-merge through the tool even with every signal green', async () => {
+    const { calls, ctx } = mergeCtx(green);
+    const h = build({ getCtx: async () => ctx });
+    const out = body(await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: heldVerdicts, critical: true }));
+    expect(out.merged).toBe(false);
+    expect(out.blockedOn).toContain('security:critical');
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
   });
 });
 
