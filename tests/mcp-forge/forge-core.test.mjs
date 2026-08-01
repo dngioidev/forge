@@ -43,9 +43,9 @@ describe('AC-288.1: rpc.mjs is the shared transport (forge-graph regression-free
     expect(await h({ jsonrpc: '2.0', method: 'notifications/initialized' })).toBe(null);
   });
 
-  it('exposes exactly the 9 documented tools and the 7 gate names', () => {
+  it('exposes exactly the 9 documented tools and the 8 gate names', () => {
     expect(TOOLS).toHaveLength(9);
-    expect(GATE_NAMES).toEqual(['ac', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent']);
+    expect(GATE_NAMES).toEqual(['ac', 'conventions', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent']);
   });
 });
 
@@ -108,6 +108,11 @@ describe('AC-288.2: every tool is callable and returns its documented structured
   it('AC-288.2: gate_run dep -> fail level surfaces findings', async () => {
     const h = build({ deps: { gates: { dep: async () => ({ ok: false, violations: [{ name: 'left-pad', reason: 'too new (3d old)' }] }) } } });
     expect(body(await call(h, 'gate_run', { gate: 'dep' }))).toEqual({ ok: true, gate: 'dep', level: 'fail', findings: ['left-pad: too new (3d old)'] });
+  });
+
+  it('AC-310.1: gate_run conventions -> fail level surfaces garbage-subject findings', async () => {
+    const h = build({ deps: { gates: { conventions: async () => ({ ok: false, violations: [{ sha: 'abc1234', subject: '@ (#297)', reason: 'not a conventional-commit header (expected "type(scope): description")' }] }) } } });
+    expect(body(await call(h, 'gate_run', { gate: 'conventions' }))).toEqual({ ok: true, gate: 'conventions', level: 'fail', findings: ['abc1234 "@ (#297)": not a conventional-commit header (expected "type(scope): description")'] });
   });
 
   it('AC-288.2: release_readiness -> {ok,items:[{name,level,msg}]}', async () => {
