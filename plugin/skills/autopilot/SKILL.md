@@ -40,8 +40,11 @@ SPAWN a delivery subagent (Task tool) for this ticket ────────�
   return {issue, outcome, pr, notes}                            │
   ▼                                                             │
 main loop reads ONLY that terminal report ◀────────────────────┘
-  ├─ outcome=escalated / awaiting-human ─▶ record + park, continue with next ticket
-  ├─ outcome=merged ─────────────────────▶ record to run.json · trail --phase merged
+  │  WATCHDOG: resolveReturnedTicket(report) (§ Return-then-resume watchdog)  ← run on EVERY report
+  ├─ action=merge ───────────────────────▶ funnel the PR through the merge bar (autopilot_merge/runMerge)
+  ├─ action=escalate ────────────────────▶ surface visibly (record awaiting-human / escalate) — never a silent park
+  ├─ action=continue: outcome=escalated / awaiting-human ─▶ record + park, continue with next ticket
+  ├─ action=continue: outcome=merged ────▶ record to run.json · trail --phase merged
   └─ subagent filed new work ────────────▶ already on the board — re-enters the queue
   ▼
 loop  (main context unchanged — ~O(1) per ticket)
@@ -54,10 +57,20 @@ Per ticket, the main loop does exactly three things: **spawn**, **record**, **co
 1. **Spawn a delivery subagent** with the Task tool — `subagent_type: general-purpose` (or a dedicated delivery agent if the roster has one). The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the route (deliver, or shape-first under `--shape`), the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, open the PR, **watch CI to green in this same run with `gh pr checks <pr> --watch`**, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
 
    **Forbidden — the return-then-resume stall:** the brief must NOT tell the subagent to open the PR and then return awaiting an external/background completion notification (e.g. "await the CI watcher's notification"). The subagent's context is discarded on return and **nothing re-invokes it when CI goes green** — that stalls the ticket until a manual resume. The background CI monitor notifies the **main loop**, not a returned subagent. The subagent must therefore watch CI to conclusion **in-run itself** (`gh pr checks <pr> --watch`) and merge within the **same invocation** — never return on the assumption it will be re-spawned on green.
-2. **Read only the terminal report** — `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}`. The main loop consumes that JSON, writes it to `run.json`, trails the ticket, and never re-reads the subagent's work.
+2. **Read only the terminal report** — `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}` — and **run it through the watchdog** (`watchdog.mjs` `resolveReturnedTicket`, § Return-then-resume watchdog) before recording. A subagent that returns `awaiting-merge` (opened a green PR, then returned awaiting a re-invocation) must NOT be recorded as a silent terminal state — the watchdog turns that into a `merge` (funnel to the bar) or an `escalate` (surface awaiting-human / escalate). Every already-resolved outcome passes through as `continue`. The main loop then writes the resolved outcome to `run.json`, trails the ticket, and never re-reads the subagent's work.
 3. **Continue** to the next ticket. Because the delivery context is discarded, the main window is unchanged between tickets — a 5-ticket and a 50-ticket run cost the same orchestration overhead, and the run never compacts mid-loop.
 
 A subagent that can't finish (deadlock, a gate failing twice, an ungrounded shape) returns `outcome: escalated` with the reason; the loop parks that one ticket and moves on. Never fall back to delivering inline — a missing/broken delivery subagent is itself an escalation.
+
+## Return-then-resume watchdog — awaiting-merge is never silently parked (#319)
+
+The forbidden pattern above (§ Orchestration) is a *briefing* rule; this is its **mechanical backstop**. Even a correctly-briefed subagent can return `awaiting-merge` — it opened a PR, watched CI green, then returned at the open green PR awaiting a re-invocation that never comes. Its context is discarded on return and nothing re-drives it, so without detection the ticket parks at a green PR **forever** (and a subagent that never moved the board status may never be re-selected). So the loop runs **every** returned report through `watchdog.mjs` `resolveReturnedTicket({ outcome, pr, ciGreen, mergeMode })` — a pure decision that maps the report to one action:
+
+- **`merge`** — `awaiting-merge` on a **green** PR with **auto-merge** authority (the run's recorded `mergeMode`): funnel the PR through the tested bar (`autopilot_merge` / `runMerge`), which re-checks CI itself. The stall becomes a merge.
+- **`escalate`** — `awaiting-merge` that can't merge: a green PR under **pr-only** (no in-session grant) is recorded **awaiting-human visibly**; a return with **no PR** or a **not-yet-green** PR (the subagent skipped its in-run `--watch`) is **escalated**. Either way it is *surfaced*, never silently parked.
+- **`continue`** — every already-resolved outcome (`merged`/`escalated`/`awaiting-human`/`skipped`): record the reported outcome and move on.
+
+**The invariant:** an `awaiting-merge` report is NEVER left as a silent terminal state — it either merges or is surfaced. Selection is resume-safe by the same token: a ticket returned at an open green PR is still at a resume-tier board status (`inReview`/`inProgress`), so `selectNext` re-picks it as `resume` on the next iteration (and even a ticket left at `ready`/`backlog` is re-delivered, never dropped) — the watchdog and the resume path are belt-and-suspenders against the same stall.
 
 ## Permissions — required for a continuous run
 
@@ -167,6 +180,7 @@ The loop is prose the orchestrator runs, but its mechanical decisions are real, 
 - `merge.mjs` — `evaluateMergeBar(signals)` + `runMerge(ctx,{issue,pr,signals,mode})`: the auto-merge bar. Fail-closed — a missing signal is red; `features.autopilotAutoMerge:false` **or** the preflight's `mode:'pr-only'` parks at the PR. This is where "nothing merges on red" lives. `runMerge` is the **canonical, enforced merge entry point**, exposed to hosts as the `autopilot_merge` MCP tool (forge-core) so the live merge is executed through the bar by construction — never via a raw `gh pr merge`.
 - `preflight.mjs` — `mergeAuthPreflight({authorized,config})`: the run-start merge-authorization decision (§ Merge-authorization preflight). Pure — returns the effective merge `mode` (`auto-merge` only on an explicit in-session grant + config-enabled; else `pr-only` with the notice to surface). `startRun` records it into `run.json`; `runMerge` gates on it. This is what stops an unattended run from delivering a whole ticket and then silently wedging at the first merge (#316).
 - `ledger.mjs` — the run ledger (`.forge/autopilot/run.json`): `applyOutcome`/`applyFiled`/`guardTripped`/`nextIteration`/`renderReport`, plus `ledger.mjs report`. `nextIteration(run, boardSize)` is the per-iteration **runaway backstop** the loop calls first each iteration — the real caller for `guardTripped` (halt + escalate on trip; #317). The resume point too.
+- `watchdog.mjs` — `resolveReturnedTicket({outcome,pr,ciGreen,mergeMode})`: the return-then-resume watchdog (§ Return-then-resume watchdog). Pure — the loop runs it on **every** subagent report so an `awaiting-merge` on a green PR is re-driven to the merge bar or surfaced, never silently parked (#319).
 - `newwork.mjs` — `fileWork(ctx,{title,kind,from})`: files a linked follow-up (bug/spike/item) mid-run.
 - `perms.mjs` — prints the `.claude/settings.local.json` allowlist autopilot needs to run continuously (non-destructive; opt-in).
 
