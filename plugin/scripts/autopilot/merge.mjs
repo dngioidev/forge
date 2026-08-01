@@ -52,12 +52,18 @@ export async function ciGreen(gh, pr) {
 /**
  * Live merge, gated by the bar. `signals` carries the orchestrator's held
  * verdicts (ship/gates/reviewer/security); CI is checked here. When auto-merge
- * is disabled, park at the PR (awaiting-human) and let the loop continue.
+ * is disabled — either by config (features.autopilotAutoMerge:false) or by the
+ * run-start merge-auth preflight resolving `mode: 'pr-only'` (#316, no in-session
+ * grant) — park at the PR (awaiting-human) and let the loop continue. `mode` is
+ * the effective merge mode from the preflight, recorded in run.json; pr-only
+ * carries autoMergeEnabled:false semantics so a run with no live grant never
+ * attempts a merge that would stall.
  */
-export async function runMerge(ctx, { issue, pr, signals = {}, critical = false }, log = console.log) {
+export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null }, log = console.log) {
   if (!Number.isInteger(issue) || !Number.isInteger(pr)) return { ok: false, error: '--issue and --pr are required' };
-  if (!autoMergeEnabled(ctx.config)) {
-    log(`autopilot: features.autopilotAutoMerge=false — parking #${issue} at PR #${pr} (awaiting-human)`);
+  if (mode === 'pr-only' || !autoMergeEnabled(ctx.config)) {
+    const why = mode === 'pr-only' ? 'merge-auth preflight resolved pr-only (no in-session grant)' : 'features.autopilotAutoMerge=false';
+    log(`autopilot: ${why} — parking #${issue} at PR #${pr} (awaiting-human)`);
     return { ok: true, merged: false, parked: true, outcome: 'awaiting-human' };
   }
   const ci = await ciGreen(ctx.gh, pr);

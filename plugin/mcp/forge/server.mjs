@@ -169,6 +169,7 @@ export const TOOLS = [
         pr: { type: 'integer' },
         signals: { type: 'object' },
         critical: { type: 'boolean' },
+        mode: { type: 'string', enum: ['auto-merge', 'pr-only'], description: 'Effective merge mode from the run-start merge-auth preflight (run.json). "pr-only" (no in-session grant) parks at the PR — never merges.' },
       },
       required: ['issue', 'pr', 'signals'],
     },
@@ -371,7 +372,7 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
           // by construction. A red bar is NOT an operational error: surface it as
           // a structured {merged:false, blockedOn} so the caller sees the block.
           return board(id, async (ctx) => {
-            const r = await deps.runMerge(ctx, { issue: args.issue, pr: args.pr, signals: args.signals, critical: args.critical ?? false }, noop);
+            const r = await deps.runMerge(ctx, { issue: args.issue, pr: args.pr, signals: args.signals, critical: args.critical ?? false, mode: args.mode ?? null }, noop);
             if (r.error) return teach(id, r.error);
             return toolText(id, { ok: true, merged: r.merged ?? false, parked: r.parked ?? false, outcome: r.outcome ?? null, blockedOn: r.blockedOn ?? [], escalate: r.escalate ?? false });
           });
