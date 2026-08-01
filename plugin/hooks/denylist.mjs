@@ -104,6 +104,9 @@ const SUBSTITUTION = /\$\(|`/;
  */
 export { splitSegments as segments } from '../scripts/lib/shell-split.mjs';
 import { splitSegments as segments } from '../scripts/lib/shell-split.mjs';
+// The escalate message is single-sourced (#321) so this hook and the agy deny shim
+// cannot drift the wording again; both import escalateMessage() with zero side effects.
+import { escalateMessage } from '../scripts/lib/escalate-msg.mjs';
 
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
@@ -129,10 +132,7 @@ export async function handle(payload, appendFn) {
   } catch { /* still block below */ }
   return {
     code: 2,
-    message:
-      `forge denylist blocked this command (${res.rule}): ${res.msg}. ` +
-      `Destructive actions require a human decision — escalate instead: ` +
-      `node plugin/scripts/board/escalate.mjs --issue <n> --reason "..." --options "do it|alternative" (spec §7).`,
+    message: escalateMessage(res.rule, res.msg),
   };
 }
 

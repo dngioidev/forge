@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { check, handle, segments } from '../../plugin/hooks/denylist.mjs';
+import { escalateMessage } from '../../plugin/scripts/lib/escalate-msg.mjs';
 
 describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () => {
   it('AC-B85.1: a push chained with an unrelated `gh … -f` is NOT force-push', () => {
@@ -178,6 +179,20 @@ describe('recursive-delete long flags (#312, AC-312.*)', () => {
     expect(check('rm -rf node_modules').blocked).toBe(false);
     expect(check('rm --recursive --force node_modules').blocked).toBe(false);
     expect(check('rm --force --recursive dist build coverage').blocked).toBe(false);
+  });
+});
+
+describe('shared escalate message (#321, AC-321.1)', () => {
+  const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
+
+  it('AC-321.1: handle() emits the single-sourced escalate wording verbatim', async () => {
+    const res = await handle(payload('git reset --hard HEAD~3'), async () => {});
+    expect(res.code).toBe(2);
+    // The message is the shared constant, not a drifted local copy.
+    expect(res.message).toBe(escalateMessage('hard-reset', 'git reset --hard discards work irrecoverably'));
+    // Canonical spec reference uses "§7" (not the drifted "section 7"), with the command hint.
+    expect(res.message).toContain('spec §7');
+    expect(res.message).toContain('node plugin/scripts/board/escalate.mjs');
   });
 });
 

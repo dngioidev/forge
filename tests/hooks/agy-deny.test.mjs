@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { escalateMessage } from '../../plugin/scripts/lib/escalate-msg.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHIM = join(HERE, '..', '..', 'plugin', 'hooks', 'agy-deny.mjs');
@@ -40,6 +41,17 @@ describe('agy-deny shim I/O contract (AC-313.1)', () => {
     const decision = JSON.parse(out);
     expect(decision).toMatchObject({ decision: 'deny' });
     expect(decision.reason).toContain('recursive-delete');
+  });
+
+  it('AC-321.1: the deny reason is the single-sourced escalate wording, identical to the Claude hook', async () => {
+    // recursive-delete is a stable rule name + msg shared via check(); the agy shim
+    // must surface the exact same escalate string as denylist.mjs (no wording drift).
+    const { out } = await runDeny(call('rm -rf src/'));
+    const reason = JSON.parse(out).reason;
+    expect(reason).toBe(escalateMessage('recursive-delete', 'rm -rf (incl. --recursive --force) outside build/temp dirs'));
+    // Uses the canonical "§7" spec reference, not the old drifted "section 7".
+    expect(reason).toContain('spec §7');
+    expect(reason).not.toContain('section 7');
   });
 
   it('AC-313.1: allows a benign command with a bare decision:allow (no reason)', async () => {

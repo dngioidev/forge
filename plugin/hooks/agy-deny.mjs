@@ -12,6 +12,10 @@
  * here has no side effects. The name is kept deny-not-denylist as belt-and-braces.
  */
 import { check } from './denylist.mjs';
+// Single-sourced escalate wording (#321), shared with denylist.mjs so the two host
+// shims cannot drift the message again. Imported with zero side effects. (This shim
+// file stays ASCII-only per the agy emit contract; the message text lives in the lib.)
+import { escalateMessage } from '../scripts/lib/escalate-msg.mjs';
 
 async function main() {
   let raw = '';
@@ -28,9 +32,7 @@ async function main() {
     if (res.blocked) {
       out = {
         decision: 'deny',
-        reason:
-          `forge denylist blocked this command (${res.rule}): ${res.msg}. ` +
-          `Destructive actions require a human decision - escalate instead of forcing them (spec section 7).`,
+        reason: escalateMessage(res.rule, res.msg),
       };
     }
   }
