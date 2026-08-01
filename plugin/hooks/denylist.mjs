@@ -97,10 +97,13 @@ const SUBSTITUTION = /\$\(|`/;
  * tripped force-push because `git push` and an unrelated `-f` were both present
  * somewhere in the string (#85). Over-splitting is safe: a destructive command is
  * still fully contained in its own segment.
+ *
+ * The splitter itself lives in one shared module (#320) so this copy and the
+ * capture hook's copy can't drift; re-exported here under the historical `segments`
+ * name that tests and importers already depend on.
  */
-export function segments(command) {
-  return command.split(/&&|\|\||[;|\n]/).map((s) => s.trim()).filter(Boolean);
-}
+export { splitSegments as segments } from '../scripts/lib/shell-split.mjs';
+import { splitSegments as segments } from '../scripts/lib/shell-split.mjs';
 
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };

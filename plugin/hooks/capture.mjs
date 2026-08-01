@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { append } from '../scripts/lib/journal.mjs';
 import { parseBranch } from '../scripts/lib/ticket.mjs';
+import { splitSegments } from '../scripts/lib/shell-split.mjs';
 
 const READ_ONLY = new Set([
   'grep', 'rg', 'ls', 'cat', 'head', 'tail', 'find', 'which', 'echo', 'pwd',
@@ -38,7 +39,9 @@ function segmentIsReadOnly(segment) {
 }
 
 export function isReadOnly(command) {
-  const segments = command.split(/&&|\|\||[;|\n]/).filter((s) => s.trim());
+  // Shared splitter (#320) — one copy of the shell-segment regex across both hooks.
+  // It trims each segment; segmentIsReadOnly also trims, so behavior is unchanged.
+  const segments = splitSegments(command);
   return segments.length > 0 && segments.every(segmentIsReadOnly);
 }
 
