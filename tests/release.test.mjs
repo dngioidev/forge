@@ -241,6 +241,20 @@ describe('runRelease mutating path (#165)', () => {
     expect(res.notes.some((n) => n.includes('npm publish'))).toBe(false); // private -> no publish note
   });
 
+  it('AC-badge: bumps the README shields.io version badge and stages it (#308 drift guard)', async () => {
+    const cwd = await seedRepo({ changelog: '# Changelog\n\n' });
+    await writeFile(join(cwd, 'README.md'), '# forge\n[![version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)\n', 'utf8');
+    const { git, gh, calls, order } = makeFakes({ cwd });
+    const res = await runRelease({ cwd, gh, execFn: git }, { dryRun: false }, () => {});
+    expect(res.ok).toBe(true);
+    const readme = await readFile(join(cwd, 'README.md'), 'utf8');
+    expect(readme).toContain('version-0.2.0-blue.svg'); // badge bumped in lockstep
+    expect(readme).not.toContain('version-0.1.0-');
+    // README.md is staged alongside the version files + changelog
+    expect(calls.add).toEqual(['add', 'CHANGELOG.md', 'package.json', join('plugin', '.claude-plugin', 'plugin.json'), 'README.md']);
+    expect(order).toEqual(['add', 'commit', 'tag', 'push', 'release']);
+  });
+
   it('AC2: a failed git commit aborts BEFORE tagging/pushing (no dangling tag, no release)', async () => {
     const cwd = await seedRepo({ changelog: '# Changelog\n\n' });
     const { git, gh, order } = makeFakes({ cwd, commitOk: false });
