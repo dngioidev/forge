@@ -42,6 +42,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Enforcing license check (spec §13 supply-chain). Self-contained — it needs
+  # nothing from forge: `pnpm licenses list` feeds a small inline node script that
+  # FAILS (exit 1) on any production dependency whose SPDX id is outside the
+  # permissive allowlist, and fails closed on an unknown/UNLICENSED/missing
+  # license. Tweak ALLOW below to match your project's policy.
   licenses:
     runs-on: ubuntu-latest
     steps:
@@ -51,4 +56,50 @@ jobs:
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile
-      - run: pnpm licenses list --prod
+      - name: Enforce dependency license allowlist
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const ALLOW = new Set([
+            'MIT', 'ISC', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause',
+            'BlueOak-1.0.0', '0BSD', 'Unlicense', 'CC0-1.0',
+          ]);
+          const UNKNOWN = new Set(['', 'unknown', 'unlicensed', 'see license in license', 'none']);
+          const clean = (s) => s.trim().replace(/^\(+|\)+$/g, '').trim();
+          const allowed = (license) => {
+            const norm = (license || '').trim();
+            if (!norm || UNKNOWN.has(norm.toLowerCase())) return false;
+            if (ALLOW.has(norm)) return true;
+            const inner = norm.replace(/^\(+|\)+$/g, '').trim();
+            if (/\sOR\s/i.test(inner)) return inner.split(/\sOR\s/i).some((p) => ALLOW.has(clean(p)));
+            if (/\sAND\s/i.test(inner)) return inner.split(/\sAND\s/i).every((p) => ALLOW.has(clean(p)));
+            return false;
+          };
+          let raw = '';
+          try {
+            raw = execFileSync('pnpm', ['licenses', 'list', '--prod', '--json'], { encoding: 'utf8' });
+          } catch (e) {
+            raw = String((e && e.stdout) || '');
+          }
+          raw = raw.trim();
+          let data = {};
+          if (raw) {
+            try { data = JSON.parse(raw); }
+            catch { console.error('could not parse `pnpm licenses list --json` — failing closed'); process.exit(1); }
+          }
+          const violations = [];
+          for (const [key, pkgs] of Object.entries(data)) {
+            if (!Array.isArray(pkgs)) continue;
+            for (const p of pkgs) {
+              const name = (p && p.name) || '(unknown package)';
+              const license = (p && typeof p.license === 'string' && p.license.trim()) || (typeof key === 'string' ? key.trim() : '');
+              if (!allowed(license)) violations.push(name + ': ' + (license || '(none)'));
+            }
+          }
+          if (violations.length) {
+            console.error('Disallowed or unknown dependency license(s):\n  ' + violations.join('\n  '));
+            process.exit(1);
+          }
+          console.log('license check: all production dependency licenses are within the allowlist');
+          NODE
