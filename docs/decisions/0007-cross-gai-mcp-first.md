@@ -102,10 +102,11 @@ Proposed `forge-core` tools (beyond the 6 graph tools):
 | `release_readiness` | `{}` | `{ ok, items:[{name,level,msg}] }` | Checklist evaluated item-by-item |
 | `autopilot_select` | `{ area?, shape? }` | `{ ok, next\|null, queue[] }` | Picks next ticket; structured return is the point |
 | `autopilot_merge_bar` | `{ signals:{ship,gates,reviewer,security,ci} }` | `{ ok, merge:bool, blockedOn[] }` | The trust bar; typed, never stdout-scraped |
+| `autopilot_merge` | `{ issue, pr, signals:{ship,gates,reviewer,security}, critical? }` | `{ ok, merged:bool, parked, outcome, blockedOn[] }` | The **canonical gated live-merge path**: computes the bar (incl. live CI) AND squash-merges behind it, so nothing merges on red by construction. Claude-only by policy (below) |
 
 Stay shell: `board close/digest/receipt/log/reparent`, `release release` (the cut), `graph rebuild/reindex`, `init`, `doctor`, `learn`.
 
-**Claude-only auto-merge (owner decision, 2026-07-26).** `autopilot_merge_bar` is exposed on every host as a *computation* (a host may see whether the bar is green). But the plugin does **NOT** wire an unattended merge action on non-Claude hosts: on Codex/Antigravity, forge stops at an **open, green PR / awaiting-human**. The live `gh pr merge` remains Claude-only, where the full auto-safety stack (denylist hook + merge authority grant) is proven. This is the one deliberate parity exception, and it is a policy line, not an engine limit.
+**Claude-only auto-merge (owner decision, 2026-07-26).** `autopilot_merge_bar` is exposed on every host as a *computation* (a host may see whether the bar is green). But the plugin does **NOT** wire an unattended merge action on non-Claude hosts: on Codex/Antigravity, forge stops at an **open, green PR / awaiting-human**. The live `gh pr merge` remains Claude-only, where the full auto-safety stack (denylist hook + merge authority grant) is proven. This is the one deliberate parity exception, and it is a policy line, not an engine limit. The executor of that Claude-only merge is `autopilot_merge` (#315): it is the single sanctioned path — it runs the bar and performs the squash-merge behind it, so an in-host autopilot merge goes through the tested bar by construction rather than via a raw `gh pr merge`. Non-Claude hosts simply never call it (and `features.autopilotAutoMerge:false` keeps parking at the PR).
 
 ---
 

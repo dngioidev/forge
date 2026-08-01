@@ -200,6 +200,60 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
   });
 });
 
+describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge is the gated entry point', () => {
+  // A gh double: CI rollup is controllable; every other call (incl. pr merge) records + succeeds.
+  const ghDouble = (rollup) => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { statusCheckRollup: rollup } };
+      return { ok: true };
+    };
+    return { calls, gh };
+  };
+  const green = [{ conclusion: 'SUCCESS' }];
+  const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
+
+  it('AC-315.1: the live squash-merge fires only through runMerge when the full bar is green', async () => {
+    const { calls, gh } = ghDouble(green);
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
+    expect(calls).toContain('pr merge 9 --squash --delete-branch');
+  });
+
+  it('AC-315.2: any red/undefined BAR_SIGNAL makes the merge mechanically impossible — no pr merge call', async () => {
+    for (const s of ['ship', 'gates', 'reviewer', 'security']) {
+      const { calls, gh } = ghDouble(green); // CI itself is green; a held verdict is the red one
+      const signals = { ...heldVerdicts, [s]: false };
+      const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals }, () => {});
+      expect(res.merged, `${s}=false must not merge`).toBe(false);
+      expect(res.blockedOn, `${s}=false must be blocked on ${s}`).toContain(s);
+      expect(calls.some((c) => c.startsWith('pr merge')), `${s}=false must not squash-merge`).toBe(false);
+    }
+    // A verdict simply absent (undefined) is red too — omit `security` entirely.
+    const absent = ghDouble(green);
+    const resAbsent = await runMerge({ config: {}, gh: absent.gh }, { issue: 1, pr: 9, signals: { ship: true, gates: true, reviewer: true } }, () => {});
+    expect(resAbsent.merged).toBe(false);
+    expect(resAbsent.blockedOn).toContain('security');
+    expect(absent.calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+    // CI undefined/red (empty rollup) with every held verdict green → still fail-closed on ci.
+    const ciRed = ghDouble([]);
+    const resCi = await runMerge({ config: {}, gh: ciRed.gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(resCi.merged).toBe(false);
+    expect(resCi.blockedOn).toContain('ci');
+    expect(ciRed.calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('AC-315.2: critical=true forces no-merge even with every signal green', async () => {
+    const { calls, gh } = ghDouble(green);
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts, critical: true }, () => {});
+    expect(res.merged).toBe(false);
+    expect(res.blockedOn).toContain('security:critical');
+    expect(res.escalate).toBe(true);
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+});
+
 describe('autopilot run ledger (#129, AC-6)', () => {
   it('records outcomes idempotently (last write per issue wins) and bumps iterations', () => {
     let run = freshRun('2026-07-21T00:00:00Z');

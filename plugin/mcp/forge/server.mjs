@@ -12,8 +12,13 @@
  * validated MCP facade over the portable core.
  *
  * Policy line (ADR-0007 §b, owner decision): autopilot_merge_bar COMPUTES the
- * {merge, blockedOn} vector on every host, but performs no merge side effect —
- * the live merge stays Claude-only.
+ * {merge, blockedOn} vector on every host, but performs no merge side effect.
+ * autopilot_merge (this server) is the CANONICAL live-merge path: it computes
+ * the same bar AND executes the squash-merge behind it (via scripts/autopilot/
+ * merge.mjs runMerge), so an in-host autopilot merge goes through the bar by
+ * construction — nothing merges on red. The live merge stays Claude-only by
+ * policy: hosts that must not auto-merge simply never call it (and
+ * features.autopilotAutoMerge:false remains the parks-at-PR guard).
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,7 +32,7 @@ import { runCreate, withDefaults } from '../../scripts/board/create.mjs';
 import { runEscalate } from '../../scripts/board/escalate.mjs';
 import { selectNext, actionableQueue, normalize } from '../../scripts/autopilot/select.mjs';
 import { isShaped } from '../../scripts/autopilot/readiness.mjs';
-import { evaluateMergeBar } from '../../scripts/autopilot/merge.mjs';
+import { evaluateMergeBar, runMerge } from '../../scripts/autopilot/merge.mjs';
 import { computeReadiness } from '../../scripts/release/readiness.mjs';
 import { runAcGate } from '../../scripts/gates/acgate.mjs';
 import { runConventions } from '../../scripts/gates/conventions.mjs';
@@ -154,13 +159,27 @@ export const TOOLS = [
       required: ['signals'],
     },
   },
+  {
+    name: 'autopilot_merge',
+    description: 'EXECUTE the gated live merge — the SINGLE sanctioned autopilot merge path. Checks CI, evaluates the full bar over {ship,gates,reviewer,security,ci}, and squash-merges ONLY when every signal is green (fail-closed: a missing/red signal or critical never merges). Returns {merged, parked, outcome, blockedOn}. Claude-only by policy per ADR-0007 — a raw `gh pr merge` bypasses this bar and is NOT sanctioned; features.autopilotAutoMerge:false parks at the PR.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issue: { type: 'integer' },
+        pr: { type: 'integer' },
+        signals: { type: 'object' },
+        critical: { type: 'boolean' },
+      },
+      required: ['issue', 'pr', 'signals'],
+    },
+  },
 ];
 
 /** Default engine bindings; injectable so each tool's contract is testable without live gh/git. */
 export const DEFAULT_DEPS = {
   runMove, runComment, runCreate, runEscalate,
   selectNext, actionableQueue, normalize, isShaped,
-  evaluateMergeBar, computeReadiness, loadConfig,
+  evaluateMergeBar, runMerge, computeReadiness, loadConfig,
   execFn: run,
   gates: { ac: runAcGate, conventions: runConventions, dep: runDepGuard, docsync: runDocSync, ground: runGroundGate, plandrift: runPlanDrift, situation: runSituationGate, testintent: runTestIntent },
 };
@@ -345,6 +364,17 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
           const bar = deps.evaluateMergeBar(args.signals, { critical: args.critical ?? false });
           return toolText(id, { ok: true, merge: bar.merge, blockedOn: bar.blockedOn });
         }
+
+        case 'autopilot_merge':
+          // The canonical live-merge path: runMerge re-checks CI, evaluates the
+          // bar, and only then squash-merges — so the merge cannot happen on red
+          // by construction. A red bar is NOT an operational error: surface it as
+          // a structured {merged:false, blockedOn} so the caller sees the block.
+          return board(id, async (ctx) => {
+            const r = await deps.runMerge(ctx, { issue: args.issue, pr: args.pr, signals: args.signals, critical: args.critical ?? false }, noop);
+            if (r.error) return teach(id, r.error);
+            return toolText(id, { ok: true, merged: r.merged ?? false, parked: r.parked ?? false, outcome: r.outcome ?? null, blockedOn: r.blockedOn ?? [], escalate: r.escalate ?? false });
+          });
       }
     } catch (e) {
       return toolText(id, { ok: false, error: `${tool.name} failed: ${e.message}` }, true);
