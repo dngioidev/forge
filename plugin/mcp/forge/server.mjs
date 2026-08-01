@@ -39,6 +39,7 @@ import { runConventions } from '../../scripts/gates/conventions.mjs';
 import { runDepGuard } from '../../scripts/gates/depguard.mjs';
 import { runDocSync } from '../../scripts/gates/docsync.mjs';
 import { runGroundGate } from '../../scripts/gates/groundgate.mjs';
+import { runLicenseGate } from '../../scripts/gates/license.mjs';
 import { runPlanDrift } from '../../scripts/gates/plandrift.mjs';
 import { runGate as runSituationGate } from '../../scripts/gates/situationgate.mjs';
 import { runTestIntent } from '../../scripts/gates/testintent.mjs';
@@ -46,7 +47,7 @@ import { runTestIntent } from '../../scripts/gates/testintent.mjs';
 const noop = () => {};
 
 /** The gate names gate_run dispatches to (spec §b enum). */
-export const GATE_NAMES = ['ac', 'conventions', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent'];
+export const GATE_NAMES = ['ac', 'conventions', 'dep', 'docsync', 'ground', 'license', 'plandrift', 'situation', 'testintent'];
 
 export const TOOLS = [
   {
@@ -113,7 +114,7 @@ export const TOOLS = [
   },
   {
     name: 'gate_run',
-    description: 'Run one mechanical gate and return its verdict as {level:pass|fail, findings[]}. gate is one of ac|conventions|dep|docsync|ground|plandrift|situation|testintent.',
+    description: 'Run one mechanical gate and return its verdict as {level:pass|fail, findings[]}. gate is one of ac|conventions|dep|docsync|ground|license|plandrift|situation|testintent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -182,7 +183,7 @@ export const DEFAULT_DEPS = {
   selectNext, actionableQueue, normalize, isShaped,
   evaluateMergeBar, runMerge, computeReadiness, loadConfig,
   execFn: run,
-  gates: { ac: runAcGate, conventions: runConventions, dep: runDepGuard, docsync: runDocSync, ground: runGroundGate, plandrift: runPlanDrift, situation: runSituationGate, testintent: runTestIntent },
+  gates: { ac: runAcGate, conventions: runConventions, dep: runDepGuard, docsync: runDocSync, ground: runGroundGate, license: runLicenseGate, plandrift: runPlanDrift, situation: runSituationGate, testintent: runTestIntent },
 };
 
 /** Per-gate: how to invoke it with root+args, and how to read its verdict into {level,findings}. */
@@ -206,6 +207,10 @@ const GATE_SPEC = {
   ground: {
     invoke: (fn, a, root) => fn({ cwd: root, manifestPath: a.manifest, log: noop }),
     verdict: (r) => ({ level: r.ok ? 'pass' : 'fail', findings: (r.ungrounded ?? []).map((u) => `ungrounded: ${u.claim}`) }),
+  },
+  license: {
+    invoke: (fn, a, root) => fn({ cwd: root, log: noop }),
+    verdict: (r) => ({ level: r.ok ? 'pass' : 'fail', findings: [...(r.plugin?.problems ?? []).map((p) => `plugin-license: ${p}`), ...(r.violations ?? []).map((v) => `${v.name}: ${v.license} — ${v.reason}`)] }),
   },
   plandrift: {
     invoke: (fn, a, root) => fn({ cwd: root, planPath: a.plan, base: a.base ?? 'main', log: noop }),
