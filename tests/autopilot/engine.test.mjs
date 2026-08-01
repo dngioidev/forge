@@ -8,6 +8,7 @@ import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
+import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
@@ -341,6 +342,92 @@ describe('autopilot merge-auth preflight (#316, AC-316.1/AC-316.2) — no silent
     const parked = await runMerge({ config: { features: { autopilotAutoMerge: false } }, gh: disabled.gh }, { issue: 5, pr: 42, signals: heldVerdicts }, () => {});
     expect(parked).toMatchObject({ merged: false, parked: true, outcome: 'awaiting-human' });
     expect(disabled.calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+});
+
+describe('autopilot return-then-resume watchdog (#319, AC-319.1/AC-319.2) — awaiting-merge is never silently parked', () => {
+  const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
+
+  // AC-319.1: a returned awaiting-merge on a green PR resolves to merge/escalate — never a silent park.
+  it('AC-319.1: awaiting-merge on a green PR with auto-merge authority → merge (funnel to runMerge), not a silent park', () => {
+    const dec = resolveReturnedTicket({ outcome: 'awaiting-merge', pr: 42, ciGreen: true, mergeMode: 'auto-merge' });
+    expect(dec.action).toBe('merge');
+    expect(dec.pr).toBe(42);
+    expect(dec.outcome).toBe('merged');
+    expect(dec.action).not.toBe('continue'); // the stall guard: never silently parked
+    expect(STALL_OUTCOME).toBe('awaiting-merge');
+  });
+
+  it('AC-319.1: awaiting-merge on a green PR without merge authority (pr-only) → escalate, recorded awaiting-human (surfaced, not parked)', () => {
+    for (const mergeMode of ['pr-only', null, undefined]) {
+      const dec = resolveReturnedTicket({ outcome: 'awaiting-merge', pr: 42, ciGreen: true, mergeMode });
+      expect(dec.action, `mode=${mergeMode}`).toBe('escalate');
+      expect(dec.outcome, `mode=${mergeMode}`).toBe('awaiting-human'); // surfaced visibly, not a silent park
+      expect(dec.action).not.toBe('continue');
+      expect(dec.reason).toMatch(/not silently parking/i);
+    }
+  });
+
+  it('AC-319.1: awaiting-merge that is NOT actually mergeable (no PR, or PR not green) → escalate, never silent', () => {
+    // returned awaiting-merge but no PR at all — cannot verify or merge.
+    const noPr = resolveReturnedTicket({ outcome: 'awaiting-merge', pr: null, ciGreen: true, mergeMode: 'auto-merge' });
+    expect(noPr.action).toBe('escalate');
+    expect(noPr.outcome).toBe('escalated');
+    expect(noPr.reason).toMatch(/no PR/i);
+    // returned awaiting-merge before CI concluded — the subagent skipped the in-run --watch.
+    const notGreen = resolveReturnedTicket({ outcome: 'awaiting-merge', pr: 42, ciGreen: false, mergeMode: 'auto-merge' });
+    expect(notGreen.action).toBe('escalate');
+    expect(notGreen.outcome).toBe('escalated');
+    expect(notGreen.reason).toMatch(/before PR #42 CI was green/i);
+  });
+
+  it('AC-319.1: every OTHER (already-resolved) outcome passes through as continue — the watchdog only fires on the stall', () => {
+    for (const outcome of ['merged', 'escalated', 'awaiting-human', 'skipped']) {
+      const dec = resolveReturnedTicket({ outcome, pr: 42, ciGreen: true, mergeMode: 'auto-merge' });
+      expect(dec.action, outcome).toBe('continue');
+      expect(dec.outcome, outcome).toBe(outcome); // record the outcome the subagent already reported
+    }
+    // an absent/unknown outcome is likewise not the stall — pass through.
+    expect(resolveReturnedTicket({}).action).toBe('continue');
+  });
+
+  it("AC-319.1: the watchdog's merge action actually drives runMerge to a squash-merge on a green bar", async () => {
+    // Prove the resolved `merge` action funnels to the tested bar and merges (end-to-end with the returned report).
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { statusCheckRollup: [{ conclusion: 'SUCCESS' }] } };
+      return { ok: true };
+    };
+    const dec = resolveReturnedTicket({ outcome: 'awaiting-merge', pr: 9, ciGreen: true, mergeMode: 'auto-merge' });
+    expect(dec.action).toBe('merge');
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: dec.pr, signals: heldVerdicts, mode: 'auto-merge' }, () => {});
+    expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
+    expect(calls).toContain('pr merge 9 --squash --delete-branch');
+  });
+
+  // AC-319.2: a ticket returned at a green PR is PICKED BACK UP by selection (resume path), not skipped.
+  it('AC-319.2: a returned-at-green-PR ticket (board still inReview/inProgress) re-enters selection as resume', () => {
+    // The board status for an open PR is a resume-tier status; selection must re-pick it, not skip it.
+    for (const status of ['inReview', 'inProgress']) {
+      const pick = selectNext([t(319, status)]);
+      expect(pick, `status=${status} must be selectable`).not.toBeNull();
+      expect(pick.ticket.number).toBe(319);
+      expect(pick.action).toBe('resume'); // reuses the existing resume path — re-driven, never silently parked
+    }
+    // even if the subagent never moved the board off ready/backlog, it is still picked back up (re-delivered),
+    // i.e. the returned ticket is NEVER dropped from selection.
+    expect(selectNext([t(319, 'ready')]).action).toBe('deliver');
+    expect(selectNext([t(319, 'backlog')]).action).toBe('triage');
+  });
+
+  it('AC-319.2: the returned green-PR ticket sits ahead of fresh work — resume beats ready/backlog so it is re-driven first', () => {
+    const tickets = [t(400, 'ready', 'p0'), t(319, 'inReview', 'p2'), t(500, 'backlog', 'p0')];
+    // despite its low priority, the resumed green-PR ticket wins the tier and is picked back up first.
+    const pick = selectNext(tickets);
+    expect(pick.ticket.number).toBe(319);
+    expect(pick.action).toBe('resume');
+    expect(actionableQueue(tickets).map((q) => q.ticket.number)).toEqual([319, 400, 500]);
   });
 });
 
