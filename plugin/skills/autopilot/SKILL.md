@@ -27,6 +27,9 @@ The trail, ledger (`run.json`), and journal are the record — don't re-narrate 
 RUN START: confirm in-session merge authorization (§ Merge-authorization preflight)
   └─ absent ─▶ ask "Merge policy" / degrade to PR-only (awaiting-human)  — NOT a mid-run stall
   ▼
+ITERATION GUARD: nextIteration(run, boardSize) (§ Loop backstop)  ← call FIRST, every iteration
+  └─ stop=true (runaway) ──────────────────▶ HALT + escalate (do NOT deliver another ticket)
+  ▼
 select next actionable ticket (§ selection)
   ├─ none left ────────────────────────────▶ STOP + run report
   ▼
@@ -150,7 +153,7 @@ When delivery surfaces a need out of the current ticket's scope, file it rather 
 - **`--limit N`:** stop after N merges.
 - **Kill switch:** honour the per-repo **situation gate** (`gates/situationgate.mjs`) — while the repo is in an **open incident** or **security-response** (security hold) situation the gate pauses shipping (during an incident, ship proceeds only on a `hotfix/*` branch and release is refused outright; during a security hold only `respond`/`investigate` run), so autopilot spawns no new delivery until it clears. Clearing the situation is always a human action (close the incident / lift the security hold), never automated.
 - **Interrupt:** Ctrl-C between tickets is clean (the run ledger is the resume point); mid-ticket, deliver's own resume protocol recovers.
-- **Loop backstop:** a max-iterations guard (default = board size × 2) prevents a file-a-ticket-per-iteration runaway — hitting it escalates rather than looping forever.
+- **Loop backstop (a code call, not a discipline):** the orchestrator MUST call `ledger.mjs` `nextIteration(run, boardSize)` at the **top of every iteration, before selecting or delivering** the next ticket — this is the mechanical caller for the `guardTripped` bound (#317). It returns `{ stop, escalate, iterations, cap, reason }`: `stop=false` → continue the iteration; `stop=true` → the run is a file-a-ticket-per-iteration **runaway** (iterations reached board size × 2), so **halt the loop and escalate** (surface the `reason` via `escalate.mjs`) rather than deliver another ticket. It reads the persisted iteration counter (`run.iterations`, maintained by `applyOutcome`), so the bound is resume-safe; it never mutates the run, so the natural stop (board clear) and `--limit N` are untouched.
 
 ## Run ledger & report
 
@@ -163,7 +166,7 @@ The loop is prose the orchestrator runs, but its mechanical decisions are real, 
 - `select.mjs` — `selectNext(tickets)` / `--dry-run`: the selection order + the triage/deliver/resume decision (§ selection). Pure, so the order is testable.
 - `merge.mjs` — `evaluateMergeBar(signals)` + `runMerge(ctx,{issue,pr,signals,mode})`: the auto-merge bar. Fail-closed — a missing signal is red; `features.autopilotAutoMerge:false` **or** the preflight's `mode:'pr-only'` parks at the PR. This is where "nothing merges on red" lives. `runMerge` is the **canonical, enforced merge entry point**, exposed to hosts as the `autopilot_merge` MCP tool (forge-core) so the live merge is executed through the bar by construction — never via a raw `gh pr merge`.
 - `preflight.mjs` — `mergeAuthPreflight({authorized,config})`: the run-start merge-authorization decision (§ Merge-authorization preflight). Pure — returns the effective merge `mode` (`auto-merge` only on an explicit in-session grant + config-enabled; else `pr-only` with the notice to surface). `startRun` records it into `run.json`; `runMerge` gates on it. This is what stops an unattended run from delivering a whole ticket and then silently wedging at the first merge (#316).
-- `ledger.mjs` — the run ledger (`.forge/autopilot/run.json`): `applyOutcome`/`applyFiled`/`guardTripped`/`renderReport`, plus `ledger.mjs report`. The loop backstop and the resume point.
+- `ledger.mjs` — the run ledger (`.forge/autopilot/run.json`): `applyOutcome`/`applyFiled`/`guardTripped`/`nextIteration`/`renderReport`, plus `ledger.mjs report`. `nextIteration(run, boardSize)` is the per-iteration **runaway backstop** the loop calls first each iteration — the real caller for `guardTripped` (halt + escalate on trip; #317). The resume point too.
 - `newwork.mjs` — `fileWork(ctx,{title,kind,from})`: files a linked follow-up (bug/spike/item) mid-run.
 - `perms.mjs` — prints the `.claude/settings.local.json` allowlist autopilot needs to run continuously (non-destructive; opt-in).
 
