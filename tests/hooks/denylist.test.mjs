@@ -154,6 +154,33 @@ describe('pipe-to-shell / RCE (#311, AC.1–AC.4)', () => {
   });
 });
 
+describe('recursive-delete long flags (#312, AC-312.*)', () => {
+  // AC-312.1 — GNU long flags (--recursive AND --force, in ANY order) outside the
+  // SAFE_RM_TARGETS allowlist are blocked, just like the short -rf form.
+  it('AC-312.1: rm --recursive --force outside safe targets is blocked (both orders)', () => {
+    expect(check('rm --recursive --force src/')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('rm --force --recursive src/')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    // mixed short/long and the -R short form both count as recursive
+    expect(check('rm -R --force src/').rule).toBe('recursive-delete');
+    expect(check('rm -r --force src/').rule).toBe('recursive-delete');
+    expect(check('npm run build && rm --recursive --force lib/').rule).toBe('recursive-delete');
+  });
+
+  // AC-312.1 — force is still REQUIRED: --recursive alone stays allowed (unchanged
+  // by-design behavior — the rule blocks only forced recursive deletes).
+  it('AC-312.1: --recursive without --force is not blocked (force still required)', () => {
+    expect(check('rm --recursive src/').blocked).toBe(false);
+    expect(check('rm -r src/').blocked).toBe(false);
+  });
+
+  // AC-312.2 — a safe-target delete is allowed via short AND long flags.
+  it('AC-312.2: safe-target deletes are allowed (short -rf and long flags)', () => {
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm --recursive --force node_modules').blocked).toBe(false);
+    expect(check('rm --force --recursive dist build coverage').blocked).toBe(false);
+  });
+});
+
 describe('denylist journals blocks (AC-7.3)', () => {
   const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
 

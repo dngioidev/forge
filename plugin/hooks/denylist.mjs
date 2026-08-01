@@ -38,14 +38,20 @@ export const RULES = [
   {
     name: 'recursive-delete',
     test: (c) => {
-      const m = /\brm\s+(-[a-zA-Z]+\s+)*/.exec(c);
-      if (!m) return false;
-      const flags = c.match(/\brm\s+((-[a-zA-Z]+\s*)+)/);
-      if (!flags || !/r/.test(flags[1]) || !/f/.test(flags[1])) return false;
+      if (!/\brm\b/.test(c)) return false;
+      // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) — the `(?:^|\s)-`
+      // anchor keeps GNU `--recursive`/`--force` (double dash) and mid-word dashes
+      // (`file-r.txt`) out of this bucket so they can't spoof a short flag.
+      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
+      // Recursive via short -r/-R OR the long --recursive; force via short -f OR
+      // long --force. Both required (AC-312.1), in any order.
+      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
+      const force = /f/.test(shortFlags) || /\B--force\b/.test(c);
+      if (!recursive || !force) return false;
       const rest = c.slice(c.indexOf('rm'));
       return !SAFE_RM_TARGETS.test(rest);
     },
-    msg: 'rm -rf outside build/temp dirs',
+    msg: 'rm -rf (incl. --recursive --force) outside build/temp dirs',
   },
   // The two rules below run against the FULL command string (scope: 'full'), NOT
   // per-segment — segments() deliberately splits on the pipe, which is exactly the
