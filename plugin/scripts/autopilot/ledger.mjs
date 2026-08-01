@@ -67,6 +67,32 @@ export function guardTripped(run, boardSize, factor = 2) {
   return run.iterations >= Math.max(1, boardSize) * factor;
 }
 
+/**
+ * Per-iteration runaway backstop — the real caller for `guardTripped` (#317, spec §8).
+ * The orchestrator loop MUST call this at the TOP of every iteration, BEFORE selecting
+ * or delivering the next ticket, and honour a `stop` decision (halt the loop + escalate)
+ * — that is what turns the backstop from prose into a mechanical contract. Pure, no IO:
+ * it reads `run.iterations` (bumped + persisted to run.json by `applyOutcome`, so the
+ * bound is resume-safe and auditable) and delegates the trip test to `guardTripped`.
+ * When it trips, the loop is runaway and must HALT + ESCALATE rather than loop forever;
+ * otherwise the loop continues. It never mutates the run — the iteration counter it reads
+ * is owned by `applyOutcome`, so the natural stop (board clear) and `--limit` are intact.
+ */
+export function nextIteration(run, boardSize, factor = 2) {
+  const cap = Math.max(1, boardSize) * factor;
+  const stop = guardTripped(run, boardSize, factor);
+  return {
+    stop,
+    escalate: stop, // the only reason this guard stops is the runaway backstop → escalate
+    iterations: run.iterations,
+    cap,
+    reason: stop
+      ? `runaway backstop tripped: ${run.iterations} iteration(s) reached the cap of ${cap} ` +
+        `(board size ${Math.max(1, boardSize)} × ${factor}) — halting the loop and escalating`
+      : null,
+  };
+}
+
 export function renderReport(run) {
   const by = (o) => run.outcomes.filter((x) => x.outcome === o);
   const line = (o) => {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
-import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
+import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
@@ -364,6 +364,47 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     const run = { ...freshRun(), iterations: 8 };
     expect(guardTripped(run, 4)).toBe(true);   // 8 >= 4*2
     expect(guardTripped({ ...freshRun(), iterations: 7 }, 4)).toBe(false);
+  });
+
+  // #317: the backstop had no runtime caller — nextIteration is that caller. It is the
+  // per-iteration guard the loop MUST call first each iteration; it delegates to
+  // guardTripped and turns a trip into a halt+escalate decision (not silent continue).
+  it('AC-317.1: nextIteration invokes the backstop and returns continue under the cap', () => {
+    const dec = nextIteration({ ...freshRun(), iterations: 3 }, 4); // cap = 4×2 = 8
+    expect(dec.stop).toBe(false);
+    expect(dec.escalate).toBe(false);
+    expect(dec.cap).toBe(8);
+    expect(dec.iterations).toBe(3);
+    expect(dec.reason).toBeNull();
+    // it delegates to guardTripped — same verdict, under and at the cap boundary.
+    expect(dec.stop).toBe(guardTripped({ ...freshRun(), iterations: 3 }, 4));
+    expect(nextIteration({ ...freshRun(), iterations: 7 }, 4).stop).toBe(false); // 7 < 8
+    // honours a custom factor and the boardSize floor (max(1,·)).
+    expect(nextIteration({ ...freshRun(), iterations: 3 }, 1, 3).stop).toBe(true); // 3 >= 1×3
+    expect(nextIteration({ ...freshRun(), iterations: 1 }, 0).cap).toBe(2);        // floor: max(1,0)×2
+  });
+
+  it('AC-317.2: a runaway loop is HALTED by the per-iteration guard at board size × factor', () => {
+    const boardSize = 3; // cap = 3×2 = 6
+    let run = freshRun('2026-07-26T00:00:00Z');
+    let iterationsRun = 0;
+    let halted = null;
+    // Simulate the orchestrator: guard FIRST each iteration, then do (pathological) work
+    // that never converges — file a ticket and record an outcome every iteration, forever.
+    // Without the wired guard this loops until the 1000 safety cap; with it, it halts at 6.
+    for (let i = 0; i < 1000; i++) {
+      const dec = nextIteration(run, boardSize);
+      if (dec.stop) { halted = dec; break; }
+      iterationsRun++;
+      run = applyFiled(run, { issue: 500 + i, kind: 'bug', from: 1 });
+      run = applyOutcome(run, { issue: 500 + i, outcome: 'skipped' }); // bumps run.iterations
+    }
+    expect(halted).not.toBeNull();              // the guard stopped the loop (not the 1000 safety cap)
+    expect(halted.escalate).toBe(true);         // a trip is a halt+escalate, never a silent continue
+    expect(halted.reason).toMatch(/runaway backstop tripped/);
+    expect(halted.reason).toMatch(/cap of 6/);
+    expect(iterationsRun).toBe(6);              // exactly board size × 2 iterations ran, then halt
+    expect(run.iterations).toBe(6);
   });
 
   it('renderReport summarises merged/escalated/filed', () => {
