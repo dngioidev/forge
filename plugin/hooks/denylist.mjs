@@ -47,7 +47,33 @@ export const RULES = [
     },
     msg: 'rm -rf outside build/temp dirs',
   },
+  // The two rules below run against the FULL command string (scope: 'full'), NOT
+  // per-segment — segments() deliberately splits on the pipe, which is exactly the
+  // separator a pipe-to-shell RCE hides behind. Splitting can't defeat a full-string
+  // match. Both are anchored to the interpreter/substitution consuming the payload so
+  // benign pipelines (grep | wc -l, cat | base64) do not trip them (#311).
+  {
+    name: 'pipe-to-shell',
+    scope: 'full',
+    test: (c) => PIPE_INTO_INTERP.test(c) && FETCH_OR_DECODE.test(c),
+    msg: 'piping a downloaded or decoded payload into a shell interpreter is remote code execution',
+  },
+  {
+    name: 'eval-exec',
+    scope: 'full',
+    test: (c) => /\beval\b/.test(c) && SUBSTITUTION.test(c),
+    msg: 'eval of a command-substitution or decoded payload executes untrusted code',
+  },
 ];
+
+// A pipe whose CONSUMING command is a shell interpreter: `… | sh`, `… | sudo bash`,
+// `… | /bin/zsh -s`. Anchored to the interpreter directly after the pipe so an
+// unrelated `.sh` filename later in the line (`… | tee notes.sh`) is not a match.
+const PIPE_INTO_INTERP = /\|\s*(?:sudo\s+)?(?:\S*\/)?(?:sh|bash|zsh|dash|ash|ksh)\b/;
+// The upstream half: a network downloader OR a decoder feeding that interpreter.
+const FETCH_OR_DECODE = /\b(?:curl|wget|fetch|base64)\b/;
+// Command-substitution / backtick payload that eval would execute untrusted.
+const SUBSTITUTION = /\$\(|`/;
 
 /**
  * Split a command line into sub-commands on shell separators (&& || ; | newline)
@@ -65,7 +91,10 @@ export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
   const segs = segments(command);
   for (const rule of RULES) {
-    if (segs.some((seg) => rule.test(seg))) return { blocked: true, rule: rule.name, msg: rule.msg };
+    // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
+    // that segments() splits on); all others test each split sub-command.
+    const hit = rule.scope === 'full' ? rule.test(command) : segs.some((seg) => rule.test(seg));
+    if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
 }
