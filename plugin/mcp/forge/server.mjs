@@ -30,6 +30,7 @@ import { isShaped } from '../../scripts/autopilot/readiness.mjs';
 import { evaluateMergeBar } from '../../scripts/autopilot/merge.mjs';
 import { computeReadiness } from '../../scripts/release/readiness.mjs';
 import { runAcGate } from '../../scripts/gates/acgate.mjs';
+import { runConventions } from '../../scripts/gates/conventions.mjs';
 import { runDepGuard } from '../../scripts/gates/depguard.mjs';
 import { runDocSync } from '../../scripts/gates/docsync.mjs';
 import { runGroundGate } from '../../scripts/gates/groundgate.mjs';
@@ -40,7 +41,7 @@ import { runTestIntent } from '../../scripts/gates/testintent.mjs';
 const noop = () => {};
 
 /** The gate names gate_run dispatches to (spec §b enum). */
-export const GATE_NAMES = ['ac', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent'];
+export const GATE_NAMES = ['ac', 'conventions', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent'];
 
 export const TOOLS = [
   {
@@ -107,7 +108,7 @@ export const TOOLS = [
   },
   {
     name: 'gate_run',
-    description: 'Run one mechanical gate and return its verdict as {level:pass|fail, findings[]}. gate is one of ac|dep|docsync|ground|plandrift|situation|testintent.',
+    description: 'Run one mechanical gate and return its verdict as {level:pass|fail, findings[]}. gate is one of ac|conventions|dep|docsync|ground|plandrift|situation|testintent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -161,7 +162,7 @@ export const DEFAULT_DEPS = {
   selectNext, actionableQueue, normalize, isShaped,
   evaluateMergeBar, computeReadiness, loadConfig,
   execFn: run,
-  gates: { ac: runAcGate, dep: runDepGuard, docsync: runDocSync, ground: runGroundGate, plandrift: runPlanDrift, situation: runSituationGate, testintent: runTestIntent },
+  gates: { ac: runAcGate, conventions: runConventions, dep: runDepGuard, docsync: runDocSync, ground: runGroundGate, plandrift: runPlanDrift, situation: runSituationGate, testintent: runTestIntent },
 };
 
 /** Per-gate: how to invoke it with root+args, and how to read its verdict into {level,findings}. */
@@ -169,6 +170,10 @@ const GATE_SPEC = {
   ac: {
     invoke: (fn, a, root) => fn({ acs: a.acs ?? null, plan: a.plan ?? null, ticket: a.ticket ?? null, results: a.results ?? [], cwd: root }, noop),
     verdict: (r) => ({ level: r.ok ? 'pass' : 'fail', findings: [...(r.missing ?? []).map((i) => `AC ${i}: no passing test`), ...(r.failing ?? []).map((i) => `AC ${i}: failing test`)] }),
+  },
+  conventions: {
+    invoke: (fn, a, root) => fn({ cwd: root, base: a.base ?? 'main', log: noop }),
+    verdict: (r) => ({ level: r.ok ? 'pass' : 'fail', findings: (r.violations ?? []).map((v) => `${v.sha} "${v.subject}": ${v.reason}`) }),
   },
   dep: {
     invoke: (fn, a, root) => fn({ cwd: root, base: a.base ?? 'main', log: noop }),
