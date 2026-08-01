@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
+import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
@@ -251,6 +252,95 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     expect(res.blockedOn).toContain('security:critical');
     expect(res.escalate).toBe(true);
     expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+});
+
+describe('autopilot merge-auth preflight (#316, AC-316.1/AC-316.2) — no silent wedge at first merge', () => {
+  // AC-316.1: at run start the effective merge mode is decided explicitly.
+  it('AC-316.1: an explicit in-session grant (config-enabled) → mode auto-merge, proceed', () => {
+    const d = mergeAuthPreflight({ authorized: true, config: {} });
+    expect(d.mode).toBe('auto-merge');
+    expect(isAutoMergeMode(d.mode)).toBe(true);
+    expect(d.reason).toMatch(/authorization held/i);
+    expect(MERGE_MODES).toEqual(['auto-merge', 'pr-only']);
+  });
+
+  it('AC-316.1: NO grant → mode pr-only (degrade to awaiting-human), not a mid-run stall', () => {
+    const d = mergeAuthPreflight({ authorized: false, config: {} });
+    expect(d.mode).toBe('pr-only');
+    expect(isAutoMergeMode(d.mode)).toBe(false);
+    // the human-readable reason names why: allowlist/config are not sufficient.
+    expect(d.reason).toMatch(/no in-session merge authorization/i);
+    expect(d.reason).toMatch(/PR-only/i);
+    // absent/omitted authorized is treated as no grant (fail-closed).
+    expect(mergeAuthPreflight().mode).toBe('pr-only');
+    expect(mergeAuthPreflight({}).mode).toBe('pr-only');
+    // a non-`true` truthy value is NOT a grant — only an explicit boolean true counts.
+    expect(mergeAuthPreflight({ authorized: 'yes' }).mode).toBe('pr-only');
+    expect(mergeAuthPreflight({ authorized: 1 }).mode).toBe('pr-only');
+  });
+
+  it('AC-316.1: a live grant but features.autopilotAutoMerge:false still → pr-only (config wins)', () => {
+    const d = mergeAuthPreflight({ authorized: true, config: { features: { autopilotAutoMerge: false } } });
+    expect(d.mode).toBe('pr-only');
+    expect(d.reason).toMatch(/autopilotAutoMerge=false/);
+  });
+
+  it('AC-316.1: startRun records the decision (mergeMode + reason) into run.json — auditable & resume-safe', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    const started = await startRun(cwd, { authorized: false, config: {} });
+    expect(started.mergeMode).toBe('pr-only');
+    expect(started.mergeReason).toBeTruthy();
+    const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
+    expect(onDisk.mergeMode).toBe('pr-only');
+    // resume re-runs the (non-file-backed) preflight: grant now held → refreshes to auto-merge,
+    // but keeps the original start time.
+    const resumed = await startRun(cwd, { authorized: true, config: {} });
+    expect(resumed.startedAt).toBe(started.startedAt);
+    expect(resumed.mergeMode).toBe('auto-merge');
+    expect(JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8')).mergeMode).toBe('auto-merge');
+    // startRun with no auth opt is unchanged (back-compat): no decision imposed on resume.
+    const plain = await startRun(cwd);
+    expect(plain.startedAt).toBe(started.startedAt);
+    expect(plain.mergeMode).toBe('auto-merge'); // preserved from the last recorded decision
+  });
+
+  // AC-316.2: the mode actually GATES the merge — pr-only parks, auto-merge proceeds.
+  const ghDouble = (rollup = [{ conclusion: 'SUCCESS' }]) => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { statusCheckRollup: rollup } };
+      return { ok: true };
+    };
+    return { calls, gh };
+  };
+  const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
+
+  it('AC-316.2: mode pr-only PARKS awaiting-human and never attempts a merge (even with a green bar)', async () => {
+    const { calls, gh } = ghDouble();
+    const res = await runMerge({ config: {}, gh }, { issue: 5, pr: 42, signals: heldVerdicts, mode: 'pr-only' }, () => {});
+    expect(res).toMatchObject({ ok: true, merged: false, parked: true, outcome: 'awaiting-human' });
+    // parked before any CI/merge gh call — no stall at the merge.
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('pr view'))).toBe(false);
+  });
+
+  it('AC-316.2: mode auto-merge proceeds to the tested bar and squash-merges on green', async () => {
+    const { calls, gh } = ghDouble();
+    const res = await runMerge({ config: {}, gh }, { issue: 5, pr: 42, signals: heldVerdicts, mode: 'auto-merge' }, () => {});
+    expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
+    expect(calls).toContain('pr merge 42 --squash --delete-branch');
+  });
+
+  it('AC-316.2: mode omitted preserves prior behavior — enabled config still merges, disabled still parks', async () => {
+    const enabled = ghDouble();
+    const okRes = await runMerge({ config: {}, gh: enabled.gh }, { issue: 5, pr: 42, signals: heldVerdicts }, () => {});
+    expect(okRes.merged).toBe(true);
+    const disabled = ghDouble();
+    const parked = await runMerge({ config: { features: { autopilotAutoMerge: false } }, gh: disabled.gh }, { issue: 5, pr: 42, signals: heldVerdicts }, () => {});
+    expect(parked).toMatchObject({ merged: false, parked: true, outcome: 'awaiting-human' });
+    expect(disabled.calls.some((c) => c.startsWith('pr merge'))).toBe(false);
   });
 });
 

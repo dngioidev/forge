@@ -205,11 +205,15 @@ describe('AC-315.1 / AC-315.2: autopilot_merge funnels the live merge through th
     expect(calls).toContain('pr merge 9 --squash --delete-branch');
   });
 
-  it('AC-315.1: autopilot_merge funnels to runMerge (the canonical path), passing issue/pr/signals/critical through', async () => {
+  it('AC-315.1: autopilot_merge funnels to runMerge (the canonical path), passing issue/pr/signals/critical/mode through', async () => {
     let seen = null;
     const h = build({ deps: { runMerge: async (_ctx, a) => { seen = a; return { ok: true, merged: true, outcome: 'merged' }; } } });
     body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts, critical: false }));
-    expect(seen).toEqual({ issue: 7, pr: 3, signals: heldVerdicts, critical: false });
+    // mode defaults to null (the preflight decision, #316) when the caller omits it.
+    expect(seen).toEqual({ issue: 7, pr: 3, signals: heldVerdicts, critical: false, mode: null });
+    // an explicit pr-only mode threads through so the tool can park by construction.
+    body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts, critical: false, mode: 'pr-only' }));
+    expect(seen.mode).toBe('pr-only');
   });
 
   it('AC-315.2: any red/undefined signal is mechanically unmergeable through the tool — no pr merge call', async () => {

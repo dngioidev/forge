@@ -8,12 +8,13 @@
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readJson, writeJson } from '../lib/jsonfile.mjs';
+import { mergeAuthPreflight } from './preflight.mjs';
 
 export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human'];
 
 export function freshRun(startedAt = null) {
-  return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [] };
+  return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null };
 }
 
 /**
@@ -92,10 +93,27 @@ export async function recordFiled(cwd, entry) {
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
 }
-export async function startRun(cwd) {
+/**
+ * Begin (or resume) the run and record the merge-authorization decision (#316).
+ * When `opts` carries an `authorized` flag, the run-start merge-auth preflight is
+ * evaluated and its effective mode + reason are persisted into run.json so the
+ * decision is auditable and the merge path can gate on it. The in-session grant is
+ * NOT file-backed — a resumed/restarted session is a new session and must re-obtain
+ * a live grant — so on resume we keep the original start time but REFRESH the mode
+ * from the freshly re-run preflight (absent an `authorized` opt, resume is untouched).
+ */
+export async function startRun(cwd, opts = {}) {
+  const hasAuth = Object.prototype.hasOwnProperty.call(opts, 'authorized');
+  const preflight = hasAuth ? mergeAuthPreflight(opts) : null;
+  const decision = preflight ? { mergeMode: preflight.mode, mergeReason: preflight.reason } : {};
   const existing = await readRun(cwd);
-  if (existing?.startedAt) return existing; // resume — keep the original start
-  const run = freshRun(new Date().toISOString());
+  if (existing?.startedAt) {
+    if (!preflight) return existing; // resume — keep the original start, no new decision
+    const run = { ...existing, ...decision }; // resume — re-run the (non-file-backed) preflight
+    await writeJson(join(cwd, RUN_RELPATH), run);
+    return run;
+  }
+  const run = { ...freshRun(new Date().toISOString()), ...decision };
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
 }
