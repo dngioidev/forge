@@ -112,6 +112,25 @@ jobs:
       - run: npm install -g @anthropic-ai/claude-code
       - run: claude plugin validate ./plugin --strict
 
+  # Enforcing license-compliance gate (#343). The gate script lives in THIS repo,
+  # so run it directly: it fails (exit non-zero) on any dependency SPDX id outside
+  # the permissive allowlist and on an inconsistent own-license declaration. The
+  # consumer template ships a self-contained inline equivalent instead (the gate
+  # script is not vendored into consumer repos).
+  license:
+    permissions:
+      contents: read
+    runs-on: [self-hosted, linux, forge-local]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node plugin/scripts/gates/license.mjs
+
   # Cockpit (tools/runner-ui/) Python suite — Windows self-hosted leg only.
   # PySide6 + the pywinpty terminal dep live on Windows and the CI target for AC4
   # is the native Windows runner; the Linux leg is an ephemeral Docker container
