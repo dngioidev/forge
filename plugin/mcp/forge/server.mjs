@@ -176,7 +176,7 @@ const GATE_SPEC = {
   },
   docsync: {
     invoke: (fn, a, root) => fn({ cwd: root, base: a.base ?? 'main', log: noop }),
-    verdict: (r) => ({ level: r.ok ? 'pass' : 'fail', findings: [...(r.routeGaps ?? []).map((g) => `unindexed doc: ${g}`), ...(r.skillGaps ?? []).map((s) => `undocumented skill: ${s}`)] }),
+    verdict: (r) => ({ level: r.ok ? 'pass' : 'fail', findings: [...(r.routeGaps ?? []).map((g) => `unindexed doc: ${g}`), ...(r.skillGaps ?? []).map((s) => `undocumented skill: ${s}`), ...(r.badgeDrift ? [`README version badge ${r.badgeDrift.badge} ≠ package.json ${r.badgeDrift.pkg}`] : [])] }),
   },
   ground: {
     invoke: (fn, a, root) => fn({ cwd: root, manifestPath: a.manifest, log: noop }),
