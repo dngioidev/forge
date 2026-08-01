@@ -252,10 +252,25 @@ describe('runRelease mutating path (#165)', () => {
     expect(order).toEqual(['add', 'commit']);
   });
 
-  it('AC3: parseArgs reads the --dry-run flag directly', () => {
-    expect(parseArgs(['--dry-run'])).toEqual({ dryRun: true });
-    expect(parseArgs([])).toEqual({ dryRun: false });
-    expect(parseArgs(['--other', '--dry-run', 'x'])).toEqual({ dryRun: true });
-    expect(parseArgs(['--notdryrun'])).toEqual({ dryRun: false });
+  it('AC3: parseArgs reads --dry-run and the optional --date override', () => {
+    expect(parseArgs(['--dry-run'])).toEqual({ dryRun: true, date: null });
+    expect(parseArgs([])).toEqual({ dryRun: false, date: null });
+    expect(parseArgs(['--other', '--dry-run', 'x'])).toEqual({ dryRun: true, date: null });
+    expect(parseArgs(['--notdryrun'])).toEqual({ dryRun: false, date: null });
+    expect(parseArgs(['--date', '2026-08-02'])).toEqual({ dryRun: false, date: '2026-08-02' });
+    expect(parseArgs(['--dry-run', '--date', '2026-08-02'])).toEqual({ dryRun: true, date: '2026-08-02' });
+  });
+
+  it('AC4: --date overrides the changelog date; a malformed --date is refused', async () => {
+    const cwd = await seedRepo({ changelog: '# Changelog\n\n' });
+    const { git, gh } = makeFakes({ cwd });
+    const lines = [];
+    const res = await runRelease({ cwd, gh, execFn: git }, { dryRun: true, date: '2026-08-02' }, (m) => lines.push(m));
+    expect(res.ok).toBe(true);
+    expect(lines.join('\n')).toContain('## v0.2.0 — 2026-08-02');
+
+    const bad = await runRelease({ cwd, gh, execFn: git }, { dryRun: true, date: 'Aug 2 2026' }, () => {});
+    expect(bad).toMatchObject({ ok: false });
+    expect(bad.error).toContain('YYYY-MM-DD');
   });
 });

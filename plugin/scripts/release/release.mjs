@@ -14,7 +14,8 @@ import { computeReadiness } from './readiness.mjs';
 import { deriveBump, nextVersion, groupChanges, renderChangelogSection, renderReleaseBody, summarize } from './core.mjs';
 
 export function parseArgs(argv) {
-  return { dryRun: argv.includes('--dry-run') };
+  const dateIdx = argv.indexOf('--date');
+  return { dryRun: argv.includes('--dry-run'), date: dateIdx !== -1 ? (argv[dateIdx + 1] ?? null) : null };
 }
 
 export async function runRelease(ctx, args, log = console.log) {
@@ -58,7 +59,11 @@ export async function runRelease(ctx, args, log = console.log) {
     if (head.ok) imageDigest = `ghcr.io/${repo.owner.toLowerCase()}/${repo.name}:sha-${head.stdout.trim()}`;
   }
 
-  const date = new Date().toISOString().slice(0, 10);
+  // Date stamped on the CHANGELOG section + used verbatim in the release. Defaults
+  // to today's UTC date; --date <YYYY-MM-DD> overrides it (the built-in clock is UTC,
+  // so a late-UTC release can lag the maintainer's local calendar day).
+  if (args.date && !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) return { ok: false, error: `--date must be YYYY-MM-DD, got: ${args.date}` };
+  const date = args.date || new Date().toISOString().slice(0, 10);
   const section = renderChangelogSection(version, date, groups, repoUrl);
   const body = renderReleaseBody({ version, summary: summarize(groups, version), groups, repoUrl, infraChanged, migrations, imageDigest });
 
