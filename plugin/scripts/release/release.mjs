@@ -89,13 +89,23 @@ export async function runRelease(ctx, args, log = console.log) {
   for (const t of bumpTargets) {
     await writeFile(join(cwd, t.rel), t.raw.replace(/"version":\s*"[^"]+"/, `"version": "${version}"`), 'utf8');
   }
+  // Keep the README shields.io version badge in lockstep with the release — the
+  // #308 guard test and the #309 docsync gate both fail if it drifts from
+  // package.json, so a release that bumped the JSON but not the badge left main red.
+  const readmeRel = 'README.md';
+  let readmeBumped = false;
+  try {
+    const rd = await readFile(join(cwd, readmeRel), 'utf8');
+    const bumped = rd.replace(/(img\.shields\.io\/badge\/version-)\d+\.\d+\.\d+(-)/, `$1${version}$2`);
+    if (bumped !== rd) { await writeFile(join(cwd, readmeRel), bumped, 'utf8'); readmeBumped = true; }
+  } catch { /* no README in consumer repos — skip */ }
   const clPath = join(cwd, 'CHANGELOG.md');
   let cl = '';
   try { cl = await readFile(clPath, 'utf8'); } catch { cl = '# Changelog\n\n'; }
   const marker = '# Changelog\n\n';
   const updated = cl.startsWith(marker) ? marker + section + '\n' + cl.slice(marker.length) : section + '\n' + cl;
   await writeFile(clPath, updated, 'utf8');
-  const add = await git('add', 'CHANGELOG.md', ...bumpTargets.map((t) => t.rel));
+  const add = await git('add', 'CHANGELOG.md', ...bumpTargets.map((t) => t.rel), ...(readmeBumped ? [readmeRel] : []));
   const commit = add.ok && (await git('commit', '-m', `chore(release): v${version}`));
   if (!commit.ok) return { ok: false, error: 'changelog commit failed' };
 
