@@ -43,9 +43,9 @@ describe('AC-288.1: rpc.mjs is the shared transport (forge-graph regression-free
     expect(await h({ jsonrpc: '2.0', method: 'notifications/initialized' })).toBe(null);
   });
 
-  it('exposes exactly the 10 documented tools and the 8 gate names', () => {
+  it('exposes exactly the 10 documented tools and the 9 gate names', () => {
     expect(TOOLS).toHaveLength(10);
-    expect(GATE_NAMES).toEqual(['ac', 'conventions', 'dep', 'docsync', 'ground', 'plandrift', 'situation', 'testintent']);
+    expect(GATE_NAMES).toEqual(['ac', 'conventions', 'dep', 'docsync', 'ground', 'license', 'plandrift', 'situation', 'testintent']);
   });
 });
 
@@ -113,6 +113,17 @@ describe('AC-288.2: every tool is callable and returns its documented structured
   it('AC-310.1: gate_run conventions -> fail level surfaces garbage-subject findings', async () => {
     const h = build({ deps: { gates: { conventions: async () => ({ ok: false, violations: [{ sha: 'abc1234', subject: '@ (#297)', reason: 'not a conventional-commit header (expected "type(scope): description")' }] }) } } });
     expect(body(await call(h, 'gate_run', { gate: 'conventions' }))).toEqual({ ok: true, gate: 'conventions', level: 'fail', findings: ['abc1234 "@ (#297)": not a conventional-commit header (expected "type(scope): description")'] });
+  });
+
+  it('AC-342.4: gate_run license -> pass/fail with plugin + dependency findings', async () => {
+    const pass = build({ deps: { gates: { license: async () => ({ ok: true, violations: [], plugin: { ok: true, problems: [] } }) } } });
+    expect(body(await call(pass, 'gate_run', { gate: 'license' }))).toEqual({ ok: true, gate: 'license', level: 'pass', findings: [] });
+
+    const fail = build({ deps: { gates: { license: async () => ({ ok: false, plugin: { ok: false, problems: ['no LICENSE file at the repo root'] }, violations: [{ name: 'copyleft-lib', license: 'GPL-3.0', reason: "license 'GPL-3.0' is not in the allowlist" }] }) } } });
+    expect(body(await call(fail, 'gate_run', { gate: 'license' }))).toEqual({
+      ok: true, gate: 'license', level: 'fail',
+      findings: ['plugin-license: no LICENSE file at the repo root', "copyleft-lib: GPL-3.0 — license 'GPL-3.0' is not in the allowlist"],
+    });
   });
 
   it('AC-288.2: release_readiness -> {ok,items:[{name,level,msg}]}', async () => {
