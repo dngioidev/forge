@@ -26,6 +26,8 @@ These are the REAL constraints every decision below is anchored to:
 
 ### Decision 1 - UI approach -> **a native Python DESKTOP app using PySide6 (Qt).**
 
+> **Superseded by [ADR-0008](0008-cockpit-local-web-app.md) (owner-signed 2026-08-02):** the cockpit is being re-architected as a permissive local web app (localhost backend + browser UI + xterm.js terminal) to remove the PySide6 **LGPL** dependency before the MIT public flip and to replace the hand-rolled terminal (#275) with xterm.js. Only this UI-approach decision changes; every other ADR-0006 decision below still stands.
+
 The web-app recommendation from the spike is **REJECTED**. The owner wants a real Windows application window (a "cockpit"), not a browser tab.
 
 - **Why PySide6/Qt:** it is the only option that cleanly delivers, in ONE native window, both rich **native charts** (QtCharts) for the usage/cost panels AND an **embedded real terminal** (ConPTY via `pywinpty`). Neither the localhost web app nor a Textual TUI gives a native windowed cockpit with those two capabilities together.

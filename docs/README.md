@@ -41,6 +41,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 - [Plugin capabilities](spikes/2026-07-21-plugin-capabilities.md) — research on the full Claude Code plugin surface vs. forge's usage; the tiered enhancement plan behind epic #148 (monitors, bin/, themes, LSP, manifest, `${CLAUDE_PLUGIN_DATA}`).
 - [forge self-audit](spikes/2026-07-21-forge-self-audit.md) — whole-plugin self-audit at v0.15.0: findings across skills, gates, board, and hooks.
+- [Cockpit re-architecture](spikes/2026-08-02-cockpit-rearchitecture.md) — #344: PySide6 LGPL + terminal-typing troubles → evaluate keep-and-comply vs permissive toolkit vs local web app; matrix + recommendation (Option C, local web app), feeding proposed ADR-0008.
 
 ## Design specs
 
@@ -56,6 +57,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [ADR-0006 — Runner fleet cockpit](decisions/0006-runner-ui.md) — a native PySide6 (Qt) desktop "cockpit" for the local self-hosted runner fleet: Python 3.12 + `uv`, shell-out-only + WSL2 interop, PAT-free read-only default, in-repo at `tools/runner-ui/` (epic #262).
 - [ADR-0007 — Cross-GAI: MCP-first core + host adapters](decisions/0007-cross-gai-mcp-first.md) — invert forge into a host-agnostic engine + per-host adapter emission; full parity on Antigravity (`agy`, proven), auto-merge Claude-only by policy, Codex deferred to #292 (epic #174).
 - [ADR-0007 agy-adapter reference](decisions/0007-agy-adapter/README.md) — the verified-working spike output (`mcp_config.json`, `hooks.json`, deny/capture shims) that `forge init --host agy` productizes (#174).
+- [ADR-0008 — Cockpit local web app](decisions/0008-cockpit-local-web-app.md) — *(Proposed)* re-architect the cockpit off LGPL PySide6 into a permissive localhost backend + browser UI + xterm.js terminal; supersedes ADR-0006 Decision 1 (UI approach) if accepted (#344).
 
 ## Guides
 
