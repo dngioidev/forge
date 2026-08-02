@@ -1,6 +1,6 @@
 # ADR-0008 — Cockpit re-architecture: a permissive local web app (localhost backend + browser UI + xterm.js terminal)
 
-**Date:** 2026-08-02 — **Status:** **Proposed** (awaiting owner Accept/Reject) — **Ticket:** #344 (spike; parent epic #182) — **Route:** spike (deliverable = [findings doc](../spikes/2026-08-02-cockpit-rearchitecture.md) + this ADR). **Supersedes:** ADR-0006 **Decision 1 (UI approach) only** if accepted — the rest of ADR-0006 (charter, control strategy, security invariants, code home) stands.
+**Date:** 2026-08-02 — **Status:** **Accepted** (owner-signed 2026-08-02) — **Ticket:** #344 (spike; parent epic #182) — **Route:** spike (deliverable = [findings doc](../spikes/2026-08-02-cockpit-rearchitecture.md) + this ADR). **Supersedes:** ADR-0006 **Decision 1 (UI approach) only** — the rest of ADR-0006 (charter, control strategy, security invariants, code home) stands. Build tracked under the **cockpit v2** epic (below).
 
 ## Context
 
