@@ -102,15 +102,26 @@ differences only — no theme-specific one-off values.
 
 ## Token delta
 - **Tokens used:** the smithy vocabulary only —
-  `iron.bg` · `iron.plate` · `iron.seam` (grounds);
+  `iron.bg` · `iron.plate` · `iron.seam` · `iron.pit` (grounds);
   `ink.ash` · `ink.smoke` · `ink.steel` (text/links);
   `heat.cool` · `heat.warm` · `heat.spark` · `heat.ember` · `heat.alarm`
   (the heat scale); the semantic `success` · `error` · `claude` overrides from
   `plugin/themes/forge.json`; `motion.calm` (250ms); and the display
   (Bahnschrift/DIN) + mono (Consolas/Cascadia) type roles. All defined by the
   console spec (`docs/design/2026-07-17-console.md`) and `plugin/themes/forge.json`.
-- **New tokens proposed:** none. The designer confirmed zero new tokens — the
-  cockpit is built entirely from the existing scales.
+- **New tokens proposed (#368):** one — `iron.pit` (`#0d0b09`), the terminal
+  ground: a near-black well deeper than `iron.bg` (`#161310`) so the live-shell
+  pane reads as a recessed pit set into the plate. Carried from the variant-c
+  mockup as a raw hex, it is now a first-class `iron.*` ground token, defined once
+  in the cockpit `:root` (`--iron-pit`) and consumed by `.term-pane` and the
+  xterm theme (read from the same custom property, since xterm takes concrete
+  colour strings not `var()`). It extends the `iron.*` ground scale rather than
+  restyling; no other surface consumes it yet.
+- **Documented exception — SVG presentation attributes (#368):** the usage-chart
+  gradient stops (`app.mjs`) reference `--claude` via an inline
+  `style="stop-color:var(--claude)"` rather than the `stop-color` presentation
+  attribute, because SVG presentation attributes cannot consume `var()`. This is
+  the sanctioned single-sourcing path for SVG fills, not a one-off value.
 - **Reuse decision (recorded as a deliberate precedent, not a one-off):** fleet
   binary health is mapped onto the heat vocabulary — online→`success`,
   offline→`heat.cool` ("cold iron", no fire), mis-target→`heat.alarm` + `error`
