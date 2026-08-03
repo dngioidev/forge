@@ -37,9 +37,13 @@ as the ``/api/terminal`` websocket route, bridged in
 from __future__ import annotations
 
 import dataclasses
+import mimetypes
+from pathlib import Path
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, status
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from forge_cockpit import discovery, terminal_bridge, usage
@@ -76,6 +80,20 @@ HOST = "127.0.0.1"
 
 #: Default port for the local cockpit backend.
 DEFAULT_PORT = 8765
+
+#: The static frontend (#354, ADR-0008) — the browser UI served from FastAPI on the
+#: same 127.0.0.1 origin as the API so the #352 loopback guard + token model hold.
+WEB_DIR = Path(__file__).resolve().parent / "web"
+
+#: The placeholder the ``/`` route replaces with the live per-session token so the
+#: UI can authorize its mutations + terminal ws without a token-leaking GET endpoint.
+_TOKEN_PLACEHOLDER = "__FORGE_SESSION_TOKEN__"
+
+# StaticFiles guesses content types from mimetypes; register the ES-module and JS
+# types explicitly so `app.mjs` / `app.js` are served as JavaScript on every host
+# (older Python builds do not map ``.mjs``), else the browser refuses the module.
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("text/javascript", ".js")
 
 
 # --------------------------------------------------------------------------- #
@@ -334,6 +352,31 @@ def create_app(*, port: int = DEFAULT_PORT, session_token: str | None = None) ->
             return
         await websocket.accept()
         await terminal_bridge.serve(websocket)
+
+    # ----------------------------------------------------------------------- #
+    # Static frontend (#354) — the browser UI (Variant C split cockpit).
+    #
+    # `GET /` returns index.html with the per-session capability token injected
+    # (so mutations + the terminal ws authorize without a token-leaking GET
+    # endpoint); the CSS/JS/vendored xterm.js assets are served read-only from
+    # `/static`. Both sit behind the loopback guard on the same 127.0.0.1 origin
+    # as the API, exactly as the #352 token model assumes. Mounted only when the
+    # web dir is present so a cores-only checkout still serves the API cleanly.
+    # ----------------------------------------------------------------------- #
+    index_html = WEB_DIR / "index.html"
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> HTMLResponse:
+        """Serve the cockpit UI shell with the live session token injected (AC.1)."""
+        if not index_html.is_file():
+            raise HTTPException(status_code=404, detail="cockpit UI not built")
+        html = index_html.read_text(encoding="utf-8").replace(
+            _TOKEN_PLACEHOLDER, app.state.session_token
+        )
+        return HTMLResponse(html)
+
+    if WEB_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     return app
 

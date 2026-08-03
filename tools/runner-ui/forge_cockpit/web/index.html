@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<!-- The per-session capability token (#352) injected by the `/` route at serve
+     time. Same-origin loopback only; the Host/Origin guard keeps it unreadable
+     off-origin. Mutations (control/provision) and the terminal ws read it here. -->
+<meta name="forge-session-token" content="__FORGE_SESSION_TOKEN__">
+<title>forge cockpit</title>
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<aside class="sidebar" aria-label="Fleet health">
+  <div class="sidebar-head">
+    <div class="wordmark">for<em>g</em>e cockpit</div>
+    <span class="stamp tabular" id="fleet-stamp" role="status" aria-live="polite">connecting…</span>
+  </div>
+  <div class="fleet-list" id="fleet-list" role="list" aria-busy="true">
+    <div class="empty-mini" aria-hidden="true">loading fleet…</div>
+  </div>
+  <div class="sidebar-foot">
+    <span class="session-pill" id="session-pill">
+      <span class="dot" id="session-dot" aria-hidden="true"></span>
+      <span id="session-label">session — connecting</span>
+    </span>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="mode-bar" role="tablist" aria-label="Main view">
+    <button class="mode-btn" role="tab" id="tab-usage" aria-selected="false" aria-controls="m-usage" tabindex="-1" data-mode="usage">
+      <span class="glyph" aria-hidden="true">&#9202;</span><span class="lbl-full">Usage</span>
+    </button>
+    <button class="mode-btn" role="tab" id="tab-term" aria-selected="true" aria-controls="m-term" tabindex="0" data-mode="term">
+      <span class="glyph" aria-hidden="true">&gt;_</span><span class="lbl-full">Terminal</span>
+    </button>
+    <button class="mode-btn" role="tab" id="tab-logs" aria-selected="false" aria-controls="m-logs" tabindex="-1" data-mode="logs">
+      <span class="glyph" aria-hidden="true">&#8801;</span><span class="lbl-full">Logs</span>
+    </button>
+  </div>
+
+  <section class="mode-view" id="m-usage" role="tabpanel" aria-labelledby="tab-usage" tabindex="0" hidden>
+    <div class="panel">
+      <h3>tokens &middot; last 14 days</h3>
+      <div class="stat-row" id="usage-stats">
+        <div class="stat"><div class="num accent tabular" id="stat-tokens-today">—</div><div class="lbl">tokens today</div></div>
+        <div class="stat"><div class="num tabular" id="stat-cost-today">—</div><div class="lbl">cost today</div></div>
+        <div class="stat"><div class="num tabular" id="stat-cost-30d">—</div><div class="lbl">cost, 30d</div></div>
+      </div>
+      <div id="usage-chart-mount"></div>
+    </div>
+    <div class="panel">
+      <h3>by model &middot; 30 days</h3>
+      <div id="usage-breakdown"></div>
+    </div>
+    <div id="usage-error" hidden></div>
+  </section>
+
+  <section class="mode-view" id="m-term" role="tabpanel" aria-labelledby="tab-term" tabindex="0">
+    <div class="term-pane" id="term-mount" aria-label="Terminal — live shell over the loopback websocket" role="group"></div>
+    <p class="term-note" id="term-status">connecting the terminal…</p>
+  </section>
+
+  <section class="mode-view" id="m-logs" role="tabpanel" aria-labelledby="tab-logs" tabindex="0" hidden>
+    <div class="panel logs-panel">
+      <h3 id="logs-title">logs</h3>
+      <div id="logs-body"><div class="empty-mini">select a runner to read its logs</div></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/static/app.mjs"></script>
+</body>
+</html>
