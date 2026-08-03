@@ -32,6 +32,8 @@ See the [findings doc](../spikes/2026-08-02-cockpit-rearchitecture.md) for the f
 
 ## Consequences
 
+> **Implementation note ([#355](https://github.com/dngioidev/forge/issues/355), owner-signed 2026-08-03) — PySide6/PyInstaller retired ahead of parity.** Rather than wait for web-app parity, the owner chose to delete the PySide6 (LGPLv3) desktop UI and the `forge-cockpit.spec` PyInstaller packaging **now**, so the license check is clean with **zero exceptions** before the OSS flip. `PySide6`, `pywinpty`, `pytest-qt`, and PyInstaller left `tools/runner-ui/pyproject.toml`/`uv.lock`; the `license.mjs` Python exception for PySide6 (added by #349) was removed, and the gate now reports zero exceptions (exit 0). The framework-agnostic cores (`control`, `discovery`, `logs`, `provision`, `shellout`, `usage`) and their non-Qt tests are retained. **Consequence for the interim:** the cockpit has **no runnable desktop UI** until the FastAPI web app ([#351](https://github.com/dngioidev/forge/issues/351)) rebuilds the presentation layer on these cores. The child-(5) work ("launch command + retire PySide6/PyInstaller") is therefore split: the *retire* half landed in #355; the *launch command* rides with the web-app UI.
+
 **If Accepted:**
 - forge reaches **all-permissive**: PySide6 (LGPL) and `forge-cockpit.spec` (PyInstaller onefile) are retired; the LGPL declaration leaves `pyproject.toml`. No binary is distributed, so no LGPL obligation remains.
 - #275 is resolved by construction — xterm.js owns emulation; the backend PTY shrinks to spawn-and-pipe (`pywinpty`, still permissive Apache-2.0, or `node-pty`).

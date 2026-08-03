@@ -27,6 +27,8 @@ These are the REAL constraints every decision below is anchored to:
 ### Decision 1 - UI approach -> **a native Python DESKTOP app using PySide6 (Qt).**
 
 > **Superseded by [ADR-0008](0008-cockpit-local-web-app.md) (owner-signed 2026-08-02):** the cockpit is being re-architected as a permissive local web app (localhost backend + browser UI + xterm.js terminal) to remove the PySide6 **LGPL** dependency before the MIT public flip and to replace the hand-rolled terminal (#275) with xterm.js. Only this UI-approach decision changes; every other ADR-0006 decision below still stands.
+>
+> **Removed ahead of parity ([#355](https://github.com/dngioidev/forge/issues/355), owner-signed 2026-08-03):** per the owner's decision, the PySide6 (LGPLv3) desktop UI and its PyInstaller packaging were deleted **now**, ahead of web-app parity, so the license check is clean with **zero exceptions** before the OSS flip. `PySide6`/`pywinpty`/`pytest-qt`/`PyInstaller` are gone from `tools/runner-ui/pyproject.toml` and `uv.lock`. There is **no runnable desktop cockpit UI in the interim** — the FastAPI web app ([#351](https://github.com/dngioidev/forge/issues/351)) rebuilds the presentation layer on the retained, framework-agnostic cores (`control`, `discovery`, `logs`, `provision`, `shellout`, `usage`). The stack (Decision 3), embedded-terminal (Decision 2/phasing Wave 3), and QtCharts references below therefore describe the retired PySide6 design, not the current tree.
 
 The web-app recommendation from the spike is **REJECTED**. The owner wants a real Windows application window (a "cockpit"), not a browser tab.
 
