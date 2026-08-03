@@ -127,6 +127,44 @@ def origin_is_allowed(origin: str | None, expected_port: int | None) -> bool:
     return True
 
 
+def authorize_websocket(
+    *,
+    host: str | None,
+    origin: str | None,
+    token: str | None,
+    expected_port: int | None,
+    expected_token: str | None,
+) -> bool:
+    """Authorize a websocket **upgrade** — loopback-guarded + token-gated (#353 AC.2).
+
+    The ``LoopbackGuardMiddleware`` is HTTP-only (Starlette's ``BaseHTTPMiddleware``
+    never sees the websocket scope), so the terminal endpoint must enforce the same
+    defenses itself before accepting the upgrade. Opening a shell is a *mutating*
+    capability, so this is stricter than the HTTP path in one way: a browser ALWAYS
+    sends an ``Origin`` on a websocket handshake, so a missing/foreign Origin is
+    rejected rather than tolerated.
+
+    All three must hold: the ``Host`` is a loopback literal on the bound port
+    (DNS-rebinding defense), the ``Origin`` is an allowed loopback origin
+    (cross-site defense), and the per-session capability ``token`` matches the one
+    minted at launch (constant-time compare). Browsers cannot set custom headers on
+    a websocket handshake, so the token travels as a query parameter; the same
+    unguessable secret the mutating HTTP routes require. Any failure → ``False``,
+    and the caller rejects the upgrade.
+    """
+    if not host_is_allowed(host, expected_port):
+        return False
+    if not origin_is_allowed(origin, expected_port):
+        return False
+    if (
+        not expected_token
+        or not token
+        or not secrets.compare_digest(token, expected_token)
+    ):
+        return False
+    return True
+
+
 class LoopbackGuardMiddleware(BaseHTTPMiddleware):
     """Reject any request whose ``Host``/``Origin`` is not an allowed loopback value.
 
