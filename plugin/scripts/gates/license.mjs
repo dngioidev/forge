@@ -36,6 +36,51 @@ export const DEFAULT_ALLOWLIST = Object.freeze([
 /** The plugin's own declared license (AC.2) — forge is MIT end to end. */
 export const EXPECTED_LICENSE = 'MIT';
 
+/**
+ * #349 — the Python side of the tree. The license gate historically saw only the
+ * npm tree (`pnpm licenses list`), so the one genuinely non-permissive dependency
+ * in the repo — PySide6 (LGPL-3.0), pulled in by the cockpit `tools/runner-ui/` —
+ * was invisible to the very gate built to catch copyleft.
+ *
+ * uv.lock carries NO per-package license metadata (verified on the committed
+ * lock), and the license CI job runs on the Linux runner where the Python env
+ * may not be installed — so we do NOT shell out to pip/uv. Instead we read the
+ * committed `tools/runner-ui/pyproject.toml` deterministically for the declared
+ * dependency names and resolve each against this small curated SPDX map. A
+ * declared package absent from the map resolves to '' and FAILS CLOSED — the same
+ * fail-closed contract the npm side already enforces, so a newly-added Python dep
+ * cannot slip through unclassified.
+ */
+export const PYTHON_LICENSES = Object.freeze({
+  pyside6: 'LGPL-3.0',      // Qt for Python — LGPLv3 (declared `LGPL-3.0-or-later` in pyproject)
+  pywinpty: 'MIT',
+  psutil: 'BSD-3-Clause',
+  pytest: 'MIT',
+  'pytest-qt': 'MIT',
+});
+
+/**
+ * AC-349.2 — PySide6 ships under LGPL-3.0, which is intentionally NOT on the
+ * permissive allowlist. Rather than let it pass silently (the exact blind spot
+ * this ticket fixes) OR red the current tree with a hard failure, it is allowed
+ * as an EXPLICIT, DOCUMENTED, TEMPORARY exception, keyed to the specific package
+ * so no other LGPL dependency (npm or Python) is waved through.
+ *
+ * Rationale: PySide6 is consumed source-only and dynamically linked, and the
+ * cockpit re-architecture decision (docs/decisions/0008, Option C) removes
+ * PySide6 entirely in cockpit-v2. When that work (#355) lands and the LGPL
+ * declaration leaves pyproject.toml, DELETE this exception — it should not
+ * outlive the dependency it excuses.
+ */
+export const PYTHON_LICENSE_EXCEPTIONS = Object.freeze([
+  Object.freeze({
+    package: 'pyside6',
+    license: 'LGPL-3.0',
+    reason: 'source-only distribution, dynamically linked; temporary — remove when PySide6 is retired in cockpit-v2 (#355, ADR-0008 Option C)',
+    removeWhen: '#355',
+  }),
+]);
+
 /** License strings that mean "no usable license" — always fail closed (AC.1). */
 const UNKNOWN_MARKERS = new Set(['', 'unknown', 'unlicensed', 'see license in license', 'none']);
 
@@ -94,6 +139,107 @@ export function evaluate(licenses, allowlist = DEFAULT_ALLOWLIST) {
     }
   }
   return { ok: violations.length === 0, violations };
+}
+
+/**
+ * Extract the declared dependency package names from a `pyproject.toml` string
+ * (#349). Pure, no toml library: we scan `[project] dependencies = [...]` and
+ * every `[dependency-groups] <group> = [...]` array, taking each quoted requirement
+ * and stripping the version specifier / environment marker so `"PySide6>=6.7"` and
+ * `"pywinpty>=2.0; sys_platform == 'win32'"` both reduce to a bare name. Names are
+ * lower-cased and de-duplicated (PEP 503 normalises case). Robust to absent
+ * sections — returns whatever it finds, [] on none.
+ */
+export function parsePyprojectDeps(tomlText) {
+  const text = typeof tomlText === 'string' ? tomlText : '';
+  const names = new Set();
+  const harvest = (body) => {
+    // Match whole TOML strings by their own quote type, so inner opposite-quotes
+    // (e.g. the `'win32'` marker inside a double-quoted requirement) don't split it.
+    const strRe = /"([^"]*)"|'([^']*)'/g;
+    let s;
+    while ((s = strRe.exec(body)) !== null) {
+      const raw = (s[1] ?? s[2] ?? '').trim();
+      // A requirement name is the leading run before any version op / marker / extra.
+      const name = raw.split(/[\s;<>=!~\[\(]/)[0].trim().toLowerCase();
+      if (name) names.add(name);
+    }
+  };
+  // Runtime deps: the `[project] dependencies = [ ... ]` array only (NOT build-system
+  // `requires`, hatch `packages`, or pytest `testpaths`).
+  const projDeps = /(?:^|\n)\s*dependencies\s*=\s*\[([^\]]*)\]/.exec(text);
+  if (projDeps) harvest(projDeps[1]);
+  // Dev/optional deps: every array declared inside the `[dependency-groups]` table,
+  // scoped to that section so nothing outside it is harvested.
+  // Capture the section body up to the next table header (a `[name]` at line
+  // start), NOT the first `[` — array brackets like `dev = [` live inside it.
+  const groups = /(?:^|\n)\s*\[dependency-groups\]([\s\S]*?)(?=\n\s*\[[\w.-]+\]\s*(?:\n|$)|$)/.exec(text);
+  if (groups) {
+    const groupArrayRe = /=\s*\[([^\]]*)\]/g;
+    let g;
+    while ((g = groupArrayRe.exec(groups[1])) !== null) harvest(g[1]);
+  }
+  return [...names];
+}
+
+/**
+ * Resolve a list of Python package names to `[{name, license}]` via the curated
+ * SPDX map (#349). An unmapped package yields an empty license string, which
+ * evaluatePython() then fails closed on. Pure — no I/O.
+ */
+export function resolvePythonLicenses(names, map = PYTHON_LICENSES) {
+  return (names ?? []).map((name) => {
+    const key = String(name).trim().toLowerCase();
+    return { name: key, license: typeof map[key] === 'string' ? map[key] : '' };
+  });
+}
+
+/**
+ * Check a flat Python `[{name, license}]` list against the permissive allowlist,
+ * honouring the documented per-package exceptions (AC-349.1/.2/.3). A package that
+ * matches an exception (same name AND same license) is recorded under `exceptions`
+ * and NOT counted as a violation; everything else is evaluated exactly like the
+ * npm side — unknown/missing fails closed, non-permissive fails, permissive passes.
+ * Returns { ok, violations, exceptions }. Pure — no I/O.
+ */
+export function evaluatePython(licenses, allowlist = DEFAULT_ALLOWLIST, exceptions = PYTHON_LICENSE_EXCEPTIONS) {
+  const allow = new Set(allowlist);
+  const violations = [];
+  const applied = [];
+  for (const { name, license } of licenses) {
+    const norm = (license ?? '').trim();
+    const key = String(name).trim().toLowerCase();
+    const ex = exceptions.find((e) => e.package.toLowerCase() === key && e.license === norm);
+    if (ex) {
+      applied.push({ name: key, license: norm, reason: ex.reason, removeWhen: ex.removeWhen });
+      continue;
+    }
+    if (!norm || UNKNOWN_MARKERS.has(norm.toLowerCase())) {
+      violations.push({ name: key, license: norm || '(none)', reason: 'missing/unknown Python license — fails closed' });
+    } else if (!licenseAllowed(norm, allow)) {
+      violations.push({ name: key, license: norm, reason: `Python license '${norm}' is not in the allowlist` });
+    }
+  }
+  return { ok: violations.length === 0, violations, exceptions: applied };
+}
+
+/**
+ * Inspect the Python dependency tree of `tools/runner-ui` (#349, AC-349.1). Reads
+ * the committed pyproject.toml (deterministic, no network, no Python env needed in
+ * CI), resolves declared deps through the curated SPDX map, and evaluates them —
+ * with PySide6's LGPL-3.0 as the one documented exception. Degrades gracefully:
+ * with no pyproject.toml (consumer repos, or the cockpit removed) it SKIPS. Returns
+ * { ok, skipped?, names, violations, exceptions }.
+ */
+export async function checkPythonLicenses(cwd, { allowlist = DEFAULT_ALLOWLIST, relPath = 'tools/runner-ui/pyproject.toml' } = {}) {
+  const toml = await readFile(resolve(cwd, relPath), 'utf8').catch(() => null);
+  if (toml === null) {
+    return { ok: true, skipped: true, names: [], violations: [], exceptions: [] };
+  }
+  const names = parsePyprojectDeps(toml);
+  const licenses = resolvePythonLicenses(names);
+  const { ok, violations, exceptions } = evaluatePython(licenses, allowlist);
+  return { ok, skipped: false, names, violations, exceptions };
 }
 
 /** The effective allowlist: forge.json `license.allow` when valid, else the default. */
@@ -193,13 +339,23 @@ export async function runLicenseGate({ cwd, execFn = run, log = console.log, con
   }
 
   for (const v of violations) log(`x ${v.name}: ${v.license} — ${v.reason}`);
-  const ok = plugin.ok && violations.length === 0;
+
+  // #349 (AC-349.1/.2/.3) — the Python dependency tree (tools/runner-ui), which
+  // the npm-only gate never saw. Reported distinctly from the npm violations.
+  const python = await checkPythonLicenses(cwd, { allowlist });
+  for (const e of python.exceptions) log(`~ python ${e.name}: ${e.license} — allowlisted exception (${e.reason})`);
+  for (const v of python.violations) log(`x python ${v.name}: ${v.license} — ${v.reason}`);
+
+  const ok = plugin.ok && violations.length === 0 && python.ok;
   if (ok) {
-    log(`license: clean — plugin declares ${expected}; all dependency licenses within the allowlist (${allowlist.length} ids)`);
+    const pyNote = python.skipped
+      ? 'no Python tree'
+      : `${python.names.length} Python dep(s), ${python.exceptions.length} documented exception(s)`;
+    log(`license: clean — plugin declares ${expected}; all npm dependency licenses within the allowlist (${allowlist.length} ids); ${pyNote}`);
   } else {
-    log(`license: ${plugin.problems.length} plugin-declaration issue(s), ${violations.length} disallowed/unknown dependency license(s) — fix or extend license.allow before shipping`);
+    log(`license: ${plugin.problems.length} plugin-declaration issue(s), ${violations.length} disallowed/unknown npm license(s), ${python.violations.length} disallowed/unknown Python license(s) — fix or extend license.allow before shipping`);
   }
-  return { ok, violations, plugin, allowlist };
+  return { ok, violations, plugin, allowlist, python };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;

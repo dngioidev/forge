@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,12 @@ import {
   parsePnpmResult,
   checkPluginLicense,
   runLicenseGate,
+  PYTHON_LICENSES,
+  PYTHON_LICENSE_EXCEPTIONS,
+  parsePyprojectDeps,
+  resolvePythonLicenses,
+  evaluatePython,
+  checkPythonLicenses,
 } from '../../plugin/scripts/gates/license.mjs';
 
 const noop = () => {};
@@ -172,3 +178,167 @@ describe('license gate — SPDX allowlist enforcement (#342)', () => {
     expect(res.plugin.problems.join(' ')).toMatch(/no LICENSE file/);
   });
 });
+
+// #349 — the license gate was blind to the Python dependency tree
+// (tools/runner-ui/pyproject.toml), so the one genuinely non-permissive dep,
+// PySide6 (LGPL-3.0), was invisible to the gate built to catch copyleft.
+describe('license gate — Python dependency tree (#349)', () => {
+  // The real cockpit pyproject shape: PySide6 (the LGPL exception) + a marker
+  // string carrying inner single quotes, plus a dev group.
+  const PYPROJECT = `[project]
+name = "forge-cockpit"
+version = "0.1.0"
+license = { text = "LGPL-3.0-or-later" }
+dependencies = [
+    "PySide6>=6.7",
+    "pywinpty>=2.0; sys_platform == 'win32'",
+    "psutil>=5.9",
+]
+
+[project.scripts]
+forge-cockpit = "forge_cockpit.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["forge_cockpit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+`;
+
+  it('AC-349.1: parses ONLY declared/dev deps from pyproject.toml (not build requires, packages, testpaths)', () => {
+    const names = parsePyprojectDeps(PYPROJECT);
+    expect(names).toEqual(['pyside6', 'pywinpty', 'psutil', 'pytest', 'pytest-qt']);
+    // the marker's inner 'win32' and the non-dependency arrays must NOT leak in.
+    expect(names).not.toContain('win32');
+    expect(names).not.toContain('hatchling');
+    expect(names).not.toContain('forge_cockpit');
+    expect(names).not.toContain('tests');
+  });
+
+  it('AC-349.1: resolves declared deps through the curated SPDX map; unmapped → empty (fails closed)', () => {
+    const resolved = resolvePythonLicenses(['pyside6', 'psutil', 'mystery-dep']);
+    expect(resolved).toContainEqual({ name: 'pyside6', license: 'LGPL-3.0' });
+    expect(resolved).toContainEqual({ name: 'psutil', license: 'BSD-3-Clause' });
+    expect(resolved).toContainEqual({ name: 'mystery-dep', license: '' });
+  });
+
+  it('AC-349.1: the whole real Python tree is inspected + allowlist applied (gate is not blind to it)', async () => {
+    const res = await checkPythonLicenses(REPO_ROOT);
+    expect(res.skipped).toBeFalsy();
+    // every declared dep is actually evaluated, not silently skipped.
+    expect(res.names).toEqual(['pyside6', 'pywinpty', 'psutil', 'pytest', 'pytest-qt']);
+    expect(res.ok).toBe(true);
+  });
+
+  it('AC-349.2: PySide6 LGPL-3.0 is EXPLICITLY allowlisted with a documented rationale — never a silent pass', async () => {
+    // The map deliberately classifies PySide6 as LGPL-3.0 (non-permissive)...
+    expect(PYTHON_LICENSES.pyside6).toBe('LGPL-3.0');
+    expect(DEFAULT_ALLOWLIST).not.toContain('LGPL-3.0'); // ...and LGPL is NOT permissive.
+
+    // ...so it only passes via a visible, package-scoped exception carrying a
+    // rationale that references the removal ticket / ADR (AC.2).
+    const res = await checkPythonLicenses(REPO_ROOT);
+    expect(res.violations).toEqual([]); // not a violation...
+    const ex = res.exceptions.find((e) => e.name === 'pyside6');
+    expect(ex).toBeTruthy(); // ...because it is recorded as an explicit exception
+    expect(ex.license).toBe('LGPL-3.0');
+    expect(ex.reason).toMatch(/#355|ADR-0008/); // rationale points at the removal plan
+    expect(ex.removeWhen).toBe('#355');
+
+    // The exception is package-scoped: an LGPL dep that is NOT PySide6 still fails.
+    const other = evaluatePython([{ name: 'some-lgpl-lib', license: 'LGPL-3.0' }]);
+    expect(other.ok).toBe(false);
+    expect(other.violations[0]).toMatchObject({ name: 'some-lgpl-lib', license: 'LGPL-3.0' });
+  });
+
+  it('AC-349.3: a disallowed (GPL-3.0) Python dependency is CAUGHT — the gate fails', () => {
+    const res = evaluatePython([
+      { name: 'psutil', license: 'BSD-3-Clause' },
+      { name: 'copyleft-py', license: 'GPL-3.0-only' },
+    ]);
+    expect(res.ok).toBe(false);
+    expect(res.violations).toHaveLength(1);
+    expect(res.violations[0]).toMatchObject({ name: 'copyleft-py', license: 'GPL-3.0-only' });
+    expect(res.violations[0].reason).toMatch(/not in the allowlist/);
+  });
+
+  it('AC-349.3: an unmapped/unknown Python dep fails CLOSED (never silently passes)', () => {
+    const res = evaluatePython(resolvePythonLicenses(['pytest', 'brand-new-unmapped-dep']));
+    expect(res.ok).toBe(false);
+    expect(res.violations.map((v) => v.name)).toEqual(['brand-new-unmapped-dep']);
+    expect(res.violations[0].reason).toMatch(/fails closed/);
+  });
+
+  it('AC-349.3: checkPythonLicenses FAILS on a fixture pyproject carrying a GPL dep', async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, 'pyproject.toml'), `[project]
+dependencies = ["psutil>=5.9"]
+`, 'utf8');
+    // map psutil→BSD (fine) but inject a GPL dep via a one-off map to prove the pipeline fails.
+    const gplMap = { psutil: 'GPL-3.0-only' };
+    const resolved = resolvePythonLicenses(parsePyprojectDeps(await readFileFixture(dir)), gplMap);
+    const res = evaluatePython(resolved);
+    expect(res.ok).toBe(false);
+    expect(res.violations[0]).toMatchObject({ name: 'psutil', license: 'GPL-3.0-only' });
+  });
+
+  it('AC-349.1: checkPythonLicenses SKIPS gracefully when there is no pyproject.toml', async () => {
+    const dir = await tempDir();
+    const res = await checkPythonLicenses(dir);
+    expect(res.skipped).toBe(true);
+    expect(res.ok).toBe(true);
+    expect(res.violations).toEqual([]);
+  });
+
+  it('AC-349.2: the documented exception set is package-scoped and self-documenting', () => {
+    expect(PYTHON_LICENSE_EXCEPTIONS).toHaveLength(1);
+    const [ex] = PYTHON_LICENSE_EXCEPTIONS;
+    expect(ex.package).toBe('pyside6');
+    expect(ex.license).toBe('LGPL-3.0');
+    expect(ex.reason).toMatch(/#355|ADR-0008|cockpit-v2/);
+  });
+
+  it('AC-349.1: runLicenseGate now covers BOTH trees and stays GREEN on the real repo', async () => {
+    const res = await runLicenseGate({ cwd: REPO_ROOT, execFn: execPermissive, log: noop });
+    expect(res.ok).toBe(true);
+    expect(res.python).toBeTruthy();
+    expect(res.python.skipped).toBeFalsy();
+    expect(res.python.exceptions.some((e) => e.name === 'pyside6')).toBe(true);
+    expect(res.python.violations).toEqual([]);
+  });
+
+  it('AC-349.3: runLicenseGate FAILS overall when the Python tree carries a non-permissive dep (end to end)', async () => {
+    // A full mini-repo: MIT plugin declaration + all-permissive npm (execPermissive),
+    // but a cockpit pyproject that declares an unmapped/non-permissive Python dep.
+    const dir = await tempDir();
+    await writeFile(join(dir, 'LICENSE'), 'MIT License\n\nCopyright (c) 2026', 'utf8');
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ license: 'MIT' }), 'utf8');
+    const pyDir = join(dir, 'tools', 'runner-ui');
+    await mkdir(pyDir, { recursive: true });
+    await writeFile(join(pyDir, 'pyproject.toml'), `[project]
+dependencies = ["some-copyleft-lib>=1.0"]
+`, 'utf8');
+    const res = await runLicenseGate({ cwd: dir, execFn: execPermissive, log: noop });
+    expect(res.plugin.ok).toBe(true);       // plugin declaration fine
+    expect(res.violations).toEqual([]);     // npm side fine
+    expect(res.python.ok).toBe(false);      // Python side catches the unmapped dep
+    expect(res.ok).toBe(false);             // → whole gate reds
+    expect(res.python.violations[0]).toMatchObject({ name: 'some-copyleft-lib' });
+  });
+});
+
+// Small helper: read the fixture pyproject written into a temp dir.
+async function readFileFixture(dir) {
+  const { readFile } = await import('node:fs/promises');
+  return readFile(join(dir, 'pyproject.toml'), 'utf8');
+}
