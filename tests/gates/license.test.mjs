@@ -239,9 +239,11 @@ testpaths = ["tests"]
   it('AC-355.3: the whole real Python tree is inspected + allowlist applied (gate is not blind to it)', async () => {
     const res = await checkPythonLicenses(REPO_ROOT);
     expect(res.skipped).toBeFalsy();
-    // #355 — cores-only: PySide6/pywinpty/pytest-qt are gone; only psutil + pytest remain.
-    // every declared dep is actually evaluated, not silently skipped.
-    expect(res.names).toEqual(['psutil', 'pytest']);
+    // #355 retired PySide6/pywinpty/pytest-qt; #351 (Cockpit v2 backend, ADR-0008)
+    // added the FastAPI web stack — fastapi + uvicorn (runtime) and httpx (dev,
+    // powering the TestClient), all permissive. Every declared dep is actually
+    // evaluated, not silently skipped.
+    expect(res.names).toEqual(['psutil', 'fastapi', 'uvicorn', 'pytest', 'httpx']);
     expect(res.ok).toBe(true);
   });
 
