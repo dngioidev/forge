@@ -57,7 +57,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [ADR-0006 — Runner fleet cockpit](decisions/0006-runner-ui.md) — a native PySide6 (Qt) desktop "cockpit" for the local self-hosted runner fleet: Python 3.12 + `uv`, shell-out-only + WSL2 interop, PAT-free read-only default, in-repo at `tools/runner-ui/` (epic #262).
 - [ADR-0007 — Cross-GAI: MCP-first core + host adapters](decisions/0007-cross-gai-mcp-first.md) — invert forge into a host-agnostic engine + per-host adapter emission; full parity on Antigravity (`agy`, proven), auto-merge Claude-only by policy, Codex deferred to #292 (epic #174).
 - [ADR-0007 agy-adapter reference](decisions/0007-agy-adapter/README.md) — the verified-working spike output (`mcp_config.json`, `hooks.json`, deny/capture shims) that `forge init --host agy` productizes (#174).
-- [ADR-0008 — Cockpit local web app](decisions/0008-cockpit-local-web-app.md) — *(Accepted)* re-architect the cockpit off LGPL PySide6 into a permissive localhost backend + browser UI + xterm.js terminal; supersedes ADR-0006 Decision 1 (UI approach). The PySide6/PyInstaller artifact was retired ahead of parity in #355 (cores-only interim; UI returns with the web app #351) (#344).
+- [ADR-0008 — Cockpit local web app](decisions/0008-cockpit-local-web-app.md) — *(Accepted)* re-architect the cockpit off LGPL PySide6 into a permissive localhost backend + browser UI + xterm.js terminal; supersedes ADR-0006 Decision 1 (UI approach). Delivered: FastAPI backend (#351), loopback hardening (#352), PTY-over-websocket bridge (#353), PySide6/PyInstaller removal (#355); the browser UI (#354) is the remaining piece (#344).
 
 ## Guides
 
@@ -66,7 +66,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [Cross-GAI (agy)](guides/cross-gai.md) — run forge on Antigravity: `forge init --host agy` emit flow, plugin layout, MCP/hooks wiring, the deny/capture shims, Windows gotchas (MAX_PATH), and the honest capability/parity matrix.
 - [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, environment.
 - [Runner adoption](guides/runner-adoption.md) — give a private repo free CI on a local self-hosted runner: adopt (new + existing), per-OS host setup, the cockpit, the manual service runbook, and a known-issues table.
-- [Runner cockpit](../tools/runner-ui/README.md) — the framework-agnostic Python cores (`tools/runner-ui/`) for the runner fleet — discovery / control / logs / provision / usage / shellout. The PySide6 desktop UI was retired in #355 (no runnable UI in the interim); the FastAPI web app (#351) rebuilds it on these cores (ADR-0006/0008).
+- [Runner cockpit](../tools/runner-ui/README.md) — the cockpit local web app (`tools/runner-ui/`): a FastAPI backend on `127.0.0.1` serving the runner-fleet cores (discovery / control / logs / provision / usage / shellout) plus a PTY-over-websocket terminal, launched by `forge-cockpit`. Backend #351, loopback hardening #352, PTY bridge #353 are landed; the browser UI (#354) is still in progress, so the interim exposes the HTTP/ws API, not a finished UI (ADR-0006/0008).
 - [Rollback runbook](guides/rollback-runbook.md) — find the previous digest, redeploy it (one command), verify, record; forward-only-migration exception.
 - [Data-recovery runbook](guides/data-recovery-runbook.md) — restore → verify → postmortem; never debug against the only copy.
 
