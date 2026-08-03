@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from forge_cockpit import server
+from forge_cockpit import security, server
 from forge_cockpit.control import ActionResult
 from forge_cockpit.discovery import (
     DOCKER,
@@ -36,7 +36,22 @@ from forge_cockpit.usage import UsageRecord
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(server.app)
+    """A TestClient that speaks from the real loopback origin with a valid token.
+
+    #352 hardened the surface: requests now need a loopback ``Host``/``Origin`` and
+    mutations need the per-session capability token. Baking those defaults into the
+    fixture lets the #351 endpoint-contract tests below keep asserting exactly what
+    they asserted before — the hardening is exercised on its own in test_security.py.
+    """
+    base = f"http://127.0.0.1:{server.DEFAULT_PORT}"
+    c = TestClient(server.app, base_url=base)
+    c.headers.update(
+        {
+            "Origin": base,
+            security.CSRF_HEADER: server.app.state.session_token,
+        }
+    )
+    return c
 
 
 # --------------------------------------------------------------------------- #

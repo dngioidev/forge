@@ -26,11 +26,11 @@ Security (ADR-0005 + ADR-0006, inherited unchanged — AC.2):
   references it), and usage is **metadata only** (no prompt/response content).
   No endpoint here adds a field that could carry a secret or the PAT.
 
-Scope boundary (ADR-0008 children): this ticket (#351) is the HTTP surface only.
-Loopback **hardening** — ``Host``-header/DNS-rebinding validation, a launch-minted
-capability token, ``Origin``/CSRF checks — is deliberately deferred to **#352**;
-the PTY-over-websocket terminal is **#353**; the browser UI is **#354**. This
-module does the minimal correct ``127.0.0.1`` bind and nothing more.
+Loopback hardening (#352, ADR-0008) — ``Host``-header/DNS-rebinding validation,
+``Origin``/CSRF checks, and a launch-minted per-session capability token required
+by the mutating routes — is layered on in :mod:`forge_cockpit.security` and wired
+in :func:`create_app`. Remaining ADR-0008 children: the PTY-over-websocket
+terminal is **#353** and the browser UI is **#354**.
 """
 
 from __future__ import annotations
@@ -38,10 +38,15 @@ from __future__ import annotations
 import dataclasses
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from forge_cockpit import discovery, usage
+from forge_cockpit.security import (
+    LoopbackGuardMiddleware,
+    mint_session_token,
+    require_session_token,
+)
 from forge_cockpit.control import ACTIONS as CONTROL_ACTIONS
 from forge_cockpit.control import control
 from forge_cockpit.discovery import (
@@ -172,17 +177,32 @@ def _serialize_aggregates(aggs: dict[str, UsageAggregate]) -> dict:
 # --------------------------------------------------------------------------- #
 # App factory + routes (thin — decode, call the core, serialize).
 # --------------------------------------------------------------------------- #
-def create_app() -> FastAPI:
+def create_app(*, port: int = DEFAULT_PORT, session_token: str | None = None) -> FastAPI:
     """Build the FastAPI app wiring each core to a loopback JSON endpoint (AC.1).
 
     A factory (not a module-global app) so tests can build a fresh instance and
     the console entry point can serve one, without import-time side effects.
+
+    Loopback hardening (#352, ADR-0008): the app mounts
+    :class:`~forge_cockpit.security.LoopbackGuardMiddleware` (Host/Origin /
+    DNS-rebinding defense) and mints a per-session capability token stored on
+    ``app.state.session_token`` — required by the mutating routes and handed to
+    the UI (#354) at load. ``port`` is the bound port the Host/Origin checks
+    pin to; pass it so a non-default bind still validates correctly.
     """
+    token = session_token or mint_session_token()
     app = FastAPI(
         title="Forge cockpit backend",
         summary="Local (127.0.0.1) HTTP surface over the framework-agnostic runner cores.",
         version="2.0.0",
     )
+    #: The per-session capability token (AC.3) and the bound port the Host/Origin
+    #: guard pins to (AC.1). ``session_token`` is what ``require_session_token``
+    #: compares against and what the UI (#354) reads to authorize its mutations.
+    app.state.session_token = token
+    app.state.bound_port = port
+    # DNS-rebinding / cross-origin guard runs ahead of every route (AC.1).
+    app.add_middleware(LoopbackGuardMiddleware, expected_port=port)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -194,9 +214,12 @@ def create_app() -> FastAPI:
         """Discover the runner fleet (:func:`discover_fleet`) — AC.1."""
         return _serialize_fleet(discovery.discover_fleet())
 
-    @app.post("/api/control")
+    @app.post("/api/control", dependencies=[Depends(require_session_token)])
     def post_control(req: ControlRequest) -> dict:
         """Start / stop / restart a service (:func:`control`) — AC.1.
+
+        State-changing: guarded by the per-session capability token (#352 AC.2/AC.3)
+        via :func:`require_session_token` — a request without a valid token is 403.
 
         The core reads only the entry's NAME and mechanism (never its env), so a
         minimal :class:`RunnerEntry` reconstructed from the request is sufficient
@@ -232,9 +255,12 @@ def create_app() -> FastAPI:
         )
         return dataclasses.asdict(read_logs(entry, lines=lines))
 
-    @app.post("/api/provision")
+    @app.post("/api/provision", dependencies=[Depends(require_session_token)])
     def post_provision(req: ProvisionRequest) -> dict:
         """Install / uninstall a repo-scoped runner service (:func:`provision`) — AC.1.
+
+        State-changing: guarded by the per-session capability token (#352 AC.2/AC.3)
+        via :func:`require_session_token` — a request without a valid token is 403.
 
         Never handles the PAT (AC.2/AC.3 of the core): the token is out of band.
         The clobber/mis-target guard cross-references the live fleet in the UI
@@ -285,9 +311,12 @@ def build_config(*, host: str = HOST, port: int = DEFAULT_PORT) -> uvicorn.Confi
     """The uvicorn config for serving the app — bound to loopback by default (AC.1/AC.4).
 
     Factored out so a test can assert the bind host is ``127.0.0.1`` and never
-    ``0.0.0.0`` without standing a real socket up.
+    ``0.0.0.0`` without standing a real socket up. When a non-default ``port`` is
+    requested a fresh app is built for it so the Host/Origin guard (#352) pins the
+    actually-bound port rather than the module default.
     """
-    return uvicorn.Config(app, host=host, port=port, log_level="info")
+    application = app if port == DEFAULT_PORT else create_app(port=port)
+    return uvicorn.Config(application, host=host, port=port, log_level="info")
 
 
 def main() -> None:
