@@ -55,10 +55,20 @@ export const EXPECTED_LICENSE = 'MIT';
  * with the desktop UI (ADR-0008), so they leave this map: the cockpit is now
  * cores-only and fully permissive. The map is kept fail-closed for whatever Python
  * deps remain or are added next.
+ *
+ * #351 — the Cockpit v2 localhost backend (ADR-0008) adds the FastAPI web
+ * framework served by uvicorn (both permissive) plus httpx (dev-only, powering
+ * FastAPI's TestClient). fastapi + pydantic are MIT; starlette, uvicorn, and
+ * httpx are BSD-3-Clause. Only the DECLARED names in pyproject.toml are resolved
+ * here (transitive deps are not gate-inspected), so fastapi/uvicorn/httpx are the
+ * three that need a classification.
  */
 export const PYTHON_LICENSES = Object.freeze({
   psutil: 'BSD-3-Clause',
   pytest: 'MIT',
+  fastapi: 'MIT',
+  uvicorn: 'BSD-3-Clause',
+  httpx: 'BSD-3-Clause',
 });
 
 /**
