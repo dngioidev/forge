@@ -44,4 +44,11 @@ paths = [
   '''(^|/)[^/]*\.runner\.env$''', # forge runner: out-of-band PAT store (never a real leak)
   '''^tests/lib/journal\.test\.mjs$''',
   '''^tests/backends/presend\.test\.mjs$''',
+  # Vendored, pinned third-party web assets for the cockpit UI (#354): the MIT
+  # xterm.js UMD bundle + fit addon (see the co-located NOTICE.md). The minified
+  # bundle trips the generic-api-key rule on ordinary identifiers (e.g.
+  # `t.FourKeyMap=t.TwoKeyMap` — the "Key" keyword beside a token-shaped run), a
+  # pure false positive in upstream library code. Scoped to exactly the vendor
+  # dir and anchored, so first-party cockpit source is still fully scanned.
+  '''^tools/runner-ui/forge_cockpit/web/vendor/''',
 ]
