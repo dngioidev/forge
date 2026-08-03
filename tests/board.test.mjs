@@ -98,6 +98,37 @@ describe('boardctx', () => {
     ]);
     expect((await ctx2.findItemByIssue(9)).item).toBe(null);
   });
+
+  it('AC-360.3: listItems is memoized per ctx — repeated reads hit gh once', async () => {
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_1', content: { number: 7 }, status: 'Ready' }])],
+    ]);
+    await ctx.listItems();
+    await ctx.listItems();
+    await ctx.findItemByIssue(7); // also reads the list
+    expect(calls.filter((c) => c.startsWith('project item-list')).length).toBe(1);
+  });
+
+  it('AC-360.3: a mutation invalidates the memo so a re-read is fresh (preserves #178)', async () => {
+    let status = 'Ready';
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), () => itemList([{ id: 'ITEM_1', content: { number: 7 }, status }])],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Done'; return { stdout: '' }; }],
+    ]);
+    expect(ctx.itemFieldKey((await ctx.listItems()).items[0], 'status')).toBe('ready');
+    await ctx.setSelect('ITEM_1', 'status', 'done'); // busts the memo
+    expect(ctx.itemFieldKey((await ctx.listItems()).items[0], 'status')).toBe('done'); // fresh, not stale
+    expect(calls.filter((c) => c.startsWith('project item-list')).length).toBe(2);
+  });
+
+  it('AC-360.3: refresh:true forces a re-fetch', async () => {
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_1', content: { number: 7 }, status: 'Ready' }])],
+    ]);
+    await ctx.listItems();
+    await ctx.listItems({ refresh: true });
+    expect(calls.filter((c) => c.startsWith('project item-list')).length).toBe(2);
+  });
 });
 
 describe('create (AC-2.1)', () => {
