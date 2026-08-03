@@ -236,42 +236,24 @@ Remove the legacy one by passing the old name to the normal uninstaller:
 ## The cockpit (`tools/runner-ui/`, #262)
 
 Once you are running more than a service or two, the by-hand runbook above gets
-tedious. The **cockpit** is a native PySide6 (Qt) desktop app that puts the whole
-fleet in one window — the visual version of the "Managing the service" section,
-decided in [ADR-0006](../decisions/0006-runner-ui.md). Full operator docs live in
-[`tools/runner-ui/README.md`](../../tools/runner-ui/README.md); the essentials:
+tedious. The **cockpit** puts the whole fleet in one place — the visual version of
+the "Managing the service" section, decided in
+[ADR-0006](../decisions/0006-runner-ui.md) and re-architected as a local web app
+in [ADR-0008](../decisions/0008-cockpit-local-web-app.md). Full operator docs live
+in [`tools/runner-ui/README.md`](../../tools/runner-ui/README.md).
 
-### Install (provision Python 3.12 + uv)
+> **Interim: no runnable cockpit UI (#355).** The original native **PySide6 (Qt)
+> desktop app** and its PyInstaller packaging were **removed** in
+> [#355](https://github.com/dngioidev/forge/issues/355) to drop the LGPLv3
+> dependency ahead of the OSS/MIT flip. There is **no `uv run forge-cockpit`
+> launcher right now.** The framework-agnostic Python cores (discovery, control,
+> logs, provision, usage, shellout) are retained, and the FastAPI web app
+> ([#351](https://github.com/dngioidev/forge/issues/351), cockpit v2) rebuilds the
+> UI — fleet view, control, logs, install/uninstall, usage/cost, and an xterm.js
+> terminal — on them. **Until #351 lands, use the by-hand runbook above.** When the
+> web app ships, this section documents its launch command.
 
-Python is a host prerequisite (it is not vendored). Provision Python 3.12 and
-[`uv`](https://docs.astral.sh/uv/):
-
-- **Windows** (machine-wide, so the LocalSystem runner service sees it):
-  ```powershell
-  winget install --scope machine -e --id Python.Python.3.12
-  winget install -e --id astral-sh.uv
-  ```
-- **WSL / Linux** — any CPython >= 3.12 plus `uv`
-  (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
-
-`uv` reads the committed, hash-pinned `uv.lock`, so the environment resolves the
-same way every time.
-
-### Launch (one command, Windows + WSL/Linux)
-
-```sh
-cd tools/runner-ui
-uv run forge-cockpit
-```
-
-`uv` builds the pinned `.venv` on first run, then launches the window via the
-`forge-cockpit` console-script entry point (equivalent to
-`uv run python -m forge_cockpit`). Same command on Windows PowerShell and in WSL.
-An adopter who does not want a Python toolchain can instead build a standalone
-`~100MB` onefile binary — `uv run --with pyinstaller pyinstaller forge-cockpit.spec`
-(not run in CI; see the cockpit README).
-
-### What it shows / does
+### What the cockpit shows / does (returns with the web app, #351)
 
 - **Fleet view + mis-target flags** — every `forge-runner-<owner>-<repo>` service
   across both OS legs, with target repo, OS/mechanism, service state, and online
@@ -279,14 +261,14 @@ An adopter who does not want a Python toolchain can instead build a standalone
   (the #260 mis-target class made visible).
 - **Start / stop / restart** a selected service (Windows NSSM mutations prompt a
   per-action UAC elevation; Linux systemd `--user` needs none).
-- **Logs** — tail a service's logs in-window (Windows NSSM out/err log; Linux
+- **Logs** — read a service's logs (Windows NSSM out/err log; Linux
   `journalctl --user`).
-- **Install / uninstall** — a secret-safe modal that drives `setup-runner.ps1` /
+- **Install / uninstall** — a secret-safe flow that drives `setup-runner.ps1` /
   `install-service.sh`; it shows PAT *guidance* only and has **no token field**.
 
-**Secret posture (consistent with ADR-0005/0006):** the cockpit reads service
-state only. It never reads `~/.forge/runner.env`, never surfaces the PAT, and
-never uses a shell — the same non-negotiable invariant as the scaffold.
+**Secret posture (consistent with ADR-0005/0006):** the cores read service
+state only. They never read `~/.forge/runner.env`, never surface the PAT, and
+never use a shell — the same non-negotiable invariant as the scaffold.
 
 ## Moving other workflows onto the runner
 

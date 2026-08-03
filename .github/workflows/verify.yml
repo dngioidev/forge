@@ -132,10 +132,10 @@ jobs:
       - run: node plugin/scripts/gates/license.mjs
 
   # Cockpit (tools/runner-ui/) Python suite — Windows self-hosted leg only.
-  # PySide6 + the pywinpty terminal dep live on Windows and the CI target for AC4
-  # is the native Windows runner; the Linux leg is an ephemeral Docker container
-  # with no Python, so this suite is deliberately NOT run there (ADR-0006 #272).
-  # Runs headless via the Qt offscreen platform — no desktop session needed.
+  # #355 retired the PySide6 desktop UI, so this is now a cores-only, framework-
+  # agnostic Python suite (no Qt, no offscreen platform). It still runs on the
+  # native Windows runner: the Linux leg is an ephemeral Docker container with no
+  # Python, so this suite is deliberately NOT run there (ADR-0006/0008 #272/#355).
   cockpit-python:
     permissions:
       contents: read
@@ -143,8 +143,6 @@ jobs:
     defaults:
       run:
         working-directory: tools/runner-ui
-    env:
-      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Show uv + resolved Python
@@ -162,7 +160,7 @@ jobs:
         run: |
           $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
           uv sync --frozen
-      - name: Run cockpit test suite (headless)
+      - name: Run cockpit test suite (cores-only)
         shell: powershell
         run: |
           $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"

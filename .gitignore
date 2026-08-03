@@ -11,7 +11,7 @@ tools/runner-ui/.venv/
 tools/runner-ui/**/__pycache__/
 tools/runner-ui/.pytest_cache/
 *.pyc
-# PyInstaller build output (#268). The hand-written forge-cockpit.spec IS
-# committed; only the generated build/ + dist/ trees are ignored.
+# Stray Python build output. PyInstaller was retired with the desktop UI in #355;
+# these stay ignored so any local build/ + dist/ trees never get committed.
 tools/runner-ui/build/
 tools/runner-ui/dist/

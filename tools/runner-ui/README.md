@@ -1,53 +1,66 @@
 # forge cockpit (`tools/runner-ui/`)
 
-A native **PySide6 (Qt) desktop app** to manage the forge local self-hosted
-runner **fleet** — the "cockpit" decided in
-[ADR-0006](../../docs/decisions/0006-runner-ui.md) (epic #262). It is the visual,
-one-window version of the manual runbook in the
-[runner adoption guide](../../docs/guides/runner-adoption.md#the-cockpit-toolsrunner-ui-262).
+Framework-agnostic **Python cores** for managing the forge local self-hosted
+runner **fleet** — the reusable half of the "cockpit"
+([ADR-0006](../../docs/decisions/0006-runner-ui.md), epic #262), re-architected as
+a local web app in [ADR-0008](../../docs/decisions/0008-cockpit-local-web-app.md).
 
-The cockpit reads service **state** only. Per ADR-0005/0006 it **never** reads
-`~/.forge/runner.env` and never surfaces the runner PAT (see Security below).
+> **Interim state — no desktop UI (#355).** The native **PySide6 (Qt) desktop
+> app** and its **PyInstaller** packaging were **removed** in
+> [#355](https://github.com/dngioidev/forge/issues/355), ahead of web-app parity,
+> to drop the PySide6 **LGPLv3** dependency so the license check is clean with
+> **zero exceptions** before the OSS/MIT flip. **There is no runnable cockpit UI
+> right now.** The FastAPI web app
+> ([#351](https://github.com/dngioidev/forge/issues/351), cockpit v2 / ADR-0008)
+> rebuilds the presentation layer — fleet view, control, usage/cost, and an
+> xterm.js terminal over a websocket — on the cores below. This package currently
+> ships **only** those cores plus their non-Qt tests.
 
-## What it shows / does
+The cores read service **state** only. Per ADR-0005/0006 they **never** read
+`~/.forge/runner.env` and never surface the runner PAT (see Security below).
 
-- **Fleet view (#265)** — one table over the normalized discovery model listing
-  every `forge-runner-<owner>-<repo>` service across both OS legs: its target
-  repo, OS/mechanism (Windows NSSM / Linux systemd `--user` / Docker), service
-  state, and the count of online runners. Refreshes on demand and on an interval
-  without freezing the window (discovery shells out on a worker thread).
-- **Mis-target flags (#265)** — a service that is *running* yet whose configured
-  repo shows **0** online runners is flagged with a warning icon, a highlighted
-  row, and an explanatory tooltip — the #260 mis-target class made visible.
-- **Control actions (#266)** — start / stop / restart a selected service.
-  Windows NSSM mutations trigger a per-action UAC elevation; Linux systemd
-  `--user` needs no elevation. Actions run off the GUI thread.
-- **Logs (#266)** — tail a service's logs in-window (Windows NSSM
-  `service.out/err.log`; Linux `journalctl --user`).
-- **Install / uninstall (#267)** — a secret-safe modal to stand a repo-scoped
-  runner service up or down by driving `setup-runner.ps1` / `install-service.sh`.
-  It shows read-only PAT *guidance* only — **no token field** — and guards
-  against clobbering a service that targets a different repo.
+## What's here — the retained cores
 
-The "Usage / cost" and "Terminal" tabs are Wave-2/Wave-3 placeholders (ADR-0006).
+All framework-agnostic (no Qt, no GUI toolkit); they shell out with argv lists
+(never `shell=True`) and carry the PAT-free / `runner.env`-never-read invariants:
+
+- **`discovery.py`** — PAT-free fleet discovery across both OS legs
+  (`sc`/`Get-Service` on Windows NSSM, `systemctl --user` on Linux, `docker`,
+  `gh`), producing a normalized model of every `forge-runner-<owner>-<repo>`
+  service, its OS/mechanism, state, and online-runner count (incl. the #260
+  mis-target signal).
+- **`control.py`** — start / stop / restart a service (per-action UAC elevation
+  on Windows NSSM; Linux systemd `--user` needs none).
+- **`logs.py`** — read a service's logs (Windows NSSM `service.out/err.log`;
+  Linux `journalctl --user`).
+- **`provision.py`** — install / uninstall a repo-scoped runner service by
+  driving `setup-runner.ps1` / `install-service.sh`. Secret-safe: no token
+  handling, guards against clobbering a service targeting a different repo.
+- **`usage.py`** — Claude usage / cost / token computation from the local
+  per-session JSONL transcripts under `~/.claude/projects/**/*.jsonl` (tokens ×
+  published per-model rates; no external API, no fabricated data).
+- **`shellout.py`** — argv-list shell-out + `wsl.exe --` two-way interop, PAT-safe
+  (refuses any command referencing a `runner.env` path; never `shell=True`).
+
+The PySide6 presentation layer (`app.py`, `__main__.py`, `terminal.py`,
+`*_view.py`) and `forge-cockpit.spec` were deleted in #355; the web app (#351)
+provides the new UI and launch command.
 
 ## Layout
 
 ```
 tools/runner-ui/
-  pyproject.toml        # uv/PEP-621 project; requires-python >=3.12
+  pyproject.toml        # uv/PEP-621 project; requires-python >=3.12; cores-only deps
   uv.lock               # committed, hash-pinned lockfile (the pinned env)
-  forge-cockpit.spec    # hand-written PyInstaller spec (optional onefile build)
   forge_cockpit/
-    __main__.py         # `main()` — the forge-cockpit console-script entry point
-    app.py              # CockpitWindow — QMainWindow + QTabWidget shell
+    __init__.py         # minimal package init (exposes the cores; no Qt)
     discovery.py        # PAT-free fleet discovery (sc/systemctl/docker/gh)
-    fleet_view.py       # the fleet table + mis-target flags
     control.py          # start/stop/restart (per-action UAC on Windows)
-    logs.py / log_view.py       # tail service logs in-window
-    provision.py / provision_view.py  # install / uninstall dialog
+    logs.py             # read service logs
+    provision.py        # install / uninstall driving
+    usage.py            # Claude usage/cost/tokens from local transcripts
     shellout.py         # argv-list shell-out + `wsl.exe --` interop, PAT-safe
-  tests/                # headless (offscreen) pytest suite
+  tests/                # non-Qt pytest suite over the cores
 ```
 
 ## Prerequisites
@@ -69,69 +82,44 @@ Decision 3). Provision **Python 3.12** and [`uv`](https://docs.astral.sh/uv/):
 `uv` resolves/provisions the interpreter from the committed `uv.lock`, so you do
 not call bare `python`.
 
-## Launch (one command, Windows + WSL/Linux)
+## Use the cores
 
-From `tools/runner-ui/`, `uv` creates the pinned `.venv` on first run and then
-launches the cockpit window via the `forge-cockpit` console-script entry point:
-
-- **Windows (PowerShell):**
-  ```powershell
-  cd tools\runner-ui
-  uv run forge-cockpit
-  ```
-- **WSL / Linux:**
-  ```bash
-  cd tools/runner-ui
-  uv run forge-cockpit
-  ```
-
-`uv run forge-cockpit` is equivalent to `uv run python -m forge_cockpit`; both
-sync the environment from `uv.lock` first, so a plain checkout launches with no
-extra install step.
-
-## Test
+There is **no launch command in the interim** — the cockpit UI and its
+`forge cockpit` launcher return with the web app (#351). Until then the cores are
+consumed as a library or exercised via the test suite:
 
 ```bash
 cd tools/runner-ui
 uv sync --frozen                 # create .venv from the committed uv.lock
-QT_QPA_PLATFORM=offscreen uv run pytest
+uv run python -c "from forge_cockpit import discovery, control, usage"
 ```
 
-On Windows PowerShell set the platform first:
+## Test
+
+The suite is **cores-only** — plain `pytest`, no Qt, no `QT_QPA_PLATFORM`
+offscreen dance (the Qt views and their `pytest-qt` tests were removed in #355):
+
+```bash
+cd tools/runner-ui
+uv sync --frozen                 # create .venv from the committed uv.lock
+uv run pytest
+```
+
+On Windows PowerShell:
 
 ```powershell
 cd tools\runner-ui
 uv sync --frozen
-$env:QT_QPA_PLATFORM = 'offscreen'
 uv run pytest
 ```
 
-Tests run **headless** via the Qt `offscreen` platform (set in
-`tests/conftest.py`), so the suite — including the smoke test and the packaging
-entry-point test — passes on the runner without a desktop session. This is
-exactly what the `cockpit-python` CI job runs.
-
-## Optional: standalone binary (PyInstaller)
-
-For an adopter who does not want to provision a Python toolchain, build a
-single-file desktop binary from the committed spec. This is **not** run in CI
-(packaging is heavy and host-specific; CI only runs the pytest suite):
-
-```bash
-cd tools/runner-ui
-uv run --with pyinstaller pyinstaller forge-cockpit.spec
-```
-
-Output lands at `dist/forge-cockpit` — a `~100MB` onefile bundle, the accepted
-trade-off recorded in ADR-0006. `--with pyinstaller` keeps PyInstaller out of the
-committed `uv.lock` (it is a build-time-only tool). The generated `build/` and
-`dist/` trees are gitignored; the hand-written `forge-cockpit.spec` is committed.
+This is exactly what the `cockpit-python` CI job runs (`uv sync --frozen` + the
+cores-only pytest suite).
 
 ## Security
 
-The cockpit reads service **state** only. Per ADR-0005/0006 it **never** reads
-`~/.forge/runner.env` and never surfaces the PAT — `shellout.run()` refuses any
+The cores read service **state** only. Per ADR-0005/0006 they **never** read
+`~/.forge/runner.env` and never surface the PAT — `shellout.run()` refuses any
 command that references a `runner.env` path and never uses `shell=True`, and the
-install dialog has no token field (it shows out-of-band PAT guidance only). No
-secret is stored in this repo; the `.venv/`, `build/`, and `dist/` local state
-are gitignored.
+provisioning core handles no token (it relies on out-of-band PAT guidance only).
+No secret is stored in this repo; the `.venv/` local state is gitignored.

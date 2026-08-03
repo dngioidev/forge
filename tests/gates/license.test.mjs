@@ -183,8 +183,12 @@ describe('license gate — SPDX allowlist enforcement (#342)', () => {
 // (tools/runner-ui/pyproject.toml), so the one genuinely non-permissive dep,
 // PySide6 (LGPL-3.0), was invisible to the gate built to catch copyleft.
 describe('license gate — Python dependency tree (#349)', () => {
-  // The real cockpit pyproject shape: PySide6 (the LGPL exception) + a marker
-  // string carrying inner single quotes, plus a dev group.
+  // A synthetic pyproject that exercises the parser's edge cases: a runtime dep, a
+  // marker string carrying inner single quotes (pywinpty's `sys_platform == 'win32'`),
+  // a dev group, and non-dependency arrays (build requires / hatch packages /
+  // testpaths) that must NOT leak in. It mirrors the pre-#355 cockpit shape on
+  // purpose so the parser stays covered against markers/quotes even though the real
+  // tree is now cores-only.
   const PYPROJECT = `[project]
 name = "forge-cockpit"
 version = "0.1.0"
@@ -226,36 +230,33 @@ testpaths = ["tests"]
   });
 
   it('AC-349.1: resolves declared deps through the curated SPDX map; unmapped → empty (fails closed)', () => {
-    const resolved = resolvePythonLicenses(['pyside6', 'psutil', 'mystery-dep']);
-    expect(resolved).toContainEqual({ name: 'pyside6', license: 'LGPL-3.0' });
+    const resolved = resolvePythonLicenses(['psutil', 'pytest', 'mystery-dep']);
     expect(resolved).toContainEqual({ name: 'psutil', license: 'BSD-3-Clause' });
+    expect(resolved).toContainEqual({ name: 'pytest', license: 'MIT' });
     expect(resolved).toContainEqual({ name: 'mystery-dep', license: '' });
   });
 
-  it('AC-349.1: the whole real Python tree is inspected + allowlist applied (gate is not blind to it)', async () => {
+  it('AC-355.3: the whole real Python tree is inspected + allowlist applied (gate is not blind to it)', async () => {
     const res = await checkPythonLicenses(REPO_ROOT);
     expect(res.skipped).toBeFalsy();
+    // #355 — cores-only: PySide6/pywinpty/pytest-qt are gone; only psutil + pytest remain.
     // every declared dep is actually evaluated, not silently skipped.
-    expect(res.names).toEqual(['pyside6', 'pywinpty', 'psutil', 'pytest', 'pytest-qt']);
+    expect(res.names).toEqual(['psutil', 'pytest']);
     expect(res.ok).toBe(true);
   });
 
-  it('AC-349.2: PySide6 LGPL-3.0 is EXPLICITLY allowlisted with a documented rationale — never a silent pass', async () => {
-    // The map deliberately classifies PySide6 as LGPL-3.0 (non-permissive)...
-    expect(PYTHON_LICENSES.pyside6).toBe('LGPL-3.0');
-    expect(DEFAULT_ALLOWLIST).not.toContain('LGPL-3.0'); // ...and LGPL is NOT permissive.
-
-    // ...so it only passes via a visible, package-scoped exception carrying a
-    // rationale that references the removal ticket / ADR (AC.2).
+  it('AC-355.3: the real Python tree is fully permissive with ZERO exceptions (PySide6 retired)', async () => {
+    // #355 removed the desktop UI and with it the one LGPL dependency (PySide6),
+    // so the Python tree is now clean end to end — no violations AND no exceptions.
+    expect(DEFAULT_ALLOWLIST).not.toContain('LGPL-3.0'); // LGPL is still NOT permissive.
     const res = await checkPythonLicenses(REPO_ROOT);
-    expect(res.violations).toEqual([]); // not a violation...
-    const ex = res.exceptions.find((e) => e.name === 'pyside6');
-    expect(ex).toBeTruthy(); // ...because it is recorded as an explicit exception
-    expect(ex.license).toBe('LGPL-3.0');
-    expect(ex.reason).toMatch(/#355|ADR-0008/); // rationale points at the removal plan
-    expect(ex.removeWhen).toBe('#355');
+    expect(res.violations).toEqual([]);   // no violations...
+    expect(res.exceptions).toEqual([]);   // ...and, crucially, no documented waivers either.
+    expect(res.exceptions.find((e) => e.name === 'pyside6')).toBeUndefined(); // PySide6 is gone.
+    expect(res.ok).toBe(true);
 
-    // The exception is package-scoped: an LGPL dep that is NOT PySide6 still fails.
+    // The exception mechanism is retained and still package-scoped: an LGPL dep
+    // that isn't waived (nothing is, now) still fails closed.
     const other = evaluatePython([{ name: 'some-lgpl-lib', license: 'LGPL-3.0' }]);
     expect(other.ok).toBe(false);
     expect(other.violations[0]).toMatchObject({ name: 'some-lgpl-lib', license: 'LGPL-3.0' });
@@ -300,20 +301,23 @@ dependencies = ["psutil>=5.9"]
     expect(res.violations).toEqual([]);
   });
 
-  it('AC-349.2: the documented exception set is package-scoped and self-documenting', () => {
-    expect(PYTHON_LICENSE_EXCEPTIONS).toHaveLength(1);
-    const [ex] = PYTHON_LICENSE_EXCEPTIONS;
-    expect(ex.package).toBe('pyside6');
-    expect(ex.license).toBe('LGPL-3.0');
-    expect(ex.reason).toMatch(/#355|ADR-0008|cockpit-v2/);
+  it('AC-355.3: there are NO Python license exceptions — the PySide6 waiver is gone with the dep', () => {
+    // #355 retired PySide6 (the only LGPL dep), so its documented #349 exception
+    // must not outlive it: the exception set is now empty.
+    expect(PYTHON_LICENSE_EXCEPTIONS).toEqual([]);
+    expect(PYTHON_LICENSE_EXCEPTIONS.find((e) => e.package === 'pyside6')).toBeUndefined();
+    // the curated map no longer classifies PySide6/pywinpty/pytest-qt either.
+    expect(PYTHON_LICENSES.pyside6).toBeUndefined();
+    expect(PYTHON_LICENSES.pywinpty).toBeUndefined();
+    expect(PYTHON_LICENSES['pytest-qt']).toBeUndefined();
   });
 
-  it('AC-349.1: runLicenseGate now covers BOTH trees and stays GREEN on the real repo', async () => {
+  it('AC-355.3: runLicenseGate covers BOTH trees and stays GREEN on the real repo with ZERO exceptions', async () => {
     const res = await runLicenseGate({ cwd: REPO_ROOT, execFn: execPermissive, log: noop });
     expect(res.ok).toBe(true);
     expect(res.python).toBeTruthy();
     expect(res.python.skipped).toBeFalsy();
-    expect(res.python.exceptions.some((e) => e.name === 'pyside6')).toBe(true);
+    expect(res.python.exceptions).toEqual([]); // no waivers — fully permissive Python tree.
     expect(res.python.violations).toEqual([]);
   });
 

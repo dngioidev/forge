@@ -38,9 +38,9 @@ export const EXPECTED_LICENSE = 'MIT';
 
 /**
  * #349 — the Python side of the tree. The license gate historically saw only the
- * npm tree (`pnpm licenses list`), so the one genuinely non-permissive dependency
- * in the repo — PySide6 (LGPL-3.0), pulled in by the cockpit `tools/runner-ui/` —
- * was invisible to the very gate built to catch copyleft.
+ * npm tree (`pnpm licenses list`), so a non-permissive Python dependency pulled in
+ * by the cockpit `tools/runner-ui/` would have been invisible to the very gate
+ * built to catch copyleft.
  *
  * uv.lock carries NO per-package license metadata (verified on the committed
  * lock), and the license CI job runs on the Linux runner where the Python env
@@ -50,36 +50,27 @@ export const EXPECTED_LICENSE = 'MIT';
  * declared package absent from the map resolves to '' and FAILS CLOSED — the same
  * fail-closed contract the npm side already enforces, so a newly-added Python dep
  * cannot slip through unclassified.
+ *
+ * #355 — PySide6 (LGPL-3.0) and its Qt/pywinpty/pytest-qt companions were removed
+ * with the desktop UI (ADR-0008), so they leave this map: the cockpit is now
+ * cores-only and fully permissive. The map is kept fail-closed for whatever Python
+ * deps remain or are added next.
  */
 export const PYTHON_LICENSES = Object.freeze({
-  pyside6: 'LGPL-3.0',      // Qt for Python — LGPLv3 (declared `LGPL-3.0-or-later` in pyproject)
-  pywinpty: 'MIT',
   psutil: 'BSD-3-Clause',
   pytest: 'MIT',
-  'pytest-qt': 'MIT',
 });
 
 /**
- * AC-349.2 — PySide6 ships under LGPL-3.0, which is intentionally NOT on the
- * permissive allowlist. Rather than let it pass silently (the exact blind spot
- * this ticket fixes) OR red the current tree with a hard failure, it is allowed
- * as an EXPLICIT, DOCUMENTED, TEMPORARY exception, keyed to the specific package
- * so no other LGPL dependency (npm or Python) is waved through.
- *
- * Rationale: PySide6 is consumed source-only and dynamically linked, and the
- * cockpit re-architecture decision (docs/decisions/0008, Option C) removes
- * PySide6 entirely in cockpit-v2. When that work (#355) lands and the LGPL
- * declaration leaves pyproject.toml, DELETE this exception — it should not
- * outlive the dependency it excuses.
+ * #355 — there are NO Python license exceptions. The only non-permissive Python
+ * dependency the repo ever had was PySide6 (LGPL-3.0), allowed via a documented,
+ * temporary, package-scoped exception under #349 (ADR-0008 Option C). PySide6 has
+ * now been retired with the desktop UI, so the exception is gone with the
+ * dependency it excused — the Python tree is fully permissive with ZERO
+ * exceptions. This empty set is retained (not deleted) so the exception mechanism
+ * stays available should a future dependency ever need a documented waiver.
  */
-export const PYTHON_LICENSE_EXCEPTIONS = Object.freeze([
-  Object.freeze({
-    package: 'pyside6',
-    license: 'LGPL-3.0',
-    reason: 'source-only distribution, dynamically linked; temporary — remove when PySide6 is retired in cockpit-v2 (#355, ADR-0008 Option C)',
-    removeWhen: '#355',
-  }),
-]);
+export const PYTHON_LICENSE_EXCEPTIONS = Object.freeze([]);
 
 /** License strings that mean "no usable license" — always fail closed (AC.1). */
 const UNKNOWN_MARKERS = new Set(['', 'unknown', 'unlicensed', 'see license in license', 'none']);
