@@ -1,0 +1,128 @@
+# Visual spec — cockpit browser UI (#354)
+
+<!-- forge visual-spec template (spec §4 item 11). Every section below is
+mandatory — speclint.mjs enforces their presence; design-reviewer validates
+the implementation against their content. -->
+
+## Summary
+The runner-fleet **cockpit browser UI** — the web front-end that renders the
+FastAPI cores landed in #351–#353 (fleet discovery/control, usage/cost, logs,
+and the PTY-over-websocket terminal). It lives in `tools/runner-ui/`, served by
+the `forge-cockpit` launcher over `127.0.0.1` (loopback-only, session-token
+gated per #352), and replaces the retired PySide6 desktop app (ADR-0008,
+supersedes ADR-0006 Decision 1). Chosen variant: **C — split cockpit** (owner
+pick, `docs/design/variants-354/variant-c.html`). Rationale: a persistent,
+always-visible fleet sidebar (mini status cards + inline start/stop/restart
+controls) sits beside a main pane that toggles between Usage / Terminal / Logs
+with **Terminal as the default view**. The "mission control" feel — fleet
+health is never out of sight (glance-away, not a navigation away), and the
+terminal is one click from anywhere (the mode bar, or a mini-card's own
+actions). The tradeoff accepted: the main content column is the narrowest of
+the three variants because the fleet sidebar is permanent chrome; at 375px the
+sidebar flattens into a horizontal-scroll strip above the main pane so the
+terminal and chart reclaim full width. Dark-only, drawing exclusively on the
+existing smithy token vocabulary (see Token delta) — zero new tokens.
+
+## States matrix
+Three representative surfaces: the **fleet mini-card**, a **control button**
+(start / stop / restart — every mutating control requires the session token),
+and the **usage panel**.
+
+| state | normal content | long content | extreme content |
+| --- | --- | --- | --- |
+| default | mini-card: `iron.bg` plate, `iron.seam` border, `heat.*`-mapped left edge (online→`success`, offline→`heat.cool`, mis-target→`heat.alarm`) + a text status label (never color-only); control button: quiet `ink.ash` on transparent, `iron.seam` border, ≥24px hit height; usage panel: token chart + per-model breakdown with real figures | long repo/platform names truncate with ellipsis; the card grows to fit its status/meta lines; breakdown figures stay `tabular-nums` right-aligned | 12+ runners: the sidebar list scrolls vertically (`overflow-y:auto`), cards keep fixed width; usage breakdown adds rows, panel scrolls |
+| hover | control button: border + label shift to `heat.ember`; mode-bar tab: label brightens to `ink.ash` | button label wraps inside its box rather than overflowing | — (non-interactive card body has no hover) |
+| focus | 2px `heat.ember` outline, 2px offset (`:focus-visible`) on every control, mode-bar tab, and the terminal surface | same | same |
+| active | control button `:active`: faint `heat.ember` wash (rgba); selected mode-bar tab carries a `claude` bottom border + `ink.ash` label | pressed label ellipsizes, `title` carries the full action | rapid toggling never loses the aria-selected single-source-of-truth |
+| disabled | control that can't apply is `disabled` + dimmed (start-when-online, stop-when-offline) with a `title` explaining why; not focusable | disabled label truncates, `title` carries full reason | all controls on a card disabled mid-transition until the next fleet poll settles |
+| loading | a card mid-restart shows a spinner glyph + "restarting…" on the control in `heat.spark`; its sibling controls disable; the fleet stamp reads "updated HH:MM:SS" via `aria-live=polite` | "re-provisioning…" long label stays on one line, ellipsizes | many concurrent transitions: each card owns its own spinner, no global blocker |
+| empty | sidebar with no runners for the repo: a labeled dashed placeholder card "no runners for this repo"; usage panel with no transcripts: "no usage recorded yet" in `ink.smoke` | — | — |
+| error | mis-target card: `heat.alarm` left edge + an inline `role=alert` line ("reports as <other-repo>") + a lock-glyph re-provision control; usage panel: `role=alert` banner ("transcripts unreadable — check `~/.claude/projects` permissions") in `error`; control failure: inline errline on the card, actionable, never an `alert()` | error text wraps inside the card/banner | repeated poll/control failures keep the last good render and never steal focus |
+
+## Breakpoints
+Rendered at three widths (CSS `@media`, no JS layout switching):
+- **375 (mobile):** `body` switches to `flex-direction:column`; the sidebar
+  becomes a full-width horizontal-scroll strip above the main pane
+  (`fleet-list` → `flex-direction:row`, `overflow-x:auto`), mini-cards get a
+  min-width and scroll sideways; the session-token footer pill is hidden to
+  save height; mode-bar tab labels shrink, terminal pane caps to ~44vh so both
+  fleet and terminal stay usable.
+- **768 (tablet):** the split persists — sidebar narrows (~200px) and mode-bar
+  tabs drop their long text labels to glyph-only to fit; main pane holds the
+  active view full-height.
+- **1280 (desktop):** the reference layout — ~270px persistent sidebar, full
+  mode bar with text labels, main pane at comfortable width; the usage chart
+  and terminal render at the intended (narrower-than-full-page) column the
+  split trades for permanent fleet visibility.
+
+## Themes
+Dark-only, deliberately — inherited from the console precedent
+(`docs/design/2026-07-17-console.md`) and the smithy **heat metaphor**: runner
+health glows (edge + wash) read only on a dark ground, and the cockpit is a
+glanceable ops surface. A light theme is **out of scope**; if a real need ever
+appears it enters as a token-delta finding (a light-mode mapping of the
+`iron.*` / `ink.*` / `heat.*` scales), not an ad-hoc restyle. Token-driven
+differences only — no theme-specific one-off values.
+
+## A11y contract
+- **Focus order:** wordmark/stamp → fleet mini-cards in list order, and within
+  a card its control buttons left-to-right (start/stop/restart/re-provision) →
+  main mode bar (Usage / Terminal / Logs tabs) → the active mode view's
+  interactive surface (the terminal, or usage/log scroll region) → session
+  pill. Reordering the fleet never traps focus.
+- **Roles / accessible names:** sidebar `aria-label="Fleet health"`; fleet list
+  `role=list`, each card `role=listitem`; the update stamp
+  `role=status aria-live=polite`; mode bar `role=tablist` with `role=tab` +
+  `aria-selected` buttons controlling `role=tabpanel` views; the mis-target
+  message and usage error banner `role=alert`; the token chart `role=img` with
+  a text `aria-label` summarizing the trend; the terminal surface labeled and
+  keyboard-reachable.
+- **Contrast pairs (token references):** `ink.ash` on `iron.plate` / `iron.bg`
+  (body + terminal text) ≥ 7:1; `ink.smoke` on `iron.plate` (secondary/meta)
+  ≥ 4.5:1; `success` / `heat.spark` / `heat.alarm` / `error` status labels on
+  `iron.bg` ≥ 4.5:1; `ink.steel` links on `iron.plate` ≥ 4.5:1.
+- **Target sizes:** every control (mini-card buttons, mode-bar tabs) ≥ 24px hit
+  height (`min-height:24px` + padding); at 375 the strip's controls keep the
+  same floor.
+- **Non-color-only status:** fleet online / offline / mis-target never rely on
+  the edge color alone — each carries a text label ("online" / "offline" /
+  "mis-target") and mis-target adds a `role=alert` glyph line; log levels carry
+  an uppercase text level beside their color.
+- **Reduced motion behavior:** under `prefers-reduced-motion:reduce` the
+  restart spinner and the terminal cursor blink both stop (static glyph /
+  steady cursor); the pane-toggle and card-hover transitions are removed.
+
+## Motion
+| element | property | duration token | easing token | reduced-motion |
+| --- | --- | --- | --- | --- |
+| mode view (Usage/Terminal/Logs toggle) | opacity/visibility swap | `motion.calm` (250ms) | default ease | instant swap (transition removed) |
+| control button (hover/active) | border-color, color, background | `motion.calm` (250ms) | default ease | none (transition removed) |
+| mini-card control spinner (loading) | rotate | 900ms linear loop | linear | animation none — static glyph |
+| terminal cursor | blink (opacity) | 1s step | step-start | animation none — steady cursor at reduced opacity |
+
+## Token delta
+- **Tokens used:** the smithy vocabulary only —
+  `iron.bg` · `iron.plate` · `iron.seam` (grounds);
+  `ink.ash` · `ink.smoke` · `ink.steel` (text/links);
+  `heat.cool` · `heat.warm` · `heat.spark` · `heat.ember` · `heat.alarm`
+  (the heat scale); the semantic `success` · `error` · `claude` overrides from
+  `plugin/themes/forge.json`; `motion.calm` (250ms); and the display
+  (Bahnschrift/DIN) + mono (Consolas/Cascadia) type roles. All defined by the
+  console spec (`docs/design/2026-07-17-console.md`) and `plugin/themes/forge.json`.
+- **New tokens proposed:** none. The designer confirmed zero new tokens — the
+  cockpit is built entirely from the existing scales.
+- **Reuse decision (recorded as a deliberate precedent, not a one-off):** fleet
+  binary health is mapped onto the heat vocabulary — online→`success`,
+  offline→`heat.cool` ("cold iron", no fire), mis-target→`heat.alarm` + `error`
+  (a real misconfiguration, styled like the console's `lockdown` severity).
+  This makes the cockpit a **second consumer** of `heat.cool`/`heat.alarm`
+  beyond the console's situation-urgency metaphor — health, not situation. It
+  is intentional reuse; if the two surfaces ever need independent scales this
+  mapping must be revisited explicitly rather than forked silently.
+- **One-off values:** none (by definition — a one-off is a finding). Edge and
+  hover washes are rgba() of the `heat.*` tokens at low alpha, not new colors.
+
+## Graph ripple
+New component, no consumers yet. (The cockpit UI is the top of its own tree —
+it consumes the #351–#353 FastAPI/websocket endpoints but nothing in the repo
+consumes the UI; features.graph is off for this non-TS surface.)

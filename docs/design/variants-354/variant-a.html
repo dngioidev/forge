@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge cockpit — variant A (single-pane ops dashboard)</title>
+<style>
+  /* ---- smithy tokens (docs/design/2026-07-17-console.md + plugin/themes/forge.json) ---- */
+  :root {
+    --iron-bg:#161310; --iron-plate:#1f1a15; --iron-seam:#3a322a;
+    --ink-ash:#d8d2c8; --ink-smoke:#a49a87; --ink-steel:#7fa8c9;
+    --heat-cool:#4d5a52; --heat-warm:#b56a3c; --heat-spark:#ffd166; --heat-ember:#ff7a45; --heat-alarm:#e2483d;
+    --claude:#f0813f; --success:#46a758; --error:#e5484d;
+    --motion-calm:250ms;
+    --font-display:Bahnschrift,'DIN Alternate','Arial Narrow',sans-serif;
+    --font-mono:Consolas,'Cascadia Mono',ui-monospace,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; }
+  body {
+    background:var(--iron-bg); color:var(--ink-ash); font:14px/1.55 var(--font-mono);
+    padding:20px 16px 0;
+  }
+  h1,h2,h3 { font-family:var(--font-display); font-weight:600; margin:0; text-transform:uppercase; letter-spacing:.08em; }
+  a { color:var(--ink-steel); }
+  :focus-visible { outline:2px solid var(--heat-ember); outline-offset:2px; }
+  .tabular { font-variant-numeric:tabular-nums; }
+
+  /* ---- header ---- */
+  .topbar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; border-bottom:1px solid var(--iron-seam); padding-bottom:14px; margin-bottom:20px; }
+  .wordmark { font-size:22px; letter-spacing:.14em; }
+  .wordmark em { font-style:normal; color:var(--claude); }
+  .topbar-right { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .session-pill { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-smoke); border:1px solid var(--iron-seam); border-radius:999px; padding:5px 12px; min-height:24px; }
+  .session-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--success); box-shadow:0 0 6px rgba(70,167,88,.5); }
+  .stamp { font-size:12px; color:var(--ink-smoke); }
+
+  main { max-width:1280px; margin:0 auto; }
+  section { margin-bottom:28px; }
+  section > h2 { font-size:14px; color:var(--ink-smoke); margin-bottom:12px; display:flex; align-items:center; gap:10px; }
+  section > h2 .rule { flex:1; height:1px; background:var(--iron-seam); }
+
+  /* ---- fleet cards ---- */
+  .fleet-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  .card { position:relative; background:var(--iron-plate); border:1px solid var(--iron-seam); border-left:4px solid var(--edge,var(--heat-cool)); border-radius:3px; padding:14px 16px; overflow:hidden; }
+  .card::before { content:''; position:absolute; inset:0; pointer-events:none; background:radial-gradient(120% 90% at 0% 100%, var(--glow,transparent), transparent 60%); }
+  .card.online  { --edge:var(--success); --glow:rgba(70,167,88,.10); }
+  .card.offline { --edge:var(--heat-cool); }
+  .card.mistarget { --edge:var(--heat-alarm); --glow:rgba(226,72,61,.14); }
+  .card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .repo-name { font-family:var(--font-display); font-size:15px; letter-spacing:.04em; }
+  .platform-tag { font-size:11px; color:var(--ink-smoke); }
+  .status-pill { font-size:11px; letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+  .status-pill.online { color:var(--success); border:1px solid rgba(70,167,88,.4); }
+  .status-pill.offline { color:var(--ink-smoke); border:1px solid var(--iron-seam); }
+  .status-pill.mistarget { color:var(--heat-alarm); border:1px solid rgba(226,72,61,.5); }
+  .card-meta { margin-top:8px; font-size:12px; color:var(--ink-smoke); }
+  .card-meta b { color:var(--ink-ash); font-weight:normal; }
+  .card-error { margin-top:8px; font-size:12px; color:var(--error); border:1px dashed rgba(226,72,61,.5); padding:6px 8px; border-radius:2px; }
+  .card-actions { margin-top:12px; display:flex; gap:6px; flex-wrap:wrap; }
+  button.ctl {
+    font:inherit; font-size:12px; color:var(--ink-ash); background:transparent; border:1px solid var(--iron-seam);
+    padding:6px 10px; min-height:24px; border-radius:2px; cursor:pointer; display:inline-flex; align-items:center; gap:5px;
+  }
+  button.ctl:hover:not(:disabled) { border-color:var(--heat-ember); color:var(--heat-ember); }
+  button.ctl:active:not(:disabled) { background:rgba(255,122,69,.08); }
+  button.ctl:disabled { opacity:.38; cursor:not-allowed; }
+  button.ctl .lock { font-size:10px; opacity:.7; }
+  button.ctl.loading { color:var(--heat-spark); border-color:rgba(255,209,102,.5); }
+  .spin { display:inline-block; width:9px; height:9px; border:2px solid rgba(255,209,102,.35); border-top-color:var(--heat-spark); border-radius:50%; animation:spin 900ms linear infinite; }
+  @media (prefers-reduced-motion:reduce) { .spin { animation:none; border-top-color:rgba(255,209,102,.35); } }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  details.states-ref { margin-top:14px; font-size:12px; color:var(--ink-smoke); }
+  details.states-ref summary { cursor:pointer; color:var(--ink-steel); }
+  .ref-row { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .ref-row .card { flex:1 1 220px; padding:10px 12px; }
+
+  /* ---- usage band ---- */
+  .usage-band { display:grid; grid-template-columns:2fr 1fr; gap:16px; }
+  .panel { background:var(--iron-plate); border:1px solid var(--iron-seam); border-radius:3px; padding:16px 18px; }
+  .panel h3 { font-size:12px; color:var(--ink-smoke); margin-bottom:12px; letter-spacing:.1em; }
+  .stat-row { display:flex; gap:24px; margin-bottom:14px; flex-wrap:wrap; }
+  .stat { }
+  .stat .num { font-size:24px; color:var(--ink-ash); }
+  .stat .num.accent { color:var(--claude); }
+  .stat .lbl { font-size:11px; color:var(--ink-smoke); text-transform:uppercase; letter-spacing:.08em; }
+  svg.chart { width:100%; height:150px; display:block; overflow:visible; }
+  .chart-grid line { stroke:var(--iron-seam); stroke-width:1; }
+  .chart-area { fill:url(#tokenGrad); }
+  .chart-line { fill:none; stroke:var(--claude); stroke-width:2; }
+  .chart-end { fill:var(--claude); }
+  .chart-end-glow { fill:var(--claude); opacity:.18; }
+  .chart-end-label { fill:var(--ink-ash); font:600 11px var(--font-mono); }
+  .breakdown-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; }
+  .breakdown-row .model { width:88px; color:var(--ink-smoke); flex-shrink:0; }
+  .breakdown-bar { flex:1; height:8px; background:var(--iron-seam); border-radius:2px; overflow:hidden; }
+  .breakdown-bar i { display:block; height:100%; background:var(--claude); }
+  .breakdown-row .figs { width:150px; text-align:right; color:var(--ink-ash); flex-shrink:0; }
+
+  /* ---- terminal dock ---- */
+  .dock { background:#0d0b09; border:1px solid var(--iron-seam); border-radius:3px 3px 0 0; margin:0 -16px; }
+  .dock-tabs { display:flex; gap:2px; border-bottom:1px solid var(--iron-seam); padding:0 14px; }
+  .dock-tab { font:inherit; font-size:12px; color:var(--ink-smoke); background:transparent; border:none; border-bottom:2px solid transparent; padding:10px 12px; min-height:24px; cursor:pointer; }
+  .dock-tab[aria-selected="true"] { color:var(--ink-ash); border-bottom-color:var(--claude); }
+  .dock-tab:hover { color:var(--ink-ash); }
+  .dock-body { padding:12px 16px; height:200px; overflow-y:auto; }
+  .term-line { white-space:pre-wrap; font-size:13px; }
+  .term-prompt { color:var(--heat-spark); }
+  .term-path { color:var(--ink-steel); }
+  .term-out { color:var(--ink-ash); }
+  .cursor { display:inline-block; width:7px; height:14px; background:var(--ink-ash); vertical-align:text-bottom; animation:blink 1s step-start infinite; }
+  @media (prefers-reduced-motion:reduce) { .cursor { animation:none; opacity:.7; } }
+  @keyframes blink { 50% { opacity:0; } }
+  .log-line { display:flex; gap:10px; font-size:12px; padding:2px 0; border-bottom:1px solid rgba(58,50,42,.4); }
+  .log-line .lvl { width:52px; flex-shrink:0; text-transform:uppercase; font-size:10px; letter-spacing:.05em; }
+  .log-line.info .lvl { color:var(--ink-steel); }
+  .log-line.warn .lvl { color:var(--heat-spark); }
+  .log-line.error .lvl { color:var(--error); }
+  .log-line .ts { color:var(--ink-smoke); flex-shrink:0; }
+  footer.note { text-align:center; color:var(--ink-smoke); font-size:11px; padding:14px 0 22px; }
+
+  /* ---- responsive: 1280 default above, tablet/mobile below ---- */
+  @media (max-width:1024px) {
+    .fleet-grid { grid-template-columns:repeat(2,1fr); }
+    .usage-band { grid-template-columns:1fr; }
+  }
+  @media (max-width:480px) {
+    .fleet-grid { grid-template-columns:1fr; }
+    .card-actions button.ctl { flex:1; justify-content:center; }
+    .stat-row { gap:16px; }
+    .dock-body { height:160px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<div class="topbar">
+  <h1 class="wordmark">for<em>g</em>e cockpit</h1>
+  <div class="topbar-right">
+    <span class="session-pill" title="mutating actions carry this session's capability token"><span class="dot"></span>session 3f2a&hellip;9c — connected</span>
+    <span class="stamp tabular" role="status" aria-live="polite">updated 12:41:07</span>
+  </div>
+</div>
+
+<section aria-labelledby="fleet-h">
+  <h2 id="fleet-h">Fleet<span class="rule"></span></h2>
+  <div class="fleet-grid" role="list">
+
+    <div class="card online" role="listitem">
+      <div class="card-head">
+        <div><div class="repo-name">dngioidev/forge</div><div class="platform-tag">&#8862; windows-native &middot; nssm</div></div>
+        <span class="status-pill online">online</span>
+      </div>
+      <div class="card-meta">forge-runner-dngioidev-forge &middot; up <b>4d 6h</b> &middot; last job <b>12m ago</b></div>
+      <div class="card-actions">
+        <button class="ctl" disabled title="already running">start</button>
+        <button class="ctl"><span class="lock" title="requires session token">&#128274;</span> stop</button>
+        <button class="ctl"><span class="lock">&#128274;</span> restart</button>
+      </div>
+    </div>
+
+    <div class="card online" role="listitem">
+      <div class="card-head">
+        <div><div class="repo-name">dngioidev/forge</div><div class="platform-tag">&#128039; wsl2-linux &middot; systemd</div></div>
+        <span class="status-pill online">online</span>
+      </div>
+      <div class="card-meta">forge-runner-dngioidev-forge &middot; up <b>2d 19h</b> &middot; idle</div>
+      <div class="card-actions">
+        <button class="ctl" disabled title="already running">start</button>
+        <button class="ctl loading"><span class="spin" aria-hidden="true"></span> restarting&hellip;</button>
+        <button class="ctl" disabled>restart</button>
+      </div>
+    </div>
+
+    <div class="card offline" role="listitem">
+      <div class="card-head">
+        <div><div class="repo-name">dngioidev/iomanage</div><div class="platform-tag">&#8862; windows-native &middot; nssm</div></div>
+        <span class="status-pill offline">offline</span>
+      </div>
+      <div class="card-meta">forge-runner-dngioidev-iomanage &middot; stopped <b>3h ago</b> &middot; manual</div>
+      <div class="card-actions">
+        <button class="ctl"><span class="lock" title="requires session token">&#128274;</span> start</button>
+        <button class="ctl" disabled title="already stopped">stop</button>
+        <button class="ctl" disabled title="already stopped">restart</button>
+      </div>
+    </div>
+
+    <div class="card mistarget" role="listitem">
+      <div class="card-head">
+        <div><div class="repo-name">dngioidev/iomanage</div><div class="platform-tag">&#128039; wsl2-linux &middot; systemd</div></div>
+        <span class="status-pill mistarget">mis-target</span>
+      </div>
+      <div class="card-meta">forge-runner-dngioidev-iomanage &middot; systemd unit active</div>
+      <div class="card-error" role="alert">GitHub reports this runner registered under <b class="tabular">dngioidev/forge</b>, not <b>iomanage</b> &mdash; check the service name / re-provision.</div>
+      <div class="card-actions">
+        <button class="ctl"><span class="lock">&#128274;</span> stop</button>
+        <button class="ctl"><span class="lock">&#128274;</span> re-provision</button>
+      </div>
+    </div>
+
+  </div>
+
+  <details class="states-ref">
+    <summary>states reference &mdash; empty &amp; focus (fleet + controls)</summary>
+    <div class="ref-row">
+      <div class="card offline" style="text-align:center; color:var(--ink-smoke); --edge:var(--iron-seam);">no runners registered for this repo &mdash; run <span style="color:var(--ink-steel)">forge cockpit provision</span></div>
+      <button class="ctl" style="outline:2px solid var(--heat-ember); outline-offset:2px;">restart &mdash; :focus-visible</button>
+    </div>
+  </details>
+</section>
+
+<section aria-labelledby="usage-h">
+  <h2 id="usage-h">Usage &amp; cost<span class="rule"></span></h2>
+  <div class="usage-band">
+    <div class="panel">
+      <h3>tokens &middot; last 14 days</h3>
+      <div class="stat-row">
+        <div class="stat"><div class="num accent tabular">3.24M</div><div class="lbl">tokens today</div></div>
+        <div class="stat"><div class="num tabular">$14.82</div><div class="lbl">cost today</div></div>
+        <div class="stat"><div class="num tabular">$412.65</div><div class="lbl">cost, 30d</div></div>
+      </div>
+      <svg class="chart" viewBox="0 0 560 150" preserveAspectRatio="none" role="img" aria-label="Daily token usage, last 14 days, rising to 3.24 million tokens today">
+        <defs>
+          <linearGradient id="tokenGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f0813f" stop-opacity=".28"/>
+            <stop offset="100%" stop-color="#f0813f" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g class="chart-grid">
+          <line x1="0" y1="20" x2="560" y2="20"/><line x1="0" y1="60" x2="560" y2="60"/>
+          <line x1="0" y1="100" x2="560" y2="100"/><line x1="0" y1="140" x2="560" y2="140"/>
+        </g>
+        <path class="chart-area" d="M0,90 L40,78 80,98 120,60 160,42 200,102 240,116 280,50 320,32 360,42 400,20 440,66 480,42 520,10 520,150 0,150 Z"/>
+        <path class="chart-line" d="M0,90 L40,78 80,98 120,60 160,42 200,102 240,116 280,50 320,32 360,42 400,20 440,66 480,42 520,10"/>
+        <circle class="chart-end-glow" cx="520" cy="10" r="9"/>
+        <circle class="chart-end" cx="520" cy="10" r="3.5"/>
+        <text class="chart-end-label tabular" x="486" y="2">3.24M</text>
+      </svg>
+    </div>
+    <div class="panel">
+      <h3>by model &middot; 30 days</h3>
+      <div class="breakdown-row"><span class="model">Sonnet 5</span><div class="breakdown-bar"><i style="width:75%"></i></div><span class="figs tabular">51.2M &middot; $301.40</span></div>
+      <div class="breakdown-row"><span class="model">Opus 4.6</span><div class="breakdown-bar"><i style="width:18%"></i></div><span class="figs tabular">12.1M &middot; $98.75</span></div>
+      <div class="breakdown-row"><span class="model">Haiku 4.5</span><div class="breakdown-bar"><i style="width:7%"></i></div><span class="figs tabular">5.1M &middot; $12.50</span></div>
+      <details class="states-ref"><summary>states reference &mdash; loading / empty / error</summary>
+        <p style="margin-top:8px; color:var(--ink-smoke);">loading: bars render as pulseless skeleton bars (no motion by default) &middot; empty: &ldquo;no usage recorded yet&rdquo; &middot; error: &ldquo;transcripts unreadable &mdash; check ~/.claude/projects permissions&rdquo; in <span style="color:var(--error)">error</span> ink.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="dock-h">
+  <h2 id="dock-h">Terminal &amp; logs<span class="rule"></span></h2>
+  <div class="dock">
+    <div class="dock-tabs" role="tablist">
+      <button class="dock-tab" role="tab" aria-selected="true">Terminal</button>
+      <button class="dock-tab" role="tab" aria-selected="false">Logs</button>
+    </div>
+    <div class="dock-body" role="tabpanel">
+      <div class="term-line"><span class="term-prompt">dngioi@forge</span> <span class="term-path">~/mywp/forge</span>$ gh run watch 18234561</div>
+      <div class="term-line term-out">&#10003; build &middot; 4m12s &middot; forge-runner-dngioidev-forge</div>
+      <div class="term-line term-out">&#10003; test (windows-native) &middot; 2m48s</div>
+      <div class="term-line term-out">&#10003; test (wsl2-linux) &middot; 3m01s</div>
+      <div class="term-line"><span class="term-prompt">dngioi@forge</span> <span class="term-path">~/mywp/forge</span>$ <span class="cursor"></span></div>
+    </div>
+  </div>
+</section>
+
+<footer class="note">terminal rendered here as a static pane for the mockup &mdash; production streams raw bytes from <code>/api/terminal</code> into <strong>xterm.js</strong> (#354/#353).</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge cockpit — variant C (split cockpit)</title>
+<style>
+  :root {
+    --iron-bg:#161310; --iron-plate:#1f1a15; --iron-seam:#3a322a;
+    --ink-ash:#d8d2c8; --ink-smoke:#a49a87; --ink-steel:#7fa8c9;
+    --heat-cool:#4d5a52; --heat-warm:#b56a3c; --heat-spark:#ffd166; --heat-ember:#ff7a45; --heat-alarm:#e2483d;
+    --claude:#f0813f; --success:#46a758; --error:#e5484d;
+    --motion-calm:250ms;
+    --font-display:Bahnschrift,'DIN Alternate','Arial Narrow',sans-serif;
+    --font-mono:Consolas,'Cascadia Mono',ui-monospace,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body { background:var(--iron-bg); color:var(--ink-ash); font:14px/1.55 var(--font-mono); display:flex; min-height:100vh; }
+  h1,h2,h3 { font-family:var(--font-display); font-weight:600; margin:0; text-transform:uppercase; letter-spacing:.08em; }
+  a { color:var(--ink-steel); }
+  :focus-visible { outline:2px solid var(--heat-ember); outline-offset:2px; }
+  .tabular { font-variant-numeric:tabular-nums; }
+
+  /* ---- persistent fleet sidebar ---- */
+  .sidebar { width:270px; flex-shrink:0; background:var(--iron-plate); border-right:1px solid var(--iron-seam); display:flex; flex-direction:column; }
+  .sidebar-head { padding:16px 16px 10px; border-bottom:1px solid var(--iron-seam); }
+  .wordmark { font-size:16px; letter-spacing:.14em; }
+  .wordmark em { font-style:normal; color:var(--claude); }
+  .sidebar-head .stamp { font-size:11px; color:var(--ink-smoke); margin-top:6px; display:block; }
+  .fleet-list { flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .mini-card { position:relative; background:var(--iron-bg); border:1px solid var(--iron-seam); border-left:3px solid var(--edge,var(--heat-cool)); border-radius:2px; padding:8px 10px; overflow:hidden; }
+  .mini-card.online  { --edge:var(--success); }
+  .mini-card.offline { --edge:var(--heat-cool); }
+  .mini-card.mistarget { --edge:var(--heat-alarm); }
+  .mini-head { display:flex; justify-content:space-between; align-items:baseline; gap:6px; }
+  .mini-name { font-size:12.5px; }
+  .mini-plat { font-size:10px; color:var(--ink-smoke); }
+  .mini-status { font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .mini-status.online { color:var(--success); }
+  .mini-status.offline { color:var(--ink-smoke); }
+  .mini-status.mistarget { color:var(--heat-alarm); }
+  .mini-meta { font-size:11px; color:var(--ink-smoke); margin-top:3px; }
+  .mini-error { font-size:11px; color:var(--error); margin-top:4px; }
+  .mini-actions { display:flex; gap:4px; margin-top:6px; }
+  button.mini-ctl { font:inherit; font-size:11px; color:var(--ink-ash); background:transparent; border:1px solid var(--iron-seam); padding:4px 7px; min-height:24px; border-radius:2px; cursor:pointer; }
+  button.mini-ctl:hover:not(:disabled) { border-color:var(--heat-ember); color:var(--heat-ember); }
+  button.mini-ctl:active:not(:disabled) { background:rgba(255,122,69,.08); }
+  button.mini-ctl:disabled { opacity:.38; cursor:not-allowed; }
+  button.mini-ctl.loading { color:var(--heat-spark); border-color:rgba(255,209,102,.5); }
+  .spin { display:inline-block; width:8px; height:8px; border:2px solid rgba(255,209,102,.35); border-top-color:var(--heat-spark); border-radius:50%; animation:spin 900ms linear infinite; margin-right:3px; }
+  @media (prefers-reduced-motion:reduce) { .spin { animation:none; border-top-color:rgba(255,209,102,.35); } }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .empty-mini { text-align:center; color:var(--ink-smoke); font-size:11px; padding:14px 8px; border:1px dashed var(--iron-seam); border-radius:2px; }
+  .sidebar-foot { padding:12px 16px; border-top:1px solid var(--iron-seam); }
+  .session-pill { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-smoke); }
+  .session-pill .dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 6px rgba(70,167,88,.5); }
+
+  /* ---- main pane ---- */
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .mode-bar { display:flex; gap:2px; padding:10px 20px 0; border-bottom:1px solid var(--iron-seam); }
+  .mode-btn { display:flex; align-items:center; gap:6px; font:inherit; font-size:12px; color:var(--ink-smoke); background:transparent; border:none; border-bottom:2px solid transparent; padding:10px 14px; min-height:24px; cursor:pointer; }
+  .mode-btn:hover { color:var(--ink-ash); }
+  .mode-btn[aria-selected="true"] { color:var(--ink-ash); border-bottom-color:var(--claude); }
+  .mode-btn .kbd { font-size:10px; color:var(--ink-smoke); border:1px solid var(--iron-seam); border-radius:2px; padding:0 4px; }
+  .mode-view { padding:20px 24px; flex:1; overflow-y:auto; }
+  .mode-view[hidden] { display:none; }
+
+  .panel { background:var(--iron-plate); border:1px solid var(--iron-seam); border-radius:3px; padding:16px 18px; margin-bottom:16px; }
+  .panel h3 { font-size:12px; color:var(--ink-smoke); margin-bottom:12px; letter-spacing:.1em; }
+  .stat-row { display:flex; gap:24px; margin-bottom:14px; flex-wrap:wrap; }
+  .stat .num { font-size:24px; color:var(--ink-ash); }
+  .stat .num.accent { color:var(--claude); }
+  .stat .lbl { font-size:11px; color:var(--ink-smoke); text-transform:uppercase; letter-spacing:.08em; }
+  svg.chart { width:100%; height:170px; display:block; overflow:visible; }
+  .chart-grid line { stroke:var(--iron-seam); stroke-width:1; }
+  .chart-area { fill:url(#tokenGrad); }
+  .chart-line { fill:none; stroke:var(--claude); stroke-width:2; }
+  .chart-end { fill:var(--claude); }
+  .chart-end-glow { fill:var(--claude); opacity:.18; }
+  .chart-end-label { fill:var(--ink-ash); font:600 11px var(--font-mono); }
+  .breakdown-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; }
+  .breakdown-row .model { width:88px; color:var(--ink-smoke); flex-shrink:0; }
+  .breakdown-bar { flex:1; height:8px; background:var(--iron-seam); border-radius:2px; overflow:hidden; }
+  .breakdown-bar i { display:block; height:100%; background:var(--claude); }
+  .breakdown-row .figs { width:150px; text-align:right; color:var(--ink-ash); flex-shrink:0; }
+  .err-banner { color:var(--error); border:1px dashed rgba(226,72,61,.5); padding:8px 10px; border-radius:2px; font-size:12px; margin-top:10px; }
+
+  .term-pane { background:#0d0b09; border:1px solid var(--iron-seam); border-radius:3px; padding:14px 16px; height:calc(100vh - 190px); min-height:260px; overflow-y:auto; }
+  .term-line { white-space:pre-wrap; font-size:13px; }
+  .term-prompt { color:var(--heat-spark); }
+  .term-path { color:var(--ink-steel); }
+  .term-out { color:var(--ink-ash); }
+  .cursor { display:inline-block; width:7px; height:14px; background:var(--ink-ash); vertical-align:text-bottom; animation:blink 1s step-start infinite; }
+  @media (prefers-reduced-motion:reduce) { .cursor { animation:none; opacity:.7; } }
+  @keyframes blink { 50% { opacity:0; } }
+  .log-line { display:flex; gap:10px; font-size:12px; padding:3px 0; border-bottom:1px solid rgba(58,50,42,.4); }
+  .log-line .lvl { width:52px; flex-shrink:0; text-transform:uppercase; font-size:10px; letter-spacing:.05em; }
+  .log-line.info .lvl { color:var(--ink-steel); }
+  .log-line.warn .lvl { color:var(--heat-spark); }
+  .log-line.error .lvl { color:var(--error); }
+  .log-line .ts { color:var(--ink-smoke); flex-shrink:0; }
+
+  /* ---- responsive ---- */
+  @media (max-width:1024px) {
+    .sidebar { width:220px; }
+  }
+  @media (max-width:768px) {
+    .sidebar { width:200px; }
+    .mode-btn span.lbl-full { display:none; }
+  }
+  @media (max-width:480px) {
+    body { flex-direction:column; }
+    .sidebar { width:100%; border-right:none; border-bottom:1px solid var(--iron-seam); max-height:none; }
+    .fleet-list { flex-direction:row; overflow-x:auto; overflow-y:visible; }
+    .mini-card { min-width:180px; flex-shrink:0; }
+    .sidebar-foot { display:none; }
+    .term-pane { height:44vh; }
+    .mode-bar { padding:8px 12px 0; }
+    .mode-btn { padding:8px 10px; font-size:11px; }
+  }
+</style>
+</head>
+<body>
+
+<aside class="sidebar" aria-label="Fleet health (always visible)">
+  <div class="sidebar-head">
+    <div class="wordmark">for<em>g</em>e cockpit</div>
+    <span class="stamp tabular" role="status" aria-live="polite">updated 12:41:07</span>
+  </div>
+  <div class="fleet-list" role="list">
+    <div class="mini-card online" role="listitem">
+      <div class="mini-head"><span class="mini-name">dngioidev/forge</span><span class="mini-status online">online</span></div>
+      <div class="mini-plat">&#8862; windows-native &middot; nssm</div>
+      <div class="mini-meta">up <b>4d 6h</b> &middot; job 12m ago</div>
+      <div class="mini-actions">
+        <button class="mini-ctl" disabled title="already running">start</button>
+        <button class="mini-ctl" title="requires session token">&#128274; stop</button>
+      </div>
+    </div>
+    <div class="mini-card online" role="listitem">
+      <div class="mini-head"><span class="mini-name">dngioidev/forge</span><span class="mini-status online">online</span></div>
+      <div class="mini-plat">&#128039; wsl2-linux &middot; systemd</div>
+      <div class="mini-meta">up <b>2d 19h</b> &middot; idle</div>
+      <div class="mini-actions">
+        <button class="mini-ctl loading"><span class="spin" aria-hidden="true"></span>restarting&hellip;</button>
+        <button class="mini-ctl" disabled>restart</button>
+      </div>
+    </div>
+    <div class="mini-card offline" role="listitem">
+      <div class="mini-head"><span class="mini-name">dngioidev/iomanage</span><span class="mini-status offline">offline</span></div>
+      <div class="mini-plat">&#8862; windows-native &middot; nssm</div>
+      <div class="mini-meta">stopped <b>3h ago</b> &middot; manual</div>
+      <div class="mini-actions">
+        <button class="mini-ctl" title="requires session token">&#128274; start</button>
+        <button class="mini-ctl" disabled title="already stopped">stop</button>
+      </div>
+    </div>
+    <div class="mini-card mistarget" role="listitem">
+      <div class="mini-head"><span class="mini-name">dngioidev/iomanage</span><span class="mini-status mistarget">mis-target</span></div>
+      <div class="mini-plat">&#128039; wsl2-linux &middot; systemd</div>
+      <div class="mini-error" role="alert">reports as dngioidev/forge</div>
+      <div class="mini-actions">
+        <button class="mini-ctl">&#128274; stop</button>
+        <button class="mini-ctl">&#128274; re-provision</button>
+      </div>
+    </div>
+    <div class="empty-mini">states reference &mdash; empty:<br>&ldquo;no runners for this repo&rdquo;</div>
+  </div>
+  <div class="sidebar-foot"><span class="session-pill"><span class="dot"></span>session 3f2a&hellip;9c &middot; connected</span></div>
+</aside>
+
+<div class="main">
+  <div class="mode-bar" role="tablist" aria-label="Main view">
+    <button class="mode-btn" role="tab" aria-selected="false" aria-controls="m-usage" data-mode="usage">&#9202; <span class="lbl-full">Usage</span></button>
+    <button class="mode-btn" role="tab" aria-selected="true" aria-controls="m-term" data-mode="term">&gt;_ <span class="lbl-full">Terminal</span> <span class="kbd">1 click</span></button>
+    <button class="mode-btn" role="tab" aria-selected="false" aria-controls="m-logs" data-mode="logs">&#8801; <span class="lbl-full">Logs</span></button>
+  </div>
+
+  <section class="mode-view" id="m-usage" role="tabpanel" hidden>
+    <div class="panel">
+      <h3>tokens &middot; last 14 days</h3>
+      <div class="stat-row">
+        <div class="stat"><div class="num accent tabular">3.24M</div><div class="lbl">tokens today</div></div>
+        <div class="stat"><div class="num tabular">$14.82</div><div class="lbl">cost today</div></div>
+        <div class="stat"><div class="num tabular">$412.65</div><div class="lbl">cost, 30d</div></div>
+      </div>
+      <svg class="chart" viewBox="0 0 700 170" preserveAspectRatio="none" role="img" aria-label="Daily token usage, last 14 days, rising to 3.24 million tokens today">
+        <defs>
+          <linearGradient id="tokenGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f0813f" stop-opacity=".28"/>
+            <stop offset="100%" stop-color="#f0813f" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g class="chart-grid">
+          <line x1="0" y1="24" x2="700" y2="24"/><line x1="0" y1="70" x2="700" y2="70"/>
+          <line x1="0" y1="116" x2="700" y2="116"/><line x1="0" y1="162" x2="700" y2="162"/>
+        </g>
+        <path class="chart-area" d="M0,104 L50,90 100,112 150,68 200,48 250,116 300,132 350,58 400,36 450,48 500,22 550,76 600,48 650,10 650,170 0,170 Z"/>
+        <path class="chart-line" d="M0,104 L50,90 100,112 150,68 200,48 250,116 300,132 350,58 400,36 450,48 500,22 550,76 600,48 650,10"/>
+        <circle class="chart-end-glow" cx="650" cy="10" r="9"/>
+        <circle class="chart-end" cx="650" cy="10" r="3.5"/>
+        <text class="chart-end-label tabular" x="614" y="2">3.24M</text>
+      </svg>
+    </div>
+    <div class="panel">
+      <h3>by model &middot; 30 days</h3>
+      <div class="breakdown-row"><span class="model">Sonnet 5</span><div class="breakdown-bar"><i style="width:75%"></i></div><span class="figs tabular">51.2M &middot; $301.40</span></div>
+      <div class="breakdown-row"><span class="model">Opus 4.6</span><div class="breakdown-bar"><i style="width:18%"></i></div><span class="figs tabular">12.1M &middot; $98.75</span></div>
+      <div class="breakdown-row"><span class="model">Haiku 4.5</span><div class="breakdown-bar"><i style="width:7%"></i></div><span class="figs tabular">5.1M &middot; $12.50</span></div>
+      <div class="err-banner" role="alert">example error state: transcripts unreadable &mdash; check <code>~/.claude/projects</code> permissions</div>
+    </div>
+  </section>
+
+  <section class="mode-view" id="m-term" role="tabpanel">
+    <div class="term-pane">
+      <div class="term-line"><span class="term-prompt">dngioi@forge</span> <span class="term-path">~/mywp/forge</span>$ gh run watch 18234561</div>
+      <div class="term-line term-out">&#10003; build &middot; 4m12s &middot; forge-runner-dngioidev-forge</div>
+      <div class="term-line term-out">&#10003; test (windows-native) &middot; 2m48s</div>
+      <div class="term-line term-out">&#10003; test (wsl2-linux) &middot; 3m01s</div>
+      <div class="term-line"><span class="term-prompt">dngioi@forge</span> <span class="term-path">~/mywp/forge</span>$ <span class="cursor"></span></div>
+    </div>
+    <p style="margin-top:10px; font-size:11px; color:var(--ink-smoke);">static mockup pane &mdash; production streams <code>/api/terminal</code> into <strong>xterm.js</strong> (#354/#353). Terminal is the default main view here &mdash; one click from anywhere via the mode bar or a mini-card's own actions.</p>
+  </section>
+
+  <section class="mode-view" id="m-logs" role="tabpanel" hidden>
+    <div class="panel" style="max-height:calc(100vh - 190px); overflow-y:auto;">
+      <div class="log-line info"><span class="ts tabular">12:41:02</span><span class="lvl">info</span><span>fleet scan complete &middot; 4 runners &middot; 1 mis-target</span></div>
+      <div class="log-line warn"><span class="ts tabular">12:38:47</span><span class="lvl">warn</span><span>gh api rate limit at 62% &middot; resets 13:00</span></div>
+      <div class="log-line info"><span class="ts tabular">12:22:10</span><span class="lvl">info</span><span>control: restart forge-runner-dngioidev-forge (wsl2) requested</span></div>
+      <div class="log-line error"><span class="ts tabular">09:58:33</span><span class="lvl">error</span><span>provision: iomanage (wsl2) target mismatch &mdash; see sidebar</span></div>
+      <div class="log-line info"><span class="ts tabular">09:12:00</span><span class="lvl">info</span><span>usage collector: 41 transcripts scanned, 0 skipped</span></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  var tabs = document.querySelectorAll('.mode-btn');
+  var views = { usage:'m-usage', term:'m-term', logs:'m-logs' };
+  tabs.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      tabs.forEach(function (b) { b.setAttribute('aria-selected', 'false'); });
+      btn.setAttribute('aria-selected', 'true');
+      Object.values(views).forEach(function (id) { document.getElementById(id).hidden = true; });
+      document.getElementById(views[btn.getAttribute('data-mode')]).hidden = false;
+    });
+  });
+</script>
+</body>
+</html>

@@ -46,6 +46,8 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 ## Design specs
 
 - [Console — heat identity](design/2026-07-17-console.md) — visual spec for the local web console: situation-as-heat token system, states matrix, a11y contract.
+- [Cockpit browser UI](design/2026-08-03-cockpit-ui.md) — visual spec for the runner-fleet cockpit web app (#354, ADR-0008): split-cockpit layout (persistent fleet sidebar + Usage/Terminal/Logs main pane), states matrix, a11y contract, on the smithy token vocabulary (zero new tokens).
+- [Cockpit UI variants (#354)](design/variants-354/README.md) — the three token-grounded mockups behind the cockpit spec (A single-pane · B tabbed · C split-cockpit, owner pick); design-lane reference.
 
 ## Decisions (ADRs)
 
