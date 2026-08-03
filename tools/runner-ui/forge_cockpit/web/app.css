@@ -4,7 +4,7 @@
    tokens at low alpha, not new colours. */
 :root {
   /* grounds */
-  --iron-bg:#161310; --iron-plate:#1f1a15; --iron-seam:#3a322a;
+  --iron-bg:#161310; --iron-plate:#1f1a15; --iron-seam:#3a322a; --iron-pit:#0d0b09;
   /* text / links */
   --ink-ash:#d8d2c8; --ink-smoke:#a49a87; --ink-steel:#7fa8c9;
   /* heat scale */
@@ -102,7 +102,7 @@ svg.chart { width:100%; height:170px; display:block; overflow:visible; }
 .breakdown-row .figs { width:170px; text-align:right; color:var(--ink-ash); flex-shrink:0; }
 .err-banner { color:var(--error); border:1px dashed rgba(226,72,61,.5); padding:8px 10px; border-radius:2px; font-size:12px; margin-top:10px; }
 
-.term-pane { background:#0d0b09; border:1px solid var(--iron-seam); border-radius:3px; padding:8px 10px; height:calc(100vh - 190px); min-height:260px; overflow:hidden; }
+.term-pane { background:var(--iron-pit); border:1px solid var(--iron-seam); border-radius:3px; padding:8px 10px; height:calc(100vh - 190px); min-height:260px; overflow:hidden; }
 .term-pane .xterm { height:100%; }
 .term-note { margin-top:10px; font-size:11px; color:var(--ink-smoke); }
 .term-note.error { color:var(--error); }

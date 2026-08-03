@@ -252,8 +252,8 @@ function renderChart(series, empty) {
   svg.setAttribute('aria-label', `Daily token usage, last ${series.length} days, latest ${formatTokens(series[series.length - 1])} tokens (peak ${peak})`);
   svg.innerHTML = `
     <defs><linearGradient id="tokenGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#f0813f" stop-opacity=".28"/>
-      <stop offset="100%" stop-color="#f0813f" stop-opacity="0"/>
+      <stop offset="0%" style="stop-color:var(--claude)" stop-opacity=".28"/>
+      <stop offset="100%" style="stop-color:var(--claude)" stop-opacity="0"/>
     </linearGradient></defs>
     <g class="chart-grid">
       <line x1="0" y1="24" x2="${W}" y2="24"/><line x1="0" y1="70" x2="${W}" y2="70"/>
@@ -318,11 +318,20 @@ function startTerminal() {
     note.classList.add('error');
     return;
   }
+  // xterm's theme takes concrete colour strings, not CSS var() — so single-source
+  // it from the :root smithy tokens (app.css) at construction rather than re-typing
+  // the hex here (#368: no one-off values; iron.pit is the terminal ground).
+  const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const term = new window.Terminal({
     cursorBlink: !REDUCED_MOTION,
     fontFamily: "Consolas, 'Cascadia Mono', ui-monospace, monospace",
     fontSize: 13,
-    theme: { background: '#0d0b09', foreground: '#d8d2c8', cursor: '#d8d2c8', selectionBackground: '#3a322a' },
+    theme: {
+      background: token('--iron-pit'),
+      foreground: token('--ink-ash'),
+      cursor: token('--ink-ash'),
+      selectionBackground: token('--iron-seam'),
+    },
   });
   const fit = window.FitAddon ? new window.FitAddon.FitAddon() : null;
   if (fit) term.loadAddon(fit);
