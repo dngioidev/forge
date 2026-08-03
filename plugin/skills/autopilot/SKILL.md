@@ -57,6 +57,19 @@ Per ticket, the main loop does exactly three things: **spawn**, **record**, **co
 1. **Spawn a delivery subagent** with the Task tool — `subagent_type: general-purpose` (or a dedicated delivery agent if the roster has one). The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the route (deliver, or shape-first under `--shape`), the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, open the PR, **watch CI to green in this same run with `gh pr checks <pr> --watch`**, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
 
    **Forbidden — the return-then-resume stall:** the brief must NOT tell the subagent to open the PR and then return awaiting an external/background completion notification (e.g. "await the CI watcher's notification"). The subagent's context is discarded on return and **nothing re-invokes it when CI goes green** — that stalls the ticket until a manual resume. The background CI monitor notifies the **main loop**, not a returned subagent. The subagent must therefore watch CI to conclusion **in-run itself** (`gh pr checks <pr> --watch`) and merge within the **same invocation** — never return on the assumption it will be re-spawned on green.
+
+   **Denylist safe-alternatives — carried in every delivery brief.** The brief teaches each spawned delivery subagent the safe alternative up front so it doesn't reflexively reach for a denylisted destructive command, hit the block, and burn a turn retrying:
+
+   | Blocked class | Safe alternative |
+   | --- | --- |
+   | recursive `rm` outside build/temp (`recursive-delete`) | targeted `rm <paths>` — name the paths, don't recurse over the tree |
+   | `git reset --hard` (`hard-reset`) | `git revert` / `git restore <paths>` |
+   | force-push (`force-push`) | `--force-with-lease`, and only when explicitly requested |
+   | `git clean -f` (`git-clean-force`) | targeted `rm <paths>` |
+
+   **On a denylist block, escalate — do not retry the blocked command** (`escalate.mjs`); a genuinely-required destructive action is a human decision, not a retry.
+
+   **Literal-string caveat:** the denylist matches these command strings even inside quoted/heredoc bodies, so a PR body, comment, or trail note that merely *mentions* a blocked command trips it when passed inline. Write such content to a file and pass `--body-file` (or `git commit -F <file>`), never inline on a shell command line.
 2. **Read only the terminal report** — `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}` — and **run it through the watchdog** (`watchdog.mjs` `resolveReturnedTicket`, § Return-then-resume watchdog) before recording. A subagent that returns `awaiting-merge` (opened a green PR, then returned awaiting a re-invocation) must NOT be recorded as a silent terminal state — the watchdog turns that into a `merge` (funnel to the bar) or an `escalate` (surface awaiting-human / escalate). Every already-resolved outcome passes through as `continue`. The main loop then writes the resolved outcome to `run.json`, trails the ticket, and never re-reads the subagent's work.
 3. **Continue** to the next ticket. Because the delivery context is discarded, the main window is unchanged between tickets — a 5-ticket and a 50-ticket run cost the same orchestration overhead, and the run never compacts mid-loop.
 
