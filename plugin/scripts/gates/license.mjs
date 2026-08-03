@@ -62,6 +62,12 @@ export const EXPECTED_LICENSE = 'MIT';
  * httpx are BSD-3-Clause. Only the DECLARED names in pyproject.toml are resolved
  * here (transitive deps are not gate-inspected), so fastapi/uvicorn/httpx are the
  * three that need a classification.
+ *
+ * #353 — the PTY-over-websocket terminal bridge (ADR-0008) adds `websockets`
+ * (uvicorn's native ws implementation, BSD-3-Clause) and re-adds `pywinpty` (the
+ * Windows ConPTY backend, MIT — Windows-only marker). Both are permissive, so the
+ * gate stays green with ZERO exceptions; pywinpty rejoins the map after #355
+ * dropped it with the Qt UI.
  */
 export const PYTHON_LICENSES = Object.freeze({
   psutil: 'BSD-3-Clause',
@@ -69,6 +75,8 @@ export const PYTHON_LICENSES = Object.freeze({
   fastapi: 'MIT',
   uvicorn: 'BSD-3-Clause',
   httpx: 'BSD-3-Clause',
+  websockets: 'BSD-3-Clause',
+  pywinpty: 'MIT',
 });
 
 /**

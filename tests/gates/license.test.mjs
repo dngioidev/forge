@@ -239,11 +239,12 @@ testpaths = ["tests"]
   it('AC-355.3: the whole real Python tree is inspected + allowlist applied (gate is not blind to it)', async () => {
     const res = await checkPythonLicenses(REPO_ROOT);
     expect(res.skipped).toBeFalsy();
-    // #355 retired PySide6/pywinpty/pytest-qt; #351 (Cockpit v2 backend, ADR-0008)
-    // added the FastAPI web stack — fastapi + uvicorn (runtime) and httpx (dev,
-    // powering the TestClient), all permissive. Every declared dep is actually
-    // evaluated, not silently skipped.
-    expect(res.names).toEqual(['psutil', 'fastapi', 'uvicorn', 'pytest', 'httpx']);
+    // #355 retired PySide6/pytest-qt; #351 (Cockpit v2 backend, ADR-0008) added
+    // the FastAPI web stack — fastapi + uvicorn (runtime) and httpx (dev, powering
+    // the TestClient); #353 added the terminal bridge's `websockets` (runtime) and
+    // re-added `pywinpty` (Windows-only ConPTY). All permissive. Every declared dep
+    // is actually evaluated, not silently skipped.
+    expect(res.names).toEqual(['psutil', 'fastapi', 'uvicorn', 'websockets', 'pywinpty', 'pytest', 'httpx']);
     expect(res.ok).toBe(true);
   });
 
@@ -308,10 +309,11 @@ dependencies = ["psutil>=5.9"]
     // must not outlive it: the exception set is now empty.
     expect(PYTHON_LICENSE_EXCEPTIONS).toEqual([]);
     expect(PYTHON_LICENSE_EXCEPTIONS.find((e) => e.package === 'pyside6')).toBeUndefined();
-    // the curated map no longer classifies PySide6/pywinpty/pytest-qt either.
+    // the curated map no longer classifies PySide6/pytest-qt (retired with the Qt
+    // UI). pywinpty rejoined the map under #353 as the Windows ConPTY backend (MIT).
     expect(PYTHON_LICENSES.pyside6).toBeUndefined();
-    expect(PYTHON_LICENSES.pywinpty).toBeUndefined();
     expect(PYTHON_LICENSES['pytest-qt']).toBeUndefined();
+    expect(PYTHON_LICENSES.pywinpty).toBe('MIT');
   });
 
   it('AC-355.3: runLicenseGate covers BOTH trees and stays GREEN on the real repo with ZERO exceptions', async () => {

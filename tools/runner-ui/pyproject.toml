@@ -9,6 +9,11 @@ dependencies = [
     "psutil>=5.9",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # PTY-over-websocket terminal bridge (#353, ADR-0008). `websockets` gives
+    # uvicorn a native ws implementation (BSD-3-Clause); `pywinpty` is the Windows
+    # ConPTY backend (MIT, Windows-only marker) — POSIX uses the stdlib `pty`.
+    "websockets>=12",
+    "pywinpty>=2.0; sys_platform == 'win32'",
 ]
 
 [project.scripts]

@@ -29,8 +29,9 @@ Security (ADR-0005 + ADR-0006, inherited unchanged — AC.2):
 Loopback hardening (#352, ADR-0008) — ``Host``-header/DNS-rebinding validation,
 ``Origin``/CSRF checks, and a launch-minted per-session capability token required
 by the mutating routes — is layered on in :mod:`forge_cockpit.security` and wired
-in :func:`create_app`. Remaining ADR-0008 children: the PTY-over-websocket
-terminal is **#353** and the browser UI is **#354**.
+in :func:`create_app`. The PTY-over-websocket terminal (**#353**) is mounted here
+as the ``/api/terminal`` websocket route, bridged in
+:mod:`forge_cockpit.terminal_bridge`; the browser UI that consumes it is **#354**.
 """
 
 from __future__ import annotations
@@ -38,12 +39,13 @@ from __future__ import annotations
 import dataclasses
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, status
 from pydantic import BaseModel, Field
 
-from forge_cockpit import discovery, usage
+from forge_cockpit import discovery, terminal_bridge, usage
 from forge_cockpit.security import (
     LoopbackGuardMiddleware,
+    authorize_websocket,
     mint_session_token,
     require_session_token,
 )
@@ -299,6 +301,39 @@ def create_app(*, port: int = DEFAULT_PORT, session_token: str | None = None) ->
             "by_day": _serialize_aggregates(aggregate_by_day(records)),
             "by_model": _serialize_aggregates(aggregate_by_model(records)),
         }
+
+    @app.websocket("/api/terminal")
+    async def terminal(websocket: WebSocket) -> None:
+        """PTY-over-websocket terminal bridge (#353, ADR-0008 — AC.1/AC.2).
+
+        Spawns a PTY-backed shell and streams its raw bytes bidirectionally over
+        the websocket (:func:`forge_cockpit.terminal_bridge.serve`). xterm.js (#354)
+        owns emulation — there is no ANSI/key-map layer here, which is what retires
+        the #275 bug.
+
+        Opening a shell is a **mutating capability**, so the upgrade is loopback-
+        guarded + token-gated exactly like the mutating HTTP routes (#352). The
+        HTTP ``LoopbackGuardMiddleware`` never sees the websocket scope, so the
+        check runs here via :func:`~forge_cockpit.security.authorize_websocket`
+        BEFORE :meth:`accept` — a cross-origin or tokenless upgrade is rejected
+        (policy-violation close) before any shell is spawned. Browsers cannot set
+        custom headers on a websocket handshake, so the capability token arrives as
+        the ``token`` query parameter.
+        """
+        expected_token = getattr(websocket.app.state, "session_token", None)
+        if not authorize_websocket(
+            host=websocket.headers.get("host"),
+            origin=websocket.headers.get("origin"),
+            token=websocket.query_params.get("token"),
+            expected_port=port,
+            expected_token=expected_token,
+        ):
+            # Reject the upgrade before accept() → the client sees a failed
+            # handshake (a 403 to the browser), never an open shell.
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        await websocket.accept()
+        await terminal_bridge.serve(websocket)
 
     return app
 
