@@ -18,6 +18,21 @@ The trail, ledger, and journal are the record — don't re-narrate them in chat.
 - **Preconditions:** the ticket is triaged (clear ask + acceptance). Otherwise the planner returns `verdict: fail` — escalate, don't guess. `deliver` doesn't do discovery/spec work.
 - **Orchestrator owns state, subagents own work:** branch, ledger, `scope.json`, gates, trail, escalations stay with the main loop; subagents return their terminal JSON report only.
 
+## Denylist — safe alternative first, then escalate (never retry a block)
+
+The PreToolUse denylist blocks a few high-blast-radius commands. Don't reflexively reach for them — use the safe alternative up front:
+
+| Blocked class | Safe alternative |
+| --- | --- |
+| recursive `rm` outside build/temp (`recursive-delete`) | targeted `rm <paths>` — name the paths, don't recurse over the tree |
+| `git reset --hard` (`hard-reset`) | `git revert` / `git restore <paths>` |
+| force-push (`force-push`) | `--force-with-lease`, and only when explicitly requested |
+| `git clean -f` (`git-clean-force`) | targeted `rm <paths>` |
+
+**On a denylist block, escalate — do not retry the blocked command** (`escalate.mjs`); a genuinely-required destructive action is a human decision, not a retry.
+
+**Literal-string caveat:** the denylist matches these command strings even inside quoted/heredoc bodies, so a PR body, comment, or trail note that merely *mentions* a blocked command trips it when passed inline. Write such content to a file and pass `--body-file` (or `git commit -F <file>`), never inline on a shell command line.
+
 ## Phase 0 — Classify
 
 Spawn `planner` (`subagent_type: planner`) with the ticket ref + body + any linked spec/design/ADR. It returns the **ticket kind** (`spike | bug | ui | feature | test | chore`) and a **typed task plan** (each task tagged `code | test | ui | infra`, with Files + AC-IDs + test plan). `verdict: fail` → escalate, stop. The orchestrator picks the route from the kind:
