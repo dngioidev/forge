@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, access, cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
@@ -54,8 +54,10 @@ describe('AC-289.1: forge init --host agy emits an agy-validatable plugin packag
     // mcpServers: forge-graph wired to a server file that actually exists in the package.
     const mcp = JSON.parse(await readFile(join(dest, 'mcp_config.json'), 'utf8'));
     expect(Object.keys(mcp.mcpServers)).toContain('forge-graph');
+    // #307: the wired path is plugin-root-relative and resolves under the package root.
     const serverPath = mcp.mcpServers['forge-graph'].args[0];
-    await expect(access(serverPath)).resolves.toBeUndefined();
+    expect(isAbsolute(serverPath)).toBe(false);
+    await expect(access(join(dest, serverPath))).resolves.toBeUndefined();
 
     // hooks: named-hook schema, matcher run_command, both shims present on disk.
     const hooks = JSON.parse(await readFile(join(dest, 'hooks.json'), 'utf8'));
@@ -87,7 +89,7 @@ describe('AC-289.1: forge init --host agy emits an agy-validatable plugin packag
   it('AC-289.1: forge-core is guarded — only wired when mcp/forge/server.mjs exists (#288 is separate)', async () => {
     // Today the forge-core server does not exist, so it must NOT be emitted.
     const hasCore = await access(join(pluginRoot(), 'mcp', 'forge', 'server.mjs')).then(() => true, () => false);
-    const cfg = buildMcpConfig('C:/x/forge', { hasForgeCore: hasCore });
+    const cfg = buildMcpConfig({ hasForgeCore: hasCore });
     expect('forge-graph' in cfg.mcpServers).toBe(true);
     expect('forge-core' in cfg.mcpServers).toBe(hasCore);
     // And the emitted package reflects reality.
@@ -190,22 +192,7 @@ describe('AC-289.3: self-exec guards in denylist.mjs / capture.mjs are anchored 
   });
 });
 
-describe('AC-289.4: paths are computed, ASCII-only, Windows-first, long-path aware', () => {
-  it('AC-289.4: emitted configs contain the computed dest path, never a hardcoded install path', async () => {
-    const { dest } = await emitTo();
-    const mcpRaw = await readFile(join(dest, 'mcp_config.json'), 'utf8');
-    const hooksRaw = await readFile(join(dest, 'hooks.json'), 'utf8');
-    // computed: every wired path is rooted at the resolved dest.
-    const destPosix = toPosix(dest);
-    expect(mcpRaw).toContain(destPosix);
-    expect(hooksRaw).toContain(destPosix);
-    // NOT the spike's install-specific paths.
-    for (const raw of [mcpRaw, hooksRaw]) {
-      expect(raw).not.toMatch(/\.gemini[\\/]config[\\/]plugins/);
-      expect(raw).not.toContain('C:/Users/dngioi/.gemini');
-    }
-  });
-
+describe('AC-289.4: paths are ASCII-only, Windows-first, long-path aware', () => {
   it('AC-289.4: every emitted config + shim is ASCII-only', async () => {
     const { dest } = await emitTo();
     for (const rel of ['plugin.json', 'mcp_config.json', 'hooks.json', 'hooks/agy-deny.mjs', 'hooks/agy-capture.mjs']) {
@@ -216,7 +203,7 @@ describe('AC-289.4: paths are computed, ASCII-only, Windows-first, long-path awa
   });
 
   it('AC-289.4: MCP servers use argv-array spawns (no shell string) — Windows-first', () => {
-    const cfg = buildMcpConfig('C:/x/forge', { hasForgeCore: true });
+    const cfg = buildMcpConfig({ hasForgeCore: true });
     for (const s of Object.values(cfg.mcpServers)) {
       expect(s.command).toBe('node');
       expect(Array.isArray(s.args)).toBe(true);
@@ -224,8 +211,9 @@ describe('AC-289.4: paths are computed, ASCII-only, Windows-first, long-path awa
   });
 
   it('AC-289.4: hooks.json + plugin marker are pure computed builders', () => {
-    const hooks = buildHooksConfig('C:/x/forge');
-    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toContain('C:/x/forge/hooks/agy-deny.mjs');
+    const hooks = buildHooksConfig();
+    // #307: plugin-root-relative command (no absolute join), 10s timeout preserved.
+    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toBe('node "hooks/agy-deny.mjs"');
     expect(hooks['forge-safety'].PreToolUse[0].hooks[0].timeout).toBe(10);
     const marker = buildPluginMarker({ $schema: 'x', name: 'forge', mcpServers: { a: 1 }, version: '1.0.0' });
     expect(marker).toEqual({ name: 'forge', version: '1.0.0' });
@@ -369,5 +357,110 @@ describe('AC-294: emitted agy skills/commands carry no unresolved ${CLAUDE_PLUGI
     const after = await readFile(src, 'utf8');
     expect(after).toBe(before); // byte-identical: emit reads source, writes only into dest
     expect(after).toContain('${CLAUDE_PLUGIN_ROOT}');
+  });
+});
+
+describe('AC-307: the emitted package is relocatable — survives `agy plugin install` + `--out` deletion', () => {
+  // Every path a generated config wires must be plugin-root-relative (agy resolves
+  // via the plugin root), so no absolute staging/install literal leaks into the file.
+  const NO_ABS = [
+    /[A-Za-z]:[\\/]/,               // Windows drive-absolute (C:/ or C:\)
+    /"\//,                          // POSIX-absolute in a JSON string value
+    /\.gemini[\\/]config[\\/]plugins/, // the copied-install location
+    /\.agents[\\/]plugins/,         // the discovery location
+  ];
+
+  it('AC-307.1: mcp_config.json + hooks.json carry NO absolute path — only plugin-root-relative refs', async () => {
+    const { dest } = await emitTo();
+    const mcpRaw = await readFile(join(dest, 'mcp_config.json'), 'utf8');
+    const hooksRaw = await readFile(join(dest, 'hooks.json'), 'utf8');
+    const destPosix = toPosix(dest);
+    for (const raw of [mcpRaw, hooksRaw]) {
+      expect(raw).not.toContain(destPosix);          // never the staging `--out` dir
+      for (const re of NO_ABS) expect(raw).not.toMatch(re);
+    }
+    // and the relative refs are the expected plugin-root-relative forms
+    const mcp = JSON.parse(mcpRaw);
+    expect(mcp.mcpServers['forge-graph'].args[0]).toBe('mcp/graph/server.mjs');
+    const hooks = JSON.parse(hooksRaw);
+    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toBe('node "hooks/agy-deny.mjs"');
+    expect(hooks['forge-capture'].PostToolUse[0].hooks[0].command).toBe('node "hooks/agy-capture.mjs"');
+  });
+
+  it('AC-307.1: after `agy plugin install` (copy) + deleting the --out dir, every wired path resolves under the new root', async () => {
+    // 1) emit with --out <staging>
+    const { dir, dest: staging } = await emitTo('staging-out');
+
+    // 2) simulate `agy plugin install <staging>` — copy the package to the install root
+    const installRoot = join(dir, 'gemini-plugins', 'forge');
+    await mkdir(dirname(installRoot), { recursive: true });
+    await cp(staging, installRoot, { recursive: true });
+
+    // 3) delete the original --out dir (the coupling that used to break the install)
+    await rm(staging, { recursive: true, force: true });
+    await expect(access(staging)).rejects.toBeTruthy();
+
+    // 4) every path the copied configs reference must resolve against the install root
+    const mcp = JSON.parse(await readFile(join(installRoot, 'mcp_config.json'), 'utf8'));
+    for (const s of Object.values(mcp.mcpServers)) {
+      const rel = s.args[0];
+      expect(isAbsolute(rel)).toBe(false);
+      await expect(access(join(installRoot, rel))).resolves.toBeUndefined();
+    }
+    const hooks = JSON.parse(await readFile(join(installRoot, 'hooks.json'), 'utf8'));
+    const cmds = [
+      hooks['forge-safety'].PreToolUse[0].hooks[0].command,
+      hooks['forge-capture'].PostToolUse[0].hooks[0].command,
+    ];
+    for (const cmd of cmds) {
+      const rel = cmd.match(/^node "([^"]+)"$/)[1]; // node "hooks/agy-deny.mjs"
+      expect(isAbsolute(rel)).toBe(false);
+      await expect(access(join(installRoot, rel))).resolves.toBeUndefined();
+    }
+  });
+
+  it('AC-307.2: docs/guides/cross-gai.md documents the relocatable flow with relative config paths', async () => {
+    const guide = await readFile(join(repoRoot, 'docs', 'guides', 'cross-gai.md'), 'utf8');
+    // the guide's config examples show the plugin-root-relative forms, not an absolute install path
+    expect(guide).toContain('mcp/graph/server.mjs');
+    expect(guide).toContain('hooks/agy-deny.mjs');
+    // it must NOT present the old absolute-install-path config as the emitted shape
+    expect(guide).not.toContain('"C:/agy/forge/mcp/graph/server.mjs"');
+    expect(guide).not.toContain('node \\"C:/agy/forge/hooks/agy-deny.mjs\\"');
+    // it explains the relocatability property (survives copy/relocation)
+    expect(guide.toLowerCase()).toMatch(/relocatab/);
+    // and it names the in-place discovery flow as the recommended/primary path,
+    // with a post-install validation step for the copy-install (--out) flow.
+    expect(guide.toLowerCase()).toMatch(/discovery flow[^.]*recommended|recommended[^.]*(primary|discovery)/);
+    expect(guide).toContain('agy plugin validate forge');
+  });
+
+  it('AC-307.2: the emitter surfaces the discovery-primary + validate advisory only under --out', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agy-emit-'));
+    const lines = [];
+    // viaOut=true (staged for `agy plugin install`) -> advisory printed
+    const withOut = await emitAgyPlugin({ destRoot: join(dir, 'staged'), viaOut: true, log: (m) => lines.push(m) });
+    expect(withOut.ok).toBe(true);
+    const out = lines.join('\n');
+    expect(out).toMatch(/relocatable/);
+    expect(out).toMatch(/discovery flow \(no --out\) is the recommended/);
+    expect(out).toContain('agy plugin validate forge');
+
+    // default flow (no --out) -> no --out advisory noise
+    const quiet = [];
+    await emitAgyPlugin({ destRoot: join(dir, 'default'), viaOut: false, log: (m) => quiet.push(m) });
+    expect(quiet.join('\n')).not.toContain('NOTE (--out)');
+  });
+
+  it('AC-307.1: pure builders emit relative paths regardless of any dest argument', () => {
+    // no dest is threaded in anymore; a stray arg must not resurface an absolute path
+    const mcp = buildMcpConfig({ hasForgeCore: true });
+    for (const s of Object.values(mcp.mcpServers)) {
+      expect(s.args.every((a) => !isAbsolute(a) && !/[A-Za-z]:/.test(a))).toBe(true);
+    }
+    const hooks = buildHooksConfig();
+    const cmd = hooks['forge-safety'].PreToolUse[0].hooks[0].command;
+    expect(cmd).not.toMatch(/[A-Za-z]:[\\/]/);
+    expect(cmd).toBe('node "hooks/agy-deny.mjs"');
   });
 });
