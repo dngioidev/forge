@@ -2,13 +2,14 @@
 # https://dngioidev.github.io/forge/ (ticket #371, OSS flip epic #209).
 #
 # Deploy-from-Actions model: the page is a self-contained static file, so this
-# workflow just uploads site/ as the Pages artifact and deploys it. It runs on
-# the free self-hosted forge-local runner (like verify.yml), and only on pushes
-# to main that touch the site or this workflow.
+# workflow just uploads site/ as the Pages artifact and deploys it. It runs on a
+# free GitHub-hosted runner (public repo), and only on pushes to main that touch
+# the site or this workflow.
 #
-# One-time owner step: Settings -> Pages -> Source = "GitHub Actions". Pages
-# publishing requires the repository to be public (free) or on a plan that
-# allows private Pages; until the OSS flip (#209) the deploy job may no-op.
+# configure-pages runs with `enablement: true`, so it enables Pages + sets the
+# GitHub-Actions build type if it isn't already — the first public deploy failed
+# because Pages was on the legacy (deploy-from-branch) build type. No manual
+# Settings step is required, and forks deploy first-try.
 name: pages
 
 on:
@@ -32,13 +33,18 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, linux, forge-local]
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          # Self-enable Pages + set the GitHub-Actions build type if it isn't
+          # already, so the deploy can't 404 on a legacy/branch build type and
+          # forks work first-try.
+          enablement: true
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site

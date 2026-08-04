@@ -1,15 +1,14 @@
-# forge local self-hosted-runner CI (ADR-0005 decisions 3 + 4).
+# forge CI — runs on free GitHub-hosted runners.
 #
-# PRIVATE REPOS ONLY. A self-hosted runner must never process fork PRs — forge:init
-# --runner refuses on a public repo, and this workflow keeps the local `forge-local`
-# runner off any untrusted code path (see docs/security & GitHub's self-hosted-runner
-# security guidance).
+# The repo is PUBLIC, so GitHub Actions minutes are free and unlimited and the
+# runners are ephemeral and isolated — the correct, fork-safe posture (a
+# self-hosted runner must never process untrusted fork PRs). Linux legs run on
+# `ubuntu-latest`; the two legs that need a real Windows host (the Windows test
+# matrix and the cockpit's ConPTY/pywinpty suite) run on `windows-latest`.
 #
-# Cost model: Linux legs run for $0 on the local ephemeral container runner
-# (`forge-local` label). The Windows leg runs as a normal per-PR check on hosted
-# `windows-latest` (billed per PR). When a native Windows host runner is present
-# (the ADR-0005 default), switch the `test-windows` job's `runs-on` to
-# `[self-hosted, windows, forge-local]` to make it free too — see runner/README.md.
+# Private forks that want $0 self-hosted runs can swap the `runs-on` values back
+# to `[self-hosted, <os>, forge-local]` — see runner/README.md — but that is
+# only safe on a private repo.
 name: verify
 
 on:
@@ -25,11 +24,11 @@ permissions:
   contents: read
 
 jobs:
-  # Linux legs — every PR + push, on the free local ephemeral runner.
+  # Linux legs — every PR + push.
   test-linux:
     permissions:
       contents: read
-    runs-on: [self-hosted, linux, forge-local]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
@@ -40,14 +39,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
 
-  # Windows leg - runs natively on the self-hosted Windows runner (forge-local),
-  # every push + PR, so it's free like the Linux legs. If no native Windows runner
-  # is running, set forge.json runner.windows to "hosted" and flip this back to
-  # windows-latest (billed per-PR).
+  # Windows leg — the same suite on a real Windows host, every push + PR.
   test-windows:
     permissions:
       contents: read
-    runs-on: [self-hosted, windows, forge-local]
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
@@ -55,36 +51,16 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      # The self-hosted runner service does not inherit the full Machine PATH
-      # (its AppEnvironmentExtra replaces rather than extends it), so each step
-      # (a fresh shell) prepends the Machine PATH itself. Without System32 et al.
-      # on PATH, vitest's worker-teardown spawn fails with "The system cannot
-      # find the path specified." and exits 1 even though all tests pass (#278).
-      # Machine PATH goes in FRONT of the step $env:PATH, which already resolves
-      # node/pnpm from setup-node — keep that on the end.
-      - name: Install deps (pnpm)
-        shell: powershell
-        run: |
-          $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + $env:PATH
-          pnpm install --frozen-lockfile
-      - name: Run pnpm verify
-        shell: powershell
-        run: |
-          $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + $env:PATH
-          pnpm verify
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
 
-  # actionlint runs as a pinned, checksum-verified BINARY — not a docker://
-  # container action. On the containerized forge-local runner a container action
-  # is bind-mounted `-v .../_work/forge/forge:/github/workspace`, but that host
-  # path only exists inside the runner container, not on the host docker daemon
-  # the sibling container talks to → /github/workspace is empty and actionlint
-  # aborts with "no project was found in any parent directories" (see #238).
-  # Installing the binary and running it in the job's own workspace avoids the
-  # nested bind-mount entirely while keeping supply-chain integrity via SHA-256.
+  # actionlint runs as a pinned, checksum-verified BINARY (not a docker:// action)
+  # for supply-chain integrity: the release tarball is fetched at a known version
+  # and SHA-256-verified before it runs.
   actionlint:
     permissions:
       contents: read
-    runs-on: [self-hosted, linux, forge-local]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install actionlint (pinned v1.7.7, SHA-256 verified)
@@ -103,7 +79,7 @@ jobs:
   plugin-validate:
     permissions:
       contents: read
-    runs-on: [self-hosted, linux, forge-local]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -120,7 +96,7 @@ jobs:
   license:
     permissions:
       contents: read
-    runs-on: [self-hosted, linux, forge-local]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
@@ -131,37 +107,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node plugin/scripts/gates/license.mjs
 
-  # Cockpit (tools/runner-ui/) Python suite — Windows self-hosted leg only.
-  # #355 retired the PySide6 desktop UI, so this is now a cores-only, framework-
-  # agnostic Python suite (no Qt, no offscreen platform). It still runs on the
-  # native Windows runner: the Linux leg is an ephemeral Docker container with no
-  # Python, so this suite is deliberately NOT run there (ADR-0006/0008 #272/#355).
+  # Cockpit (tools/runner-ui/) Python suite — on a real Windows host so the
+  # ConPTY/`pywinpty` terminal path (win32-gated in pyproject) is exercised, not
+  # skipped. uv provisions the interpreter + deps from the committed uv.lock.
   cockpit-python:
     permissions:
       contents: read
-    runs-on: [self-hosted, windows, forge-local]
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: tools/runner-ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Show uv + resolved Python
-        # The self-hosted runner service does not inherit the full Machine PATH,
-        # so each step (a fresh shell) prepends the known toolchain dirs itself:
-        # Python 3.12 + uv (WinGet Links). uv then discovers/provisions the
-        # interpreter, so we never call bare `python` here.
-        shell: powershell
-        run: |
-          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
-          uv --version
-          uv python find
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
       - name: Sync deps from committed uv.lock
-        shell: powershell
-        run: |
-          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
-          uv sync --frozen
-      - name: Run cockpit test suite (cores-only)
-        shell: powershell
-        run: |
-          $env:PATH = "C:\Program Files\Python312;C:\Program Files\Python312\Scripts;C:\Program Files\WinGet\Links;$env:PATH"
-          uv run pytest -q
+        run: uv sync --frozen
+      - name: Run cockpit test suite (cores-only + ConPTY bridge)
+        run: uv run pytest -q

@@ -81,15 +81,15 @@ describe('consumer CI template (AC-3.5)', () => {
 describe('license gate CI wiring (#343)', () => {
   const ALLOWLIST_IDS = ['MIT', 'ISC', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'BlueOak-1.0.0', '0BSD', 'Unlicense', 'CC0-1.0'];
 
-  it('AC-343.1: forge\'s own verify.yml has a `license` job that runs the gate script on the self-hosted linux runner', async () => {
+  it('AC-343.1: forge\'s own verify.yml has a `license` job that runs the gate script on the hosted linux runner', async () => {
     const wf = await readFile(join(REPO_ROOT, '.github', 'workflows', 'verify.yml'), 'utf8');
     // A dedicated job keyed `license:` exists.
     expect(wf).toMatch(/^ {2}license:$/m);
     // It runs the in-repo gate script directly (the script lives in this repo).
     expect(wf).toContain('node plugin/scripts/gates/license.mjs');
-    // Modelled on the other jobs: same free self-hosted linux runner + pinned actions.
+    // Modelled on the other jobs: free GitHub-hosted linux runner (#375) + pinned actions.
     const licenseJob = wf.slice(wf.indexOf('\n  license:'));
-    expect(licenseJob).toContain('runs-on: [self-hosted, linux, forge-local]');
+    expect(licenseJob).toContain('runs-on: ubuntu-latest');
     expect(licenseJob).toContain('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1');
     expect(licenseJob).toContain('pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda');
     expect(licenseJob).toContain('actions/setup-node@820762786026740c76f36085b0efc47a31fe5020');
