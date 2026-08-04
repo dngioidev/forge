@@ -88,9 +88,17 @@ async function isForgeOwned(dest) {
  * #307: paths are plugin-root-RELATIVE, never absolute. `agy plugin install <dir>`
  * COPIES the package to `~/.gemini/config/plugins/forge/`, so any absolute literal
  * computed at emit time is stale post-copy (delete the `--out` dir and the servers
- * break). A relative path is resolved against the plugin root wherever the package
- * lands — the same relocation model the skill/command `${CLAUDE_PLUGIN_ROOT}` rewrite
- * relies on — so the package is relocatable and the discovery + install flows agree.
+ * break) — and never even resolves for the copied install, whose real root the
+ * emitter cannot know. A relative path is the only emit-time form that can survive
+ * the copy: it resolves against the plugin root wherever the package lands.
+ *
+ * Grounding caveat: unlike the hooks CWD (documented — see buildHooksConfig), agy's
+ * MCP-server subprocess CWD is NOT independently confirmed in the agy docs, and the
+ * #174 spike validated `mcp_config.json` only with absolute paths. Relative is the
+ * strictly-better bet (absolute is provably broken for the copy flow), but per
+ * ADR-0007's "re-verify host config against the installed version" rule the operator
+ * is told to run `agy plugin validate` after install — see the emit advisory and
+ * docs/guides/cross-gai.md. Live confirmation lands with the #290 dogfood.
  */
 export function buildMcpConfig({ hasForgeCore = false } = {}) {
   const mcpServers = {
@@ -194,10 +202,15 @@ const COMPONENT_DIRS = ['skills', 'agents', 'commands', 'mcp', 'hooks', 'scripts
 
 /**
  * Emit the agy plugin package into `destRoot`. Fully manages its own output dir
- * (a clean re-emit each run). Paths in the generated configs are computed from the
- * resolved dest — no hardcoded install path.
+ * (a clean re-emit each run). The generated configs carry plugin-root-relative
+ * paths (#307) so the package is relocatable — no hardcoded install path.
+ *
+ * `viaOut` (set when the operator passed `--out`, i.e. a package destined to be
+ * `agy plugin install`-ed) surfaces the post-install validation advisory: the
+ * in-place discovery flow (no `--out`) is the verified-primary path, and MCP-arg
+ * resolution should be confirmed with `agy plugin validate` after a copy install.
  */
-export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = process.cwd(), log = () => {} } = {}) {
+export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = process.cwd(), viaOut = false, log = () => {} } = {}) {
   if (!destRoot) return { ok: false, error: 'destRoot is required' };
   srcRoot = resolve(srcRoot);
   const dest = resolve(destRoot);
@@ -258,8 +271,16 @@ export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = pr
   log(`agy: emitted forge plugin package at ${dest}`);
   log(`agy: wrote ${written.join(', ')}${hasForgeCore ? ' (forge-graph + forge-core)' : ' (forge-graph)'}`);
   log(`agy: rewrote \${CLAUDE_PLUGIN_ROOT} -> plugin-root-relative in ${rewritten} emitted skill/command file(s)`);
-  log('agy: install with  agy plugin install "' + dest + '" (or discover under .agents/plugins/forge/)');
-  return { ok: true, dest, written, hasForgeCore, rewritten };
+  log('agy: config paths are plugin-root-relative -> the package is relocatable (survives `agy plugin install` copy + `--out` deletion)');
+  log('agy: install with  agy plugin install "' + dest + '" (or discover in place under .agents/plugins/forge/)');
+  // #307: the in-place discovery flow (no --out) is the verified-primary path. When
+  // staging for a copy install, tell the operator to confirm the emitted config
+  // resolves on their agy build — MCP-arg CWD is not independently doc-confirmed.
+  if (viaOut) {
+    log('agy: NOTE (--out): the in-place discovery flow (no --out) is the recommended/verified-primary path.');
+    log('agy: NOTE (--out): after `agy plugin install`, run `agy plugin validate forge` to confirm the MCP server + hooks resolve from the copied plugin root.');
+  }
+  return { ok: true, dest, written, hasForgeCore, rewritten, viaOut };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
@@ -267,7 +288,7 @@ if (isMain) {
   const argv = process.argv.slice(2);
   const outIdx = argv.indexOf('--out');
   const destRoot = outIdx >= 0 ? resolve(process.cwd(), argv[outIdx + 1]) : join(process.cwd(), '.agents', 'plugins', 'forge');
-  emitAgyPlugin({ destRoot, log: console.log })
+  emitAgyPlugin({ destRoot, viaOut: outIdx >= 0, log: console.log })
     .then((res) => { if (!res.ok) { console.error(`agy emit failed: ${res.error}`); process.exit(1); } process.exit(0); })
     .catch((err) => { console.error(`agy emit failed: ${err.message}`); process.exit(1); });
 }

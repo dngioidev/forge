@@ -427,8 +427,29 @@ describe('AC-307: the emitted package is relocatable — survives `agy plugin in
     // it must NOT present the old absolute-install-path config as the emitted shape
     expect(guide).not.toContain('"C:/agy/forge/mcp/graph/server.mjs"');
     expect(guide).not.toContain('node \\"C:/agy/forge/hooks/agy-deny.mjs\\"');
-    // and it explains the relocatability property (survives copy/relocation)
-    expect(guide.toLowerCase()).toMatch(/relocatab|relative/);
+    // it explains the relocatability property (survives copy/relocation)
+    expect(guide.toLowerCase()).toMatch(/relocatab/);
+    // and it names the in-place discovery flow as the recommended/primary path,
+    // with a post-install validation step for the copy-install (--out) flow.
+    expect(guide.toLowerCase()).toMatch(/discovery flow[^.]*recommended|recommended[^.]*(primary|discovery)/);
+    expect(guide).toContain('agy plugin validate forge');
+  });
+
+  it('AC-307.2: the emitter surfaces the discovery-primary + validate advisory only under --out', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agy-emit-'));
+    const lines = [];
+    // viaOut=true (staged for `agy plugin install`) -> advisory printed
+    const withOut = await emitAgyPlugin({ destRoot: join(dir, 'staged'), viaOut: true, log: (m) => lines.push(m) });
+    expect(withOut.ok).toBe(true);
+    const out = lines.join('\n');
+    expect(out).toMatch(/relocatable/);
+    expect(out).toMatch(/discovery flow \(no --out\) is the recommended/);
+    expect(out).toContain('agy plugin validate forge');
+
+    // default flow (no --out) -> no --out advisory noise
+    const quiet = [];
+    await emitAgyPlugin({ destRoot: join(dir, 'default'), viaOut: false, log: (m) => quiet.push(m) });
+    expect(quiet.join('\n')).not.toContain('NOTE (--out)');
   });
 
   it('AC-307.1: pure builders emit relative paths regardless of any dest argument', () => {
