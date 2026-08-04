@@ -36,9 +36,13 @@ containing `hooks.json` = the plugin root).
 plugin-root-relative, forward-slashed paths (`mcp/graph/server.mjs`,
 `node "hooks/agy-deny.mjs"`). The emitter's `emitAgyPlugin` caller stops passing
 `dest` into the builders. No absolute staging/install path is written into either
-generated config.
+generated config. `emitAgyPlugin` takes a `viaOut` flag (threaded from the CLI and
+from `init.mjs`) so a copy-install staging (`--out`) surfaces the discovery-primary
++ `agy plugin validate` advisory; the hooks CWD model is doc-grounded, the MCP-arg
+CWD is caveated pending live verification.
 
 **Files:** plugin/scripts/agy/emit.mjs
+**Files:** plugin/scripts/init.mjs
 
 ## Task 2 (test): relocatability + updated builder assertions (AC-307.1)
 
