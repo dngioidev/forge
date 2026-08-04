@@ -80,13 +80,16 @@ C:\agy\forge\
   bin/                 <- the forge dispatcher
 ```
 
-Three things are agy-specific and **generated** (not copied), with paths
-computed from the resolved `--out` directory — never hardcoded to one install:
+Three things are agy-specific and **generated** (not copied). Their internal
+references are **plugin-root-relative**, so the package is **relocatable** — it
+keeps working after `agy plugin install` copies it to
+`~/.gemini/config/plugins/forge/` and after you delete the original `--out` dir
+([#307](https://github.com/dngioidev/forge/issues/307)):
 
 1. **`plugin.json`** — the co-located marker. The emitter strips the Claude-only
    `$schema` and `mcpServers` keys agy ignores.
-2. **`mcp_config.json`** — the MCP registration (see Step 2).
-3. **`hooks.json`** — the hook registration (see Step 3).
+2. **`mcp_config.json`** — the MCP registration, relative paths (see Step 2).
+3. **`hooks.json`** — the hook registration, relative commands (see Step 3).
 
 Note the copied `hooks/` tree also carries the original Claude-format
 `hooks/hooks.json` (Claude's `"hooks"` wrapper, `"Bash"` matcher). agy ignores it
@@ -112,19 +115,25 @@ were declared only in `plugin.json`. agy reads a sibling plugin-root
   "mcpServers": {
     "forge-graph": {
       "command": "node",
-      "args": ["C:/agy/forge/mcp/graph/server.mjs"]
+      "args": ["mcp/graph/server.mjs"]
     },
     "forge-core": {
       "command": "node",
-      "args": ["C:/agy/forge/mcp/forge/server.mjs"]
+      "args": ["mcp/forge/server.mjs"]
     }
   }
 }
 ```
 
-- Paths are computed from the resolved `--out` dir and written with forward
-  slashes (safe on Windows, and agy's env-expansion is buggy so absolute literal
-  paths are used).
+- Paths are **plugin-root-relative** and written with forward slashes (safe on
+  Windows). They are deliberately **not** absolute: `agy plugin install` copies
+  the package to `~/.gemini/config/plugins/forge/`, so an absolute literal
+  computed at emit time would be stale after the copy — delete the `--out` dir and
+  the servers would break ([#307](https://github.com/dngioidev/forge/issues/307)).
+  A relative path resolves against the plugin root wherever the package lands, so
+  the same file works in the staging dir, after `agy plugin install`, and under
+  `.agents/plugins/forge/`. agy's env-expansion is buggy, which is why a
+  `${...}`-style token is avoided in favour of a plain relative path.
 - `forge-graph` is always registered. `forge-core` (the 9-tool board/gate/
   autopilot server from [#288](https://github.com/dngioidev/forge/issues/288)) is
   registered **only when its server file exists** in the source — the emitter
@@ -162,7 +171,7 @@ The generated file:
       {
         "matcher": "run_command",
         "hooks": [
-          { "type": "command", "command": "node \"C:/agy/forge/hooks/agy-deny.mjs\"", "timeout": 10 }
+          { "type": "command", "command": "node \"hooks/agy-deny.mjs\"", "timeout": 10 }
         ]
       }
     ]
@@ -172,13 +181,20 @@ The generated file:
       {
         "matcher": "run_command",
         "hooks": [
-          { "type": "command", "command": "node \"C:/agy/forge/hooks/agy-capture.mjs\"", "timeout": 10 }
+          { "type": "command", "command": "node \"hooks/agy-capture.mjs\"", "timeout": 10 }
         ]
       }
     ]
   }
 }
 ```
+
+The hook `command` is **plugin-root-relative**: agy runs a hook command with its
+working directory set to the directory containing `hooks.json` (= the plugin
+root), so `hooks/agy-deny.mjs` resolves wherever the package is installed. Like
+`mcp_config.json`, this keeps the safety + capture hooks working after
+`agy plugin install` copies the package and the original `--out` dir is deleted
+([#307](https://github.com/dngioidev/forge/issues/307)).
 
 ### The host-mode I/O shims
 
