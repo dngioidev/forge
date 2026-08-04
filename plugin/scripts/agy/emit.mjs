@@ -60,8 +60,10 @@ function isAtOrUnder(parent, child) {
  *   - the current working dir or any ancestor of it (`--out .` / `--out ..` would
  *     delete the operator's working tree, incl. .git);
  *   - a dir that contains the forge plugin source;
- *   - a path with shell-unsafe characters (they would also break the hooks.json
- *     command string, which agy's contract requires to be a quoted string).
+ *   - a path with shell-unsafe characters (the dest is still interpolated into the
+ *     `agy plugin install "<dest>"` install hint and the cp/mkdir operations; the
+ *     generated hooks.json command is now a fixed plugin-root-relative literal (#307),
+ *     so it no longer carries the dest and is not an injection sink).
  */
 export function unsafeDestReason(dest, { cwd, srcRoot }) {
   const d = resolve(dest);
