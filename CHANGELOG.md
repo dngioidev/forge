@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0 — 2026-08-04
+
+**The open-source flip.** forge is now public under the MIT License — a portable AI delivery pipeline that installs into Claude Code: 20 pipeline skills across 5 lanes, a 12-role agent roster, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, and a graph-RAG index. Built entirely by its own pipeline across the 0.x line, and license-clean — npm *and* Python, zero non-permissive dependencies, enforced by a gate in CI. See the [release notes](https://github.com/dngioidev/forge/releases/tag/v1.0.0) for the full announcement.
+
+### Features
+
+- GitHub Pages landing page to introduce forge (#371) (#372) ([#371](https://github.com/dngioidev/forge/issues/371) [#372](https://github.com/dngioidev/forge/issues/372))
+
 ## v0.20.0 — 2026-08-04
 
 ### Fixes
