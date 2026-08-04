@@ -7,7 +7,10 @@
 <meta name="description" content="forge is a portable AI delivery pipeline that runs inside Claude Code: 20 pipeline skills, a 12-role agent roster, board automation, mechanical ship gates, and a graph-RAG index. Ticketed, planned, reviewed, gated, merged." />
 <style>
   :root{
-    /* Smithy tokens — dark-only, by design (a forge is dark) */
+    /* Smithy tokens — dark-only, by design (a forge is dark).
+       Declared in docs/design/2026-08-04-landing.md Token delta; the four
+       page-introduced tokens (iron-plate-2, iron-seam-lit, ink-faint,
+       ink-bright) graduate into plugin/themes/forge.json as a follow-up. */
     --iron-pit:#0d0b09;
     --iron-bg:#161310;
     --iron-plate:#1f1a15;
@@ -17,6 +20,7 @@
     --ink-ash:#d8d2c8;
     --ink-smoke:#a49a87;
     --ink-faint:#6f665a;
+    --ink-bright:#f4efe7;
     --claude:#f0813f;
     --heat-spark:#ffd166;
     --heat-ember:#ff7a45;
@@ -47,7 +51,7 @@
   }
 
   a{color:inherit;text-decoration:none}
-  ::selection{background:rgba(240,129,63,.28);color:#fff}
+  ::selection{background:color-mix(in srgb,var(--claude) 28%,transparent);color:var(--ink-bright)}
   :focus-visible{outline:2px solid var(--claude);outline-offset:3px;border-radius:2px}
 
   .wrap{width:100%;max-width:var(--wrap);margin:0 auto;padding:0 24px}
@@ -67,7 +71,7 @@
   /* ---------- header ---------- */
   header{
     position:sticky;top:0;z-index:50;
-    background:rgba(13,11,9,.72);
+    background:color-mix(in srgb,var(--iron-pit) 72%,transparent);
     backdrop-filter:blur(10px);
     border-bottom:1px solid var(--iron-seam);
   }
@@ -75,14 +79,16 @@
   .brand{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-weight:700;font-size:19px;letter-spacing:-.02em}
   .brand .mark{
     width:26px;height:26px;flex:none;border-radius:5px;
-    background:radial-gradient(120% 120% at 30% 20%,var(--heat-spark),var(--claude) 42%,#7a3a18 100%);
-    box-shadow:0 0 18px rgba(240,129,63,.45),inset 0 1px 1px rgba(255,220,150,.6);
+    background:radial-gradient(120% 120% at 30% 20%,var(--heat-spark),var(--claude) 42%,var(--heat-warm) 100%);
+    box-shadow:0 0 18px color-mix(in srgb,var(--claude) 45%,transparent),inset 0 1px 1px color-mix(in srgb,var(--heat-spark) 60%,transparent);
     position:relative;
   }
   .brand .mark::after{content:"";position:absolute;inset:7px;border-radius:2px;background:var(--iron-pit);opacity:.55;
     -webkit-mask:linear-gradient(-45deg,#000 40%,transparent 42%);mask:linear-gradient(-45deg,#000 40%,transparent 42%)}
   .nav-links{display:flex;align-items:center;gap:28px;font-family:var(--mono);font-size:13px;color:var(--ink-smoke)}
   .nav-links a{transition:color .15s}
+  /* plain nav links get a ≥40px tap target (a11y contract); the pill/CTA carry their own padding */
+  .nav-links a:not(.verpill):not(.cta-mini){padding:11px 2px}
   .nav-links a:hover{color:var(--ink-ash)}
   .verpill{
     font-family:var(--mono);font-size:12px;letter-spacing:.04em;
@@ -99,7 +105,7 @@
   .hero::after{ /* forge glow at the base */
     content:"";position:absolute;left:50%;bottom:-40%;transform:translateX(-50%);
     width:120%;height:70%;z-index:0;pointer-events:none;
-    background:radial-gradient(closest-side,rgba(240,129,63,.20),rgba(240,129,63,.05) 55%,transparent 72%);
+    background:radial-gradient(closest-side,color-mix(in srgb,var(--claude) 20%,transparent),color-mix(in srgb,var(--claude) 5%,transparent) 55%,transparent 72%);
   }
   .hero .wrap{position:relative;z-index:1;padding-top:96px;padding-bottom:96px}
   .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
@@ -113,12 +119,12 @@
     letter-spacing:-.035em;
     margin:20px 0 0;
     text-wrap:balance;
-    color:#f4efe7;
+    color:var(--ink-bright);
   }
   h1 .lit{
     background:linear-gradient(180deg,var(--heat-spark),var(--claude) 70%);
     -webkit-background-clip:text;background-clip:text;color:transparent;
-    text-shadow:0 0 34px rgba(240,129,63,.25);
+    text-shadow:0 0 34px color-mix(in srgb,var(--claude) 25%,transparent);
   }
   .lede{color:var(--ink-smoke);font-size:1.16rem;max-width:46ch;margin:22px 0 0}
   .lede b{color:var(--ink-ash);font-weight:600}
@@ -130,10 +136,10 @@
     transition:transform .12s,filter .15s,border-color .15s,background .15s;
   }
   .btn:active{transform:translateY(1px)}
-  .btn-primary{background:var(--claude);color:var(--iron-pit);box-shadow:0 8px 30px -10px rgba(240,129,63,.6)}
+  .btn-primary{background:var(--claude);color:var(--iron-pit);box-shadow:0 8px 30px -10px color-mix(in srgb,var(--claude) 60%,transparent)}
   .btn-primary:hover{filter:brightness(1.08)}
   .btn-ghost{background:transparent;color:var(--ink-ash);border:1px solid var(--iron-seam-lit)}
-  .btn-ghost:hover{border-color:var(--claude);color:#fff}
+  .btn-ghost:hover{border-color:var(--claude);color:var(--ink-bright)}
 
   .hero-meta{display:flex;gap:24px;margin-top:30px;flex-wrap:wrap;font-family:var(--mono);font-size:12.5px;color:var(--ink-faint)}
   .hero-meta span{display:inline-flex;align-items:center;gap:7px}
@@ -147,10 +153,10 @@
   }
   .term-bar{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--iron-seam);background:var(--iron-plate-2)}
   .term-bar .b{width:11px;height:11px;border-radius:50%;background:var(--iron-seam-lit)}
-  .term-bar .b:first-child{background:#5a4636}
+  .term-bar .b:first-child{background:var(--iron-seam-lit)}
   .term-title{margin-left:8px;font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
   .term-body{padding:18px 18px 20px;font-family:var(--mono);font-size:13.2px;line-height:1.85;overflow-x:auto}
-  .term-body .cmd{color:#f4efe7}
+  .term-body .cmd{color:var(--ink-bright)}
   .term-body .cmd::before{content:"$ ";color:var(--claude)}
   .term-body .muted{color:var(--ink-faint)}
   .term-body .ok{color:var(--success)}
@@ -165,14 +171,14 @@
   section{padding:88px 0}
   @media (max-width:720px){section{padding:60px 0}}
   .sec-head{max-width:60ch}
-  h2{font-family:var(--mono);font-weight:700;font-size:clamp(1.6rem,3.2vw,2.3rem);letter-spacing:-.03em;line-height:1.1;margin:14px 0 0;color:#f2ede5;text-wrap:balance}
+  h2{font-family:var(--mono);font-weight:700;font-size:clamp(1.6rem,3.2vw,2.3rem);letter-spacing:-.03em;line-height:1.1;margin:14px 0 0;color:var(--ink-bright);text-wrap:balance}
   .sec-sub{color:var(--ink-smoke);margin:16px 0 0;font-size:1.08rem;max-width:56ch}
 
   /* thesis */
   .thesis{background:var(--iron-bg);border-top:1px solid var(--iron-seam);border-bottom:1px solid var(--iron-seam)}
   .thesis .wrap{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center}
   @media (max-width:820px){.thesis .wrap{grid-template-columns:1fr;gap:28px}}
-  .thesis .big{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.1rem);line-height:1.22;letter-spacing:-.02em;color:#f2ede5;text-wrap:balance}
+  .thesis .big{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.1rem);line-height:1.22;letter-spacing:-.02em;color:var(--ink-bright);text-wrap:balance}
   .thesis .big em{color:var(--claude);font-style:normal}
   .thesis p{color:var(--ink-smoke);margin:0}
   .thesis p + p{margin-top:16px}
@@ -202,7 +208,9 @@
     background:linear-gradient(180deg,var(--iron-plate-2),var(--iron-plate));
     border:1px solid var(--iron-seam);border-radius:10px;padding:16px;
     box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+    transition:border-color .18s,transform .18s;
   }
+  .gate:hover{border-color:var(--iron-seam-lit);transform:translateY(-2px)}
   .gate .stamp{font-family:var(--mono);font-weight:700;font-size:14px;color:var(--ink-ash);display:flex;align-items:center;gap:8px}
   .gate .stamp .k{color:var(--success);font-size:13px}
   .gate p{margin:9px 0 0;font-size:13.5px;color:var(--ink-smoke);line-height:1.5}
@@ -216,15 +224,15 @@
   .roster-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:40px}
   @media (max-width:820px){.roster-grid{grid-template-columns:repeat(2,1fr)}}
   @media (max-width:520px){.roster-grid{grid-template-columns:1fr}}
-  .role{background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:9px;padding:14px 15px;transition:border-color .18s}
-  .role:hover{border-color:var(--iron-seam-lit)}
+  .role{background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:9px;padding:14px 15px;transition:border-color .18s,transform .18s}
+  .role:hover{border-color:var(--iron-seam-lit);transform:translateY(-2px)}
   .role .rn{font-family:var(--mono);font-weight:700;font-size:13.5px;color:var(--ink-ash)}
   .role .rd{font-size:13px;color:var(--ink-smoke);margin-top:4px;line-height:1.45}
 
   /* proof / stats */
   .proof{background:var(--iron-bg);border-top:1px solid var(--iron-seam);border-bottom:1px solid var(--iron-seam)}
   .proof .wrap{text-align:center}
-  .proof .big{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.15rem);line-height:1.25;letter-spacing:-.02em;color:#f2ede5;max-width:24ch;margin:14px auto 0;text-wrap:balance}
+  .proof .big{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.15rem);line-height:1.25;letter-spacing:-.02em;color:var(--ink-bright);max-width:24ch;margin:14px auto 0;text-wrap:balance}
   .proof .big em{color:var(--claude);font-style:normal}
   .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:48px}
   @media (max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}}
@@ -252,6 +260,7 @@
   .foot{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:flex-start}
   .foot .brand{font-size:17px}
   .foot-links{display:flex;gap:34px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--ink-smoke)}
+  .foot-links a{padding:8px 0}
   .foot-links a:hover{color:var(--ink-ash)}
   .foot-col{display:flex;flex-direction:column;gap:9px}
   .foot-col .h{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:2px}
@@ -293,7 +302,7 @@
           <a class="btn btn-ghost" href="https://github.com/dngioidev/forge">Read the handbook</a>
         </div>
         <div class="hero-meta">
-          <span><i class="dot"></i>MIT licensed</span>
+          <span><i class="dot" aria-hidden="true"></i>MIT licensed</span>
           <span>Claude Code + Antigravity</span>
           <span>0 non-permissive deps</span>
         </div>
