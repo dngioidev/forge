@@ -1,0 +1,46 @@
+# GitHub Pages — publish the forge landing page (site/) to
+# https://dngioidev.github.io/forge/ (ticket #371, OSS flip epic #209).
+#
+# Deploy-from-Actions model: the page is a self-contained static file, so this
+# workflow just uploads site/ as the Pages artifact and deploys it. It runs on
+# the free self-hosted forge-local runner (like verify.yml), and only on pushes
+# to main that touch the site or this workflow.
+#
+# One-time owner step: Settings -> Pages -> Source = "GitHub Actions". Pages
+# publishing requires the repository to be public (free) or on a plan that
+# allows private Pages; until the OSS flip (#209) the deploy job may no-op.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Least privilege + the tokens the Pages deploy needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel an in-flight deploy; queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, forge-local]
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
