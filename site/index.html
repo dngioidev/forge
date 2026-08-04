@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>forge — turn a backlog into merged, gated pull requests</title>
+<meta name="description" content="forge is a portable AI delivery pipeline that runs inside Claude Code: 20 pipeline skills, a 12-role agent roster, board automation, mechanical ship gates, and a graph-RAG index. Ticketed, planned, reviewed, gated, merged." />
+<style>
+  :root{
+    /* Smithy tokens — dark-only, by design (a forge is dark) */
+    --iron-pit:#0d0b09;
+    --iron-bg:#161310;
+    --iron-plate:#1f1a15;
+    --iron-plate-2:#241e18;
+    --iron-seam:#3a322a;
+    --iron-seam-lit:#4d4236;
+    --ink-ash:#d8d2c8;
+    --ink-smoke:#a49a87;
+    --ink-faint:#6f665a;
+    --claude:#f0813f;
+    --heat-spark:#ffd166;
+    --heat-ember:#ff7a45;
+    --heat-warm:#b56a3c;
+    --success:#46a758;
+
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono","SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+
+    --heat-line:linear-gradient(90deg,transparent,var(--heat-spark),var(--heat-ember),var(--claude),var(--heat-warm),transparent);
+    --wrap:1080px;
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+
+  body{
+    margin:0;
+    background:var(--iron-pit);
+    color:var(--ink-ash);
+    font-family:var(--sans);
+    font-size:17px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+
+  a{color:inherit;text-decoration:none}
+  ::selection{background:rgba(240,129,63,.28);color:#fff}
+  :focus-visible{outline:2px solid var(--claude);outline-offset:3px;border-radius:2px}
+
+  .wrap{width:100%;max-width:var(--wrap);margin:0 auto;padding:0 24px}
+
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:12px;
+    letter-spacing:.22em;
+    text-transform:uppercase;
+    color:var(--ink-smoke);
+    display:inline-flex;align-items:center;gap:10px;
+  }
+  .eyebrow::before{content:"";width:22px;height:1px;background:var(--claude);display:inline-block}
+
+  .heat-rule{height:1px;width:100%;background:var(--heat-line);opacity:.55;border:0;margin:0}
+
+  /* ---------- header ---------- */
+  header{
+    position:sticky;top:0;z-index:50;
+    background:rgba(13,11,9,.72);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--iron-seam);
+  }
+  .nav{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .brand{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-weight:700;font-size:19px;letter-spacing:-.02em}
+  .brand .mark{
+    width:26px;height:26px;flex:none;border-radius:5px;
+    background:radial-gradient(120% 120% at 30% 20%,var(--heat-spark),var(--claude) 42%,#7a3a18 100%);
+    box-shadow:0 0 18px rgba(240,129,63,.45),inset 0 1px 1px rgba(255,220,150,.6);
+    position:relative;
+  }
+  .brand .mark::after{content:"";position:absolute;inset:7px;border-radius:2px;background:var(--iron-pit);opacity:.55;
+    -webkit-mask:linear-gradient(-45deg,#000 40%,transparent 42%);mask:linear-gradient(-45deg,#000 40%,transparent 42%)}
+  .nav-links{display:flex;align-items:center;gap:28px;font-family:var(--mono);font-size:13px;color:var(--ink-smoke)}
+  .nav-links a{transition:color .15s}
+  .nav-links a:hover{color:var(--ink-ash)}
+  .verpill{
+    font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+    color:var(--heat-spark);border:1px solid var(--iron-seam-lit);
+    padding:3px 9px;border-radius:100px;background:var(--iron-plate)
+  }
+  .nav .cta-mini{color:var(--iron-pit);background:var(--claude);padding:7px 14px;border-radius:6px;font-weight:700;transition:filter .15s}
+  .nav .cta-mini:hover{filter:brightness(1.08)}
+  @media (max-width:720px){.nav-links a:not(.verpill):not(.cta-mini){display:none}}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--iron-seam)}
+  #embers{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}
+  .hero::after{ /* forge glow at the base */
+    content:"";position:absolute;left:50%;bottom:-40%;transform:translateX(-50%);
+    width:120%;height:70%;z-index:0;pointer-events:none;
+    background:radial-gradient(closest-side,rgba(240,129,63,.20),rgba(240,129,63,.05) 55%,transparent 72%);
+  }
+  .hero .wrap{position:relative;z-index:1;padding-top:96px;padding-bottom:96px}
+  .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
+  @media (max-width:900px){.hero-grid{grid-template-columns:1fr;gap:40px}.hero .wrap{padding-top:64px;padding-bottom:64px}}
+
+  h1{
+    font-family:var(--mono);
+    font-weight:700;
+    font-size:clamp(2.3rem,5.4vw,3.9rem);
+    line-height:1.02;
+    letter-spacing:-.035em;
+    margin:20px 0 0;
+    text-wrap:balance;
+    color:#f4efe7;
+  }
+  h1 .lit{
+    background:linear-gradient(180deg,var(--heat-spark),var(--claude) 70%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:0 0 34px rgba(240,129,63,.25);
+  }
+  .lede{color:var(--ink-smoke);font-size:1.16rem;max-width:46ch;margin:22px 0 0}
+  .lede b{color:var(--ink-ash);font-weight:600}
+
+  .cta-row{display:flex;flex-wrap:wrap;gap:14px;margin-top:34px}
+  .btn{
+    font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.01em;
+    padding:13px 22px;border-radius:8px;display:inline-flex;align-items:center;gap:9px;
+    transition:transform .12s,filter .15s,border-color .15s,background .15s;
+  }
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{background:var(--claude);color:var(--iron-pit);box-shadow:0 8px 30px -10px rgba(240,129,63,.6)}
+  .btn-primary:hover{filter:brightness(1.08)}
+  .btn-ghost{background:transparent;color:var(--ink-ash);border:1px solid var(--iron-seam-lit)}
+  .btn-ghost:hover{border-color:var(--claude);color:#fff}
+
+  .hero-meta{display:flex;gap:24px;margin-top:30px;flex-wrap:wrap;font-family:var(--mono);font-size:12.5px;color:var(--ink-faint)}
+  .hero-meta span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--success);box-shadow:0 0 8px var(--success)}
+
+  /* ---------- terminal ---------- */
+  .term{
+    background:linear-gradient(180deg,var(--iron-plate),var(--iron-bg));
+    border:1px solid var(--iron-seam);border-radius:12px;overflow:hidden;
+    box-shadow:0 30px 70px -30px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.02) inset;
+  }
+  .term-bar{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--iron-seam);background:var(--iron-plate-2)}
+  .term-bar .b{width:11px;height:11px;border-radius:50%;background:var(--iron-seam-lit)}
+  .term-bar .b:first-child{background:#5a4636}
+  .term-title{margin-left:8px;font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
+  .term-body{padding:18px 18px 20px;font-family:var(--mono);font-size:13.2px;line-height:1.85;overflow-x:auto}
+  .term-body .cmd{color:#f4efe7}
+  .term-body .cmd::before{content:"$ ";color:var(--claude)}
+  .term-body .muted{color:var(--ink-faint)}
+  .term-body .ok{color:var(--success)}
+  .term-body .id{color:var(--heat-spark)}
+  .term-body .arrow{color:var(--claude)}
+  .term-body .row{white-space:pre}
+  .caret{display:inline-block;width:8px;height:15px;background:var(--claude);vertical-align:-2px;margin-left:2px;animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  @media (prefers-reduced-motion:reduce){.caret{animation:none}}
+
+  /* ---------- section scaffolding ---------- */
+  section{padding:88px 0}
+  @media (max-width:720px){section{padding:60px 0}}
+  .sec-head{max-width:60ch}
+  h2{font-family:var(--mono);font-weight:700;font-size:clamp(1.6rem,3.2vw,2.3rem);letter-spacing:-.03em;line-height:1.1;margin:14px 0 0;color:#f2ede5;text-wrap:balance}
+  .sec-sub{color:var(--ink-smoke);margin:16px 0 0;font-size:1.08rem;max-width:56ch}
+
+  /* thesis */
+  .thesis{background:var(--iron-bg);border-top:1px solid var(--iron-seam);border-bottom:1px solid var(--iron-seam)}
+  .thesis .wrap{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center}
+  @media (max-width:820px){.thesis .wrap{grid-template-columns:1fr;gap:28px}}
+  .thesis .big{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.1rem);line-height:1.22;letter-spacing:-.02em;color:#f2ede5;text-wrap:balance}
+  .thesis .big em{color:var(--claude);font-style:normal}
+  .thesis p{color:var(--ink-smoke);margin:0}
+  .thesis p + p{margin-top:16px}
+
+  /* pipeline lanes */
+  .lanes{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-top:44px}
+  @media (max-width:960px){.lanes{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:520px){.lanes{grid-template-columns:1fr}}
+  .lane{
+    background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:11px;padding:18px 16px;
+    display:flex;flex-direction:column;gap:12px;position:relative;overflow:hidden;
+    transition:border-color .18s,transform .18s;
+  }
+  .lane:hover{border-color:var(--iron-seam-lit);transform:translateY(-2px)}
+  .lane::before{content:"";position:absolute;left:0;top:0;height:3px;width:100%;background:var(--heat-line);opacity:.7}
+  .lane .ln{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)}
+  .lane .lt{font-family:var(--mono);font-weight:700;font-size:15px;color:var(--ink-ash);letter-spacing:-.01em}
+  .lane ul{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+  .lane li{font-family:var(--mono);font-size:12px;color:var(--ink-smoke);background:var(--iron-bg);border:1px solid var(--iron-seam);border-radius:5px;padding:3px 7px}
+
+  /* gates */
+  .gates{background:var(--iron-bg);border-top:1px solid var(--iron-seam);border-bottom:1px solid var(--iron-seam)}
+  .gate-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+  @media (max-width:900px){.gate-grid{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:520px){.gate-grid{grid-template-columns:1fr}}
+  .gate{
+    background:linear-gradient(180deg,var(--iron-plate-2),var(--iron-plate));
+    border:1px solid var(--iron-seam);border-radius:10px;padding:16px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+  }
+  .gate .stamp{font-family:var(--mono);font-weight:700;font-size:14px;color:var(--ink-ash);display:flex;align-items:center;gap:8px}
+  .gate .stamp .k{color:var(--success);font-size:13px}
+  .gate p{margin:9px 0 0;font-size:13.5px;color:var(--ink-smoke);line-height:1.5}
+  .law{
+    margin-top:34px;font-family:var(--mono);font-size:14px;color:var(--ink-smoke);
+    border-left:2px solid var(--claude);padding:6px 0 6px 18px;line-height:1.7;
+  }
+  .law b{color:var(--heat-spark);font-weight:700}
+
+  /* roster */
+  .roster-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:40px}
+  @media (max-width:820px){.roster-grid{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:520px){.roster-grid{grid-template-columns:1fr}}
+  .role{background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:9px;padding:14px 15px;transition:border-color .18s}
+  .role:hover{border-color:var(--iron-seam-lit)}
+  .role .rn{font-family:var(--mono);font-weight:700;font-size:13.5px;color:var(--ink-ash)}
+  .role .rd{font-size:13px;color:var(--ink-smoke);margin-top:4px;line-height:1.45}
+
+  /* proof / stats */
+  .proof{background:var(--iron-bg);border-top:1px solid var(--iron-seam);border-bottom:1px solid var(--iron-seam)}
+  .proof .wrap{text-align:center}
+  .proof .big{font-family:var(--mono);font-size:clamp(1.5rem,3vw,2.15rem);line-height:1.25;letter-spacing:-.02em;color:#f2ede5;max-width:24ch;margin:14px auto 0;text-wrap:balance}
+  .proof .big em{color:var(--claude);font-style:normal}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:48px}
+  @media (max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}}
+  .stat{border:1px solid var(--iron-seam);border-radius:11px;padding:22px 12px;background:var(--iron-plate)}
+  .stat .n{font-family:var(--mono);font-weight:700;font-size:2.3rem;letter-spacing:-.03em;color:var(--heat-spark);font-variant-numeric:tabular-nums}
+  .stat .l{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);margin-top:6px}
+
+  /* install */
+  .install .wrap{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start}
+  @media (max-width:820px){.install .wrap{grid-template-columns:1fr;gap:32px}}
+  .steps{counter-reset:step;display:flex;flex-direction:column;gap:2px}
+  .step{display:flex;gap:16px;align-items:baseline}
+  .step .num{font-family:var(--mono);font-weight:700;color:var(--claude);font-size:13px;min-width:26px}
+  .step .txt{font-family:var(--mono);font-size:14.5px;color:var(--ink-ash);padding:10px 0}
+  .step .txt .c{color:var(--heat-spark)}
+  .installbox{background:var(--iron-pit);border:1px solid var(--iron-seam);border-radius:12px;overflow:hidden}
+  .installbox .top{padding:10px 14px;border-bottom:1px solid var(--iron-seam);font-family:var(--mono);font-size:12px;color:var(--ink-faint);background:var(--iron-plate)}
+  .installbox pre{margin:0;padding:18px;font-family:var(--mono);font-size:13.3px;line-height:2;color:var(--ink-ash);overflow-x:auto}
+  .installbox .p{color:var(--claude)}
+  .req{margin-top:22px;font-size:13.5px;color:var(--ink-smoke);line-height:1.6}
+  .req code{font-family:var(--mono);color:var(--ink-ash);background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:4px;padding:1px 6px;font-size:12.5px}
+
+  /* footer */
+  footer{background:var(--iron-pit);border-top:1px solid var(--iron-seam);padding:52px 0 60px}
+  .foot{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:flex-start}
+  .foot .brand{font-size:17px}
+  .foot-links{display:flex;gap:34px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--ink-smoke)}
+  .foot-links a:hover{color:var(--ink-ash)}
+  .foot-col{display:flex;flex-direction:column;gap:9px}
+  .foot-col .h{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:2px}
+  .foot-note{margin-top:40px;padding-top:24px;border-top:1px solid var(--iron-seam);font-family:var(--mono);font-size:12.5px;color:var(--ink-faint);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .foot-note .lit{color:var(--heat-warm)}
+
+  .reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease}
+  .reveal.in{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>forge</div>
+    <nav class="nav-links" aria-label="primary">
+      <a href="#pipeline">Pipeline</a>
+      <a href="#gates">Gates</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/dngioidev/forge">GitHub</a>
+      <a class="verpill" href="https://github.com/dngioidev/forge/releases">v0.20.0</a>
+      <a class="cta-mini" href="#install">Install</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ===================== HERO ===================== -->
+<div class="hero">
+  <canvas id="embers" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <span class="eyebrow">AI delivery pipeline · runs in Claude Code</span>
+        <h1>Turn a backlog into <span class="lit">merged, gated</span> pull requests.</h1>
+        <p class="lede">forge is a portable pipeline that installs into Claude Code. You describe the work as tickets; forge <b>plans it, writes it, reviews it, gates it</b>, and opens the PR. Every change ticketed, trailed, and auditable — not ad-hoc prompting.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">Install forge →</a>
+          <a class="btn btn-ghost" href="https://github.com/dngioidev/forge">Read the handbook</a>
+        </div>
+        <div class="hero-meta">
+          <span><i class="dot"></i>MIT licensed</span>
+          <span>Claude Code + Antigravity</span>
+          <span>0 non-permissive deps</span>
+        </div>
+      </div>
+
+      <div class="term reveal" role="img" aria-label="Terminal showing the forge autopilot clearing a board: three tickets merged, license clean, board clear.">
+        <div class="term-bar">
+          <span class="b"></span><span class="b"></span><span class="b"></span>
+          <span class="term-title">claude code — forge:autopilot</span>
+        </div>
+        <div class="term-body">
+<div class="row cmd">/forge:autopilot --shape</div>
+<div class="row muted">planner → execute-agents → gates → reviewer · security</div>
+<div class="row">&nbsp;</div>
+<div class="row"><span class="id">#354</span> <span class="arrow">→</span> <span class="ok">merged</span> · PR #369  <span class="muted">browser UI — split cockpit</span></div>
+<div class="row"><span class="id">#360</span> <span class="arrow">→</span> <span class="ok">merged</span> · PR #366  <span class="muted">graphql rate-limit backoff</span></div>
+<div class="row"><span class="id">#368</span> <span class="arrow">→</span> <span class="ok">merged</span> · PR #370  <span class="muted">token hygiene</span></div>
+<div class="row">&nbsp;</div>
+<div class="row"><span class="ok">license: clean</span> <span class="muted">— plugin MIT · 0 non-permissive deps</span></div>
+<div class="row arrow">autopilot: board is clear<span class="caret" aria-hidden="true"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== THESIS ===================== -->
+<section class="thesis">
+  <div class="wrap">
+    <div>
+      <span class="eyebrow">Why forge</span>
+      <p class="big">Prompting gets you code. A <em>pipeline</em> gets you shipped software — reviewed, gated, and on the record.</p>
+    </div>
+    <div>
+      <p>Ad-hoc AI coding produces changes nobody planned, nothing reviewed, and no trail of why. forge replaces the improvisation with an opinionated delivery pipeline: the same plan → build → gate → review → merge loop for every change, whether you start a fresh project or adopt an existing one.</p>
+      <p>The board is the source of truth. Every lifecycle moment is written back to the driving issue — <b>no silent side-work</b>. If a gate says no, it's a script, not an opinion.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PIPELINE ===================== -->
+<section id="pipeline">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">The pipeline · 20 skills, 5 lanes</span>
+      <h2>One command per job, from idea to release.</h2>
+      <p class="sec-sub">Each skill is a <code style="font-family:var(--mono);color:var(--heat-spark)">/forge:&lt;skill&gt;</code> command that spawns the right roles with fresh context and hands off down the line.</p>
+    </div>
+    <div class="lanes">
+      <div class="lane reveal">
+        <span class="ln">Lane 01</span><span class="lt">Front of pipeline</span>
+        <ul><li>ideate</li><li>brainstorm</li><li>spike</li><li>design</li><li>shape</li></ul>
+      </div>
+      <div class="lane reveal">
+        <span class="ln">Lane 02</span><span class="lt">Build</span>
+        <ul><li>plan</li><li>execute</li><li>execute-agents</li><li>deliver</li><li>ship</li><li>release</li></ul>
+      </div>
+      <div class="lane reveal">
+        <span class="ln">Lane 03</span><span class="lt">Care</span>
+        <ul><li>hotfix</li><li>respond</li><li>maintain</li></ul>
+      </div>
+      <div class="lane reveal">
+        <span class="ln">Lane 04</span><span class="lt">Knowledge</span>
+        <ul><li>distill</li><li>review</li><li>investigate</li></ul>
+      </div>
+      <div class="lane reveal">
+        <span class="ln">Lane 05</span><span class="lt">Scale</span>
+        <ul><li>autopilot</li><li>triage</li><li>board</li></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== GATES ===================== -->
+<section class="gates" id="gates">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Mechanical ship gates</span>
+      <h2>Nothing merges on a guess. It merges on green.</h2>
+      <p class="sec-sub">Gates are scripts, enforced at ship — plus an adversarial reviewer and security pass over the whole diff. Fail-closed, every time.</p>
+    </div>
+    <div class="gate-grid">
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>ac-gate</div><p>Every acceptance-criteria id is proven by a passing test — no untested AC ships.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>plandrift</div><p>The diff stays inside the plan's declared files and blast radius.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>testintent</div><p>Tests assert real behaviour, not tautologies that pass on anything.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>docsync</div><p>Docs and route index move in lockstep with the code they describe.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>depguard</div><p>New dependencies are declared, justified, and inside policy.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>license</div><p>Every SPDX id — npm and Python — stays inside the permissive allowlist.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>reviewer</div><p>A full-diff review subagent returns pass with zero critical or high findings.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>security</div><p>An adversarial pass treats the diff as hostile: injection, secrets, supply chain.</p></div>
+    </div>
+    <p class="law"><b>The law:</b> ticket-first, always — silent side-work is forbidden. The owner merges every PR; unattended auto-merge is Claude-only, by policy. <b>“Unknown” is a valid answer.</b></p>
+  </div>
+</section>
+
+<!-- ===================== ROSTER ===================== -->
+<section id="roster">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Agent roster · 12 roles</span>
+      <h2>The right specialist for each step — fresh context, one job.</h2>
+      <p class="sec-sub">forge spawns role subagents instead of one over-loaded prompt. Each has a role card, a narrow tool set, and a single responsibility.</p>
+    </div>
+    <div class="roster-grid">
+      <div class="role reveal"><div class="rn">planner</div><div class="rd">Turns a triaged ticket into a typed, ordered, testable plan.</div></div>
+      <div class="role reveal"><div class="rn">scoper</div><div class="rd">Maps the blast radius before work starts — files, components, tests.</div></div>
+      <div class="role reveal"><div class="rn">implementer</div><div class="rd">Makes one task's failing tests pass — smallest correct change.</div></div>
+      <div class="role reveal"><div class="rn">test-architect</div><div class="rd">Writes failing tests from acceptance criteria, before code exists.</div></div>
+      <div class="role reveal"><div class="rn">reviewer</div><div class="rd">Finds what's wrong with a diff — correctness first, then the rest.</div></div>
+      <div class="role reveal"><div class="rn">security</div><div class="rd">Assumes the diff is hostile until proven otherwise.</div></div>
+      <div class="role reveal"><div class="rn">designer</div><div class="rd">Token-grounded, a11y-first UI variants for the human to pick.</div></div>
+      <div class="role reveal"><div class="rn">design-reviewer</div><div class="rd">Validates an implementation against its committed visual spec.</div></div>
+      <div class="role reveal"><div class="rn">librarian</div><div class="rd">Answers “does this already exist?” before anything new is written.</div></div>
+      <div class="role reveal"><div class="rn">investigator</div><div class="rd">Read-only fan-out: locate code, trace call paths, no judgment calls.</div></div>
+      <div class="role reveal"><div class="rn">devops</div><div class="rd">Keeps every repo production-deployable — CI, infra, deploy diffs.</div></div>
+      <div class="role reveal"><div class="rn">second-opinion</div><div class="rd">An independent model's eyes on a spec, plan, or diff. Advisory.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PROOF ===================== -->
+<section class="proof">
+  <div class="wrap">
+    <span class="eyebrow" style="justify-content:center">Dogfooded to the metal</span>
+    <p class="big">forge is built <em>by its own pipeline</em>. Every commit here shipped through the same skills it installs.</p>
+    <div class="stats">
+      <div class="stat reveal"><div class="n">20</div><div class="l">Pipeline skills</div></div>
+      <div class="stat reveal"><div class="n">12</div><div class="l">Agent roles</div></div>
+      <div class="stat reveal"><div class="n">6</div><div class="l">Mechanical gates</div></div>
+      <div class="stat reveal"><div class="n">MIT</div><div class="l">0 non-permissive deps</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== INSTALL ===================== -->
+<section class="install" id="install">
+  <div class="wrap">
+    <div>
+      <span class="eyebrow">Install</span>
+      <h2>Three commands, inside Claude Code.</h2>
+      <div class="steps" style="margin-top:26px">
+        <div class="step"><span class="num">01</span><span class="txt">Add the marketplace, install the plugin.</span></div>
+        <div class="step"><span class="num">02</span><span class="txt">Run <span class="c">/forge:init</span> — adopt or create, wire the board, gates, hooks.</span></div>
+        <div class="step"><span class="num">03</span><span class="txt">Describe work as tickets. Run <span class="c">/forge:deliver</span> or <span class="c">/forge:autopilot</span>.</span></div>
+      </div>
+      <p class="req">Prerequisites: <code>Claude Code</code>, <code>Node ≥ 22.13</code>, <code>pnpm 10.14+</code>, and a GitHub account. Full wiring in the <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/install.md" style="color:var(--claude)">install guide</a>.</p>
+    </div>
+    <div>
+      <div class="installbox">
+        <div class="top">run inside Claude Code</div>
+<pre><span class="p">/plugin</span> marketplace add dngioidev/forge
+<span class="p">/plugin</span> install forge@forge
+<span class="p">/forge:init</span></pre>
+      </div>
+      <div class="cta-row" style="margin-top:22px">
+        <a class="btn btn-primary" href="https://github.com/dngioidev/forge">Star on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/dngioidev/forge/blob/main/docs/guides/handbook.md">Handbook</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="heat-rule" />
+
+<!-- ===================== FOOTER ===================== -->
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div class="foot-col" style="max-width:320px">
+        <div class="brand"><span class="mark" aria-hidden="true"></span>forge</div>
+        <p style="color:var(--ink-smoke);font-size:14px;margin:4px 0 0">A portable AI delivery pipeline. Ticketed, planned, reviewed, gated, merged — inside Claude Code and Antigravity.</p>
+      </div>
+      <div class="foot-links">
+        <div class="foot-col">
+          <span class="h">Product</span>
+          <a href="#pipeline">Pipeline</a>
+          <a href="#gates">Gates</a>
+          <a href="#install">Install</a>
+        </div>
+        <div class="foot-col">
+          <span class="h">Docs</span>
+          <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/install.md">Install guide</a>
+          <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/handbook.md">Handbook</a>
+          <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/cross-gai.md">Cross-GAI</a>
+        </div>
+        <div class="foot-col">
+          <span class="h">Project</span>
+          <a href="https://github.com/dngioidev/forge">GitHub</a>
+          <a href="https://github.com/dngioidev/forge/releases">Releases</a>
+          <a href="https://github.com/dngioidev/forge/blob/main/CONTRIBUTING.md">Contributing</a>
+        </div>
+      </div>
+    </div>
+    <div class="foot-note">
+      <span>MIT © 2026 · built by its own pipeline</span>
+      <span class="lit">the backlog goes in cold — the PR comes out forged</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ambient embers rising from the forge */
+  var canvas = document.getElementById('embers');
+  if(canvas && !reduce){
+    var ctx = canvas.getContext('2d');
+    var w,h,dpr,parts;
+    function size(){
+      dpr = Math.min(window.devicePixelRatio||1, 2);
+      var host = canvas.parentElement;
+      w = host.clientWidth; h = host.clientHeight;
+      canvas.width = w*dpr; canvas.height = h*dpr;
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    function spark(){
+      return {
+        x: Math.random()*w,
+        y: h + Math.random()*40,
+        r: Math.random()*1.6 + .4,
+        vy: -(Math.random()*.5 + .18),
+        vx: (Math.random()-.5)*.25,
+        life: 0,
+        max: Math.random()*260 + 140,
+        hue: Math.random()<.5 ? '255,209,102' : '240,129,63'
+      };
+    }
+    function init(){
+      size();
+      var count = Math.min(70, Math.floor(w/16));
+      parts = []; for(var i=0;i<count;i++){ var p=spark(); p.y=Math.random()*h; p.life=Math.random()*p.max; parts.push(p); }
+    }
+    function frame(){
+      ctx.clearRect(0,0,w,h);
+      for(var i=0;i<parts.length;i++){
+        var p=parts[i];
+        p.x+=p.vx; p.y+=p.vy; p.life++;
+        p.vx += (Math.random()-.5)*.02;
+        var t = p.life/p.max;
+        var a = Math.sin(t*Math.PI) * .55;
+        if(p.life>=p.max || p.y< -10){ parts[i]=spark(); continue; }
+        ctx.beginPath();
+        ctx.fillStyle='rgba('+p.hue+','+a.toFixed(3)+')';
+        ctx.arc(p.x,p.y,p.r,0,6.2832);
+        ctx.fill();
+      }
+      requestAnimationFrame(frame);
+    }
+    init();
+    requestAnimationFrame(frame);
+    var rt; window.addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(init,150)});
+  }
+
+  /* scroll reveal */
+  var items = document.querySelectorAll('.reveal');
+  if('IntersectionObserver' in window && !reduce){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+    },{threshold:.14});
+    items.forEach(function(el){io.observe(el)});
+  } else {
+    items.forEach(function(el){el.classList.add('in')});
+  }
+})();
+</script>
+</body>
+</html>
