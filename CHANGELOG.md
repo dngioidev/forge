@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.0 — 2026-08-04
+
+### Fixes
+
+- alias raw-hex UI values to smithy tokens (#368) (#370) ([#368](https://github.com/dngioidev/forge/issues/368) [#370](https://github.com/dngioidev/forge/issues/370))
+- back off + retry on GitHub GraphQL rate limits (#360) (#366) ([#360](https://github.com/dngioidev/forge/issues/360) [#366](https://github.com/dngioidev/forge/issues/366))
+- teach the license gate to see the Python dep tree (#349) (#357) ([#349](https://github.com/dngioidev/forge/issues/349) [#357](https://github.com/dngioidev/forge/issues/357))
+- bump the README version badge in lockstep with the release (#341) ([#341](https://github.com/dngioidev/forge/issues/341))
+
+### Features
+
+- browser UI — split cockpit (#354) (#369) ([#354](https://github.com/dngioidev/forge/issues/354) [#369](https://github.com/dngioidev/forge/issues/369))
+- PTY-over-websocket terminal bridge (#353) (#364) ([#353](https://github.com/dngioidev/forge/issues/353) [#364](https://github.com/dngioidev/forge/issues/364))
+- harden the loopback backend (DNS-rebinding / CSRF / origin) (#352) (#363) ([#352](https://github.com/dngioidev/forge/issues/352) [#363](https://github.com/dngioidev/forge/issues/363))
+- serve the Python cores over a 127.0.0.1 FastAPI backend (#351) (#362) ([#351](https://github.com/dngioidev/forge/issues/351) [#362](https://github.com/dngioidev/forge/issues/362))
+- retire PySide6/PyInstaller — remove the LGPL artifact ahead of the web-app rebuild (#355) (#359) ([#355](https://github.com/dngioidev/forge/issues/355) [#359](https://github.com/dngioidev/forge/issues/359))
+- add a license-compliance gate (SPDX allowlist) and register it (#345) ([#345](https://github.com/dngioidev/forge/issues/345))
+
+### Docs
+
+- cockpit UI split-cockpit visual spec (#354) (#367) ([#354](https://github.com/dngioidev/forge/issues/354) [#367](https://github.com/dngioidev/forge/issues/367))
+- document the local-web-app model + reconcile ADR cross-refs (#356) (#365) ([#356](https://github.com/dngioidev/forge/issues/356) [#365](https://github.com/dngioidev/forge/issues/365))
+- teach the denylist escalation path in role cards + delivery brief (#358) ([#358](https://github.com/dngioidev/forge/issues/358))
+- cockpit re-architecture findings + ADR-0008 (#344) (#348) ([#344](https://github.com/dngioidev/forge/issues/344) [#348](https://github.com/dngioidev/forge/issues/348))
+
 ## v0.19.0 — 2026-08-02
 
 ### Features
