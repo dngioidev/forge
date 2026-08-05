@@ -127,4 +127,4 @@ Opt-in, **private-repo-only** free CI on a local GitHub Actions runner. `/forge:
 
 ## 11. When something's wrong
 
-`/forge:doctor` first — every ✗ has a fix hint. Known issues + recovery ladders: [troubleshooting guide](troubleshooting.md). Gate refused: read its message, it names the unlock. Pipeline halted: check 🚩 decisions (`board status`). Board ids dangling: re-run `/forge:init`. Anything the platform can't decide arrives as a decision comment — answer it and work resumes.
+`/forge:doctor` first — every ✗ has a fix hint. Known issues + recovery ladders: [troubleshooting guide](troubleshooting.md). Gate refused: read its message, it names the unlock. Pipeline halted: check 🚩 decisions (`board status`). Board ids dangling: re-run `/forge:init`. Anything the platform can't decide arrives as a decision comment — answer it and work resumes. Docs feel out of sync (a doc that's not linked anywhere, a skill nobody documented): `/forge:docsync-check` runs the same route-index/handbook/badge check `forge:ship` runs before a PR, on demand.
