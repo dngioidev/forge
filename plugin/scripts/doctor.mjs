@@ -190,7 +190,7 @@ export async function runDoctor(ctx) {
         results.push(warn(
           'graph-availability',
           'tsconfig.json found but features.graph is off — graph-RAG (find_component/who_uses/blast_radius/reuse_candidates) is available for this repo',
-          'set features.graph:true in .claude/forge.json, npm i -D ts-morph, then node <plugin>/scripts/graph/graphctl.mjs rebuild (docs/guides/install.md)',
+          'set features.graph:true in .claude/forge.json, npm i -D ts-morph, then node plugin/scripts/graph/graphctl.mjs rebuild (docs/guides/install.md)',
         ));
       }
     }
