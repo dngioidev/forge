@@ -43,6 +43,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [Plugin capabilities](spikes/2026-07-21-plugin-capabilities.md) — research on the full Claude Code plugin surface vs. forge's usage; the tiered enhancement plan behind epic #148 (monitors, bin/, themes, LSP, manifest, `${CLAUDE_PLUGIN_DATA}`).
 - [forge self-audit](spikes/2026-07-21-forge-self-audit.md) — whole-plugin self-audit at v0.15.0: findings across skills, gates, board, and hooks.
 - [Cockpit re-architecture](spikes/2026-08-02-cockpit-rearchitecture.md) — #344: PySide6 LGPL + terminal-typing troubles → evaluate keep-and-comply vs permissive toolkit vs local web app; matrix + recommendation (Option C, local web app), feeding proposed ADR-0008.
+- [Session-window detection](spikes/2026-08-05-session-window-detection.md) — #378: is there a real way for autopilot to know it's near Claude Code's 5h session limit? No pull API exists (confirmed); recommends polling the existing statusline hook's payload, contingent on owner sign-off since it touches the file ADR-0003 stripped quota-capture from.
 
 ## Design specs
 
