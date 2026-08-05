@@ -173,6 +173,29 @@ export async function runDoctor(ctx) {
     }
   }
 
+  // graph availability notice (#386): the inverse of the check above. A TS repo
+  // that has never turned graph-RAG on has no way to learn it exists — deliver/
+  // autopilot silently fall back to grep and forge:doctor previously only spoke
+  // up once features.graph was ALREADY true. One-time, low-noise advisory: fires
+  // whenever a tsconfig.json is present and features.graph isn't explicitly true,
+  // EXCEPT when .forge/graph.db already exists — that's cheap evidence the repo
+  // built the index before and then turned it off on purpose (AC.2: don't nag a
+  // deliberate opt-out). "Never configured" (features block absent, e.g. adopted
+  // repos) is treated the same as "off" — that repo needs the notice most.
+  if (cfg.ok && cfg.config.features?.graph !== true) {
+    const tsconfigExists = await stat(join(cwd, 'tsconfig.json')).then(() => true, () => false);
+    if (tsconfigExists) {
+      const dbExists = await stat(join(cwd, '.forge', 'graph.db')).then(() => true, () => false);
+      if (!dbExists) {
+        results.push(warn(
+          'graph-availability',
+          'tsconfig.json found but features.graph is off — graph-RAG (find_component/who_uses/blast_radius/reuse_candidates) is available for this repo',
+          'set features.graph:true in .claude/forge.json, npm i -D ts-morph, then node <plugin>/scripts/graph/graphctl.mjs rebuild (docs/guides/install.md)',
+        ));
+      }
+    }
+  }
+
   // local self-hosted runner (ADR-0005 / #225 AC4) — silent unless runner.enabled
   if (cfg.ok && cfg.runner?.enabled === true) {
     await checkRunner({ gh, cwd, runner: cfg.runner, results, exec, detect: detectServices });
