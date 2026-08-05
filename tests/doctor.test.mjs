@@ -404,6 +404,77 @@ describe('runDoctor — failure classes (AC-1.4)', () => {
   });
 });
 
+describe('runDoctor — graph availability notice (#386)', () => {
+  const routes = [['auth status', AUTH_OK], ['repo view', REPO_VIEW], [() => true, { ok: false, stderr: 'x' }]];
+
+  /** Write a valid forge.json with a `features` block override (undefined = omit it entirely). */
+  async function writeCfgFeatures(cwd, features) {
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    delete committed.runner; // keep runner checks silent/out of scope for these tests
+    if (features !== undefined) committed.features = features;
+    else delete committed.features;
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+  }
+
+  it('AC.1: tsconfig.json present + features.graph:false → advisory warn naming the 3-step enable sequence', async () => {
+    const cwd = await gitRepo({ files: { 'tsconfig.json': '{}' } });
+    await writeCfgFeatures(cwd, { graph: false });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'graph-availability')[0];
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/tsconfig/i);
+    expect(r.hint).toMatch(/features\.graph:\s*true/);
+    expect(r.hint).toMatch(/ts-morph/);
+    expect(r.hint).toMatch(/graphctl\.mjs rebuild/);
+    // advisory only — never flips doctor to failing
+    expect(res.results.filter((x) => x.level === 'fail').map((x) => x.name)).not.toContain('graph-availability');
+  });
+
+  it('never configured (no features block at all, e.g. an adopted repo) is treated the same as off', async () => {
+    const cwd = await gitRepo({ files: { 'tsconfig.json': '{}' } });
+    await writeCfgFeatures(cwd, undefined); // no features block
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'graph-availability')[0].level).toBe('warn');
+  });
+
+  it('AC.2: features.graph already true → no advisory (the existing "graph" check owns that state)', async () => {
+    const cwd = await gitRepo({ files: { 'tsconfig.json': '{}' } });
+    await writeCfgFeatures(cwd, { graph: true });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'graph-availability')).toEqual([]);
+  });
+
+  it('AC.2: no tsconfig.json (non-TS repo) → no advisory even with graph off', async () => {
+    const cwd = await gitRepo();
+    await writeCfgFeatures(cwd, { graph: false });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'graph-availability')).toEqual([]);
+  });
+
+  it('AC.2: .forge/graph.db already built → no advisory (deliberately turned off after trying, don\'t nag)', async () => {
+    const cwd = await gitRepo({ files: { 'tsconfig.json': '{}', '.forge/graph.db': '' } });
+    await writeCfgFeatures(cwd, { graph: false });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'graph-availability')).toEqual([]);
+  });
+
+  it('AC.3: read-only — running doctor never mutates forge.json', async () => {
+    const cwd = await gitRepo({ files: { 'tsconfig.json': '{}' } });
+    await writeCfgFeatures(cwd, { graph: false });
+    const before = await readFile(join(cwd, '.claude', 'forge.json'), 'utf8');
+    const { gh } = fakeGh(routes);
+    await runDoctor({ gh, cwd, log: noop });
+    const after = await readFile(join(cwd, '.claude', 'forge.json'), 'utf8');
+    expect(after).toBe(before);
+  });
+});
+
 describe('runDoctor — healthy repo shape', () => {
   it('all green (✓/⚠ only) against a fully consistent setup', async () => {
     const cwd = await tmpCwd();
