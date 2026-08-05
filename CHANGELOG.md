@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.1.0 — 2026-08-05
+
+### Docs
+
+- session usage-window detection for autopilot self-pause (#378) (#381) ([#378](https://github.com/dngioidev/forge/issues/378) [#381](https://github.com/dngioidev/forge/issues/381))
+
+### Features
+
+- self-pause + auto-continue near the 5h session usage window (#378) (#382) ([#378](https://github.com/dngioidev/forge/issues/378) [#382](https://github.com/dngioidev/forge/issues/382))
+
+### Fixes
+
+- pin the delivery subagent spawn to model: sonnet (#380) ([#380](https://github.com/dngioidev/forge/issues/380))
+- emit plugin-root-relative paths so the emitted package is relocatable (#307) (#377) ([#307](https://github.com/dngioidev/forge/issues/307) [#377](https://github.com/dngioidev/forge/issues/377))
+
 ## v1.0.0 — 2026-08-04
 
 **The open-source flip.** forge is now public under the MIT License — a portable AI delivery pipeline that installs into Claude Code: 20 pipeline skills across 5 lanes, a 12-role agent roster, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, and a graph-RAG index. Built entirely by its own pipeline across the 0.x line, and license-clean — npm *and* Python, zero non-permissive dependencies, enforced by a gate in CI. See the [release notes](https://github.com/dngioidev/forge/releases/tag/v1.0.0) for the full announcement.
