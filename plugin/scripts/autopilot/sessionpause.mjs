@@ -2,7 +2,8 @@
 /**
  * autopilot self-pause near the 5h session usage window (#378, epic #183).
  *
- * Spike (docs/spikes/2026-08-05-session-window-detection.md, PR #381) confirmed
+ * Spike (docs/spikes/2026-08-05-session-window-detection.md — PR #381; read it
+ * from that PR/branch if it hasn't merged to main yet) confirmed
  * no pull-based API exists for "time remaining in the current session window" —
  * the only real signal is the statusline hook's push-only `rate_limits` payload
  * (Pro/Max only, after the first response). Owner-approved mechanism (decision
