@@ -191,6 +191,23 @@ export function validateConfig(cfg) {
     }
   }
 
+  // #378 — autopilot self-pause near the 5h session usage window. Optional; a
+  // missing block or field means "opt-in not taken" (sessionpause.mjs
+  // `configuredThresholdPct` treats it as null), which preserves today's
+  // unchanged behavior — no pause logic activates (AC.4). Validated only when
+  // present, same discipline as the `runner` block above.
+  if (cfg.autopilot !== undefined) {
+    const a = cfg.autopilot;
+    if (typeof a !== 'object' || a === null || Array.isArray(a)) {
+      push('autopilot: must be an object');
+    } else if (a.sessionPauseThresholdPct !== undefined) {
+      const v = a.sessionPauseThresholdPct;
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > 100) {
+        push('autopilot.sessionPauseThresholdPct: must be a number between 0 and 100');
+      }
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 

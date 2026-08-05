@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run } from '../plugin/scripts/lib/exec.mjs';
-import { composeLine, extractContext, renderBar } from '../plugin/scripts/statusline.mjs';
+import { composeLine, extractContext, renderBar, writeUsageSnapshot } from '../plugin/scripts/statusline.mjs';
+import { USAGE_RELPATH } from '../plugin/scripts/autopilot/sessionpause.mjs';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'scripts', 'statusline.mjs');
 
@@ -111,5 +112,62 @@ describe('statusline e2e (AC-B7.3, AC-B7.4)', () => {
   it('AC-B7.4: never breaks the session — garbage stdin exit 0', async () => {
     const res = await runStatusline('not json at all');
     expect(res.code).toBe(0);
+  });
+});
+
+describe('#378: writeUsageSnapshot — best-effort rate_limits capture for autopilot self-pause', () => {
+  it('writes five_hour (+ seven_day) + a timestamp when rate_limits carries five_hour.used_percentage', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-sl-usage-'));
+    const before = Date.now();
+    const ok = await writeUsageSnapshot(dir, { five_hour: { used_percentage: 42 }, seven_day: { used_percentage: 11 } });
+    expect(ok).toBe(true);
+    const written = JSON.parse(await readFile(join(dir, USAGE_RELPATH), 'utf8'));
+    expect(written.five_hour).toEqual({ used_percentage: 42 });
+    expect(written.seven_day).toEqual({ used_percentage: 11 });
+    expect(Date.parse(written.timestamp)).toBeGreaterThanOrEqual(before);
+  });
+
+  it('omits seven_day when absent; still writes five_hour + timestamp', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-sl-usage-'));
+    expect(await writeUsageSnapshot(dir, { five_hour: { used_percentage: 5 } })).toBe(true);
+    const written = JSON.parse(await readFile(join(dir, USAGE_RELPATH), 'utf8'));
+    expect(written).not.toHaveProperty('seven_day');
+    expect(written.five_hour.used_percentage).toBe(5);
+  });
+
+  it('skips silently (no file written) when there is no five_hour.used_percentage to write', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-sl-usage-'));
+    expect(await writeUsageSnapshot(dir, null)).toBe(false);
+    expect(await writeUsageSnapshot(dir, {})).toBe(false);
+    expect(await writeUsageSnapshot(dir, { seven_day: { used_percentage: 9 } })).toBe(false);
+    await expect(readFile(join(dir, USAGE_RELPATH), 'utf8')).rejects.toThrow();
+  });
+
+  it('AC-B7.4/#378 AC.4: an unwritable path never throws — returns false, swallowed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-sl-usage-'));
+    // Simulate "no writable .forge/" by pre-creating `.forge` as a FILE, not a
+    // directory — mkdir(dirname) then fails (EEXIST/ENOTDIR), reproducing an
+    // unwritable-path failure without relying on OS-specific permission bits.
+    await writeFile(join(dir, '.forge'), 'not a directory');
+    await expect(writeUsageSnapshot(dir, { five_hour: { used_percentage: 99 } })).resolves.toBe(false);
+  });
+
+  it('e2e: the statusline subprocess writes usage.json on a Pro/Max rate_limits payload and still renders normally', async () => {
+    const dir = await gitRepoOnBranch('main');
+    const res = await runStatusline({ workspace: { current_dir: dir }, rate_limits: { five_hour: { used_percentage: 23.5 }, seven_day: { used_percentage: 41.2 } } });
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain('5h 24% / 7d 41%');
+    const written = JSON.parse(await readFile(join(dir, USAGE_RELPATH), 'utf8'));
+    expect(written.five_hour.used_percentage).toBe(23.5);
+    expect(written.seven_day.used_percentage).toBe(41.2);
+    expect(typeof written.timestamp).toBe('string');
+  });
+
+  it('e2e: no rate_limits in the payload — rendering unaffected, no usage.json written', async () => {
+    const dir = await gitRepoOnBranch('main');
+    const res = await runStatusline({ workspace: { current_dir: dir } });
+    expect(res.code).toBe(0);
+    expect(res.stdout).toBe(`· ${dir.split(/[\\/]/).pop()} · main`);
+    await expect(readFile(join(dir, USAGE_RELPATH), 'utf8')).rejects.toThrow();
   });
 });
