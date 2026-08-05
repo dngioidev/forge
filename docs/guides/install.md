@@ -35,6 +35,29 @@ Either mode also creates (only if missing): the pinned **delivery-log issue**, `
 
 `forge.json` is where you set the verify command (`pnpm verify`, `npm test`, …), docs dirs, team members/roles, and feature flags — all optional beyond the board block.
 
+### Docs structure — the route-index convention
+
+A **fresh** `/forge:init` (no `forge.json` yet, and no `docs/` already on disk) also seeds a `docs/` structure so docs don't land with zero convention from day one:
+
+```
+docs/
+  specs/       plans/      spikes/     design/     decisions/  guides/
+  README.md    (the route index)
+```
+
+**Adopting** an existing repo — or a repo that already has a `docs/` directory in any shape, even one predating `forge.json` — leaves it completely untouched. Nothing is ever seeded over an existing layout.
+
+One line each, what goes where:
+
+- **specs/** — approved feature specs (the "what and why"; `forge:brainstorm` output).
+- **plans/** — task-by-task implementation plans (`forge:plan` output).
+- **spikes/** — time-boxed research findings / ADR drafts (`forge:spike` output; never merged as code).
+- **design/** — visual specs for UI work (`forge:design` output).
+- **decisions/** — ADRs: durable architectural decisions and their rationale.
+- **guides/** — how-to documentation for humans (install, handbook, troubleshooting, runbooks).
+
+`docs/README.md` is the **route index**: one line per doc, updated whenever a doc lands, moves, or renames (the `forge:ship` checklist enforces this). The `docsync` gate checks the index against `docs/` whenever the file exists, and still skips gracefully when it doesn't — seeding the structure doesn't change that gate.
+
 ## 3. Health check: `/forge:doctor`
 
 Run it after init and any time something feels off. ✗ items block work and say how to fix; ⚠ items are **owner settings** worth doing early: branch protection on main, secret scanning + push protection, Dependabot alerts (feeds `forge:maintain`), and repo Settings → *Automatically delete head branches*.

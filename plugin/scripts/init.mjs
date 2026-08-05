@@ -232,6 +232,40 @@ export async function runInit(ctx) {
     }
   }
 
+  // 7c. Docs route-index scaffold (#389): a fresh scaffold otherwise writes docs
+  // with zero structure and zero convention pushing toward one. Fresh mode only —
+  // adopt must never touch an existing repo's docs/ layout — and even in fresh
+  // mode a docs/ dir already on disk (predates forge.json, e.g. adopted manually)
+  // wins: no clobbering, ever. Any readdir error OTHER than "doesn't exist" (e.g.
+  // a permissions error) must NOT be treated as "safe to seed" — that would risk
+  // writing over a real docs/README.md the caller just couldn't list — so it's
+  // reported and the step is skipped rather than assumed absent. Wrapped in
+  // try/catch like the neighboring CI-template step (7b): a mid-sequence failure
+  // degrades to a skip message instead of throwing out of runInit.
+  if (!adopt) {
+    const docsDir = join(cwd, 'docs');
+    try {
+      let hasDocs = true;
+      try {
+        await readdir(docsDir);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        hasDocs = false;
+      }
+      if (!hasDocs) {
+        for (const sub of ['specs', 'plans', 'spikes', 'design', 'decisions', 'guides']) {
+          await mkdir(join(docsDir, sub), { recursive: true });
+        }
+        const tplPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'docs-readme.md');
+        const tpl = (await readFile(tplPath, 'utf8')).replaceAll('{{PROJECT}}', repo.name);
+        await writeFile(join(docsDir, 'README.md'), tpl, 'utf8');
+        say('docs: seeded docs/{specs,plans,spikes,design,decisions,guides}/ + route-index (docs/README.md)');
+      }
+    } catch (err) {
+      say(`docs: scaffold skipped (${err.message})`);
+    }
+  }
+
   // 8. Status line (opt-in via --statusline; the command md asks the user first).
   // Written to settings.local.json: the command embeds a machine-specific
   // absolute path, which must never land in the shared committed settings.
