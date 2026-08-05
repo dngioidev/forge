@@ -8,11 +8,13 @@
  * A status line must never break a session: any error prints nothing (or a
  * partial line) and exits 0.
  */
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run } from './lib/exec.mjs';
 import { parseBranch } from './lib/ticket.mjs';
 import { deriveSituation } from './lib/situation.mjs';
+import { writeJson } from './lib/jsonfile.mjs';
+import { USAGE_RELPATH } from './autopilot/sessionpause.mjs';
 
 /** Context usage across known payload shapes -> {used, max} or null. */
 export function extractContext(payload) {
@@ -45,6 +47,38 @@ export function renderLimits(rl) {
     typeof rl?.seven_day?.used_percentage === 'number' ? `7d ${Math.round(rl.seven_day.used_percentage)}%` : null,
   ].filter(Boolean);
   return parts.length ? parts.join(' / ') : null;
+}
+
+/**
+ * #378 (owner-approved 2026-08-05, ADR-0003 § Consequences): a narrow,
+ * best-effort write of the `rate_limits` payload this script already parses,
+ * so autopilot's self-pause feature (`autopilot/sessionpause.mjs`) has a real
+ * file to poll between tickets — turning the harness's push-only statusline
+ * hook into a de-facto poll. Deliberately NOT a revival of `trace.mjs`,
+ * `control/`, `console/`, the queue, or the kill switch (those stay removed).
+ *
+ * Best-effort by design: any failure (no `.forge/` dir the caller can create,
+ * permissions, an unwritable path) is swallowed here so it can NEVER break the
+ * statusline's normal rendering (#378 AC.4) — callers don't need their own
+ * try/catch. Skips silently when there's no `five_hour.used_percentage` to
+ * write (no Pro/Max data this invocation) rather than writing an empty/stale
+ * file that would falsely look like fresh data to a reader.
+ */
+export async function writeUsageSnapshot(cwd, rateLimits, now = new Date()) {
+  try {
+    if (typeof rateLimits?.five_hour?.used_percentage !== 'number') return false;
+    const snapshot = {
+      timestamp: now.toISOString(),
+      five_hour: { used_percentage: rateLimits.five_hour.used_percentage },
+    };
+    if (typeof rateLimits?.seven_day?.used_percentage === 'number') {
+      snapshot.seven_day = { used_percentage: rateLimits.seven_day.used_percentage };
+    }
+    await writeJson(join(cwd, USAGE_RELPATH), snapshot);
+    return true;
+  } catch {
+    return false; // best-effort — never break the statusline (#378 AC.4)
+  }
 }
 
 export function composeLine({ situation, pendingCount, project, branch, ticket, context, model, costUsd, effort, rateLimits }) {
@@ -89,6 +123,7 @@ async function main() {
   } catch { /* glyph degrades to branch inference */ }
 
   const projectDir = payload?.workspace?.project_dir || payload?.workspace?.current_dir || cwd;
+  const rateLimits = payload?.rate_limits || null;
   process.stdout.write(composeLine({
     situation, pendingCount,
     project: String(projectDir).split(/[\\/]/).filter(Boolean).pop(),
@@ -96,9 +131,13 @@ async function main() {
     context: extractContext(payload),
     model: payload?.model?.display_name || null,
     effort: payload?.effort?.level || null,
-    rateLimits: payload?.rate_limits || null,
+    rateLimits,
     costUsd: typeof payload?.cost?.total_cost_usd === 'number' ? payload.cost.total_cost_usd : null,
   }));
+
+  // #378: best-effort, after the render — never let this delay or break the
+  // statusline's own output (writeUsageSnapshot swallows its own errors).
+  await writeUsageSnapshot(cwd, rateLimits);
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;

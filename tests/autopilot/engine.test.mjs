@@ -12,6 +12,12 @@ import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autop
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
+import {
+  shouldPause, isFresh, configuredThresholdPct, loadUsage, evaluateSessionPause,
+  DEFAULT_THRESHOLD_PCT, USAGE_RELPATH,
+} from '../../plugin/scripts/autopilot/sessionpause.mjs';
+import { writeJson } from '../../plugin/scripts/lib/jsonfile.mjs';
+import { CONFIG_RELPATH } from '../../plugin/scripts/lib/config.mjs';
 
 const t = (number, status, priority = 'p1') => ({ number, status, priority, title: `#${number}` });
 
@@ -624,5 +630,109 @@ describe('autopilot reactive filing (#130, AC-5)', () => {
     expect(res).toMatchObject({ ok: true, number: 200, kind: 'bug' });
     expect(seen[0]).toMatchObject({ type: 'bug', status: 'backlog', parent: 125 });
     expect(seen[0].body).toMatch(/while delivering #12/);
+  });
+});
+
+describe('autopilot session-window self-pause (#378, AC.6) — statusline-poll mechanism', () => {
+  it('shouldPause: exactly-at-threshold pauses (inclusive boundary)', () => {
+    expect(shouldPause({ usedPercentage: 90, thresholdPct: 90 })).toBe(true);
+  });
+
+  it('shouldPause: above threshold pauses', () => {
+    expect(shouldPause({ usedPercentage: 95, thresholdPct: 90 })).toBe(true);
+  });
+
+  it('shouldPause: below threshold never pauses', () => {
+    expect(shouldPause({ usedPercentage: 89.9, thresholdPct: 90 })).toBe(false);
+  });
+
+  it('shouldPause: defaults thresholdPct to 90 when the caller omits it', () => {
+    expect(DEFAULT_THRESHOLD_PCT).toBe(90);
+    expect(shouldPause({ usedPercentage: 90 })).toBe(true);
+    expect(shouldPause({ usedPercentage: 89 })).toBe(false);
+  });
+
+  it('shouldPause: missing/malformed usedPercentage never pauses (fail-open)', () => {
+    expect(shouldPause({})).toBe(false);
+    expect(shouldPause({ usedPercentage: undefined })).toBe(false);
+    expect(shouldPause({ usedPercentage: null })).toBe(false);
+    expect(shouldPause({ usedPercentage: NaN })).toBe(false);
+    expect(shouldPause({ usedPercentage: 'high' })).toBe(false);
+    expect(shouldPause()).toBe(false);
+  });
+
+  it('isFresh: within maxAgeMs is fresh; older is stale; missing/unparsable is stale', () => {
+    const now = Date.parse('2026-08-05T12:00:00Z');
+    expect(isFresh({ timestamp: '2026-08-05T11:50:00Z', now, maxAgeMs: 20 * 60 * 1000 })).toBe(true);
+    expect(isFresh({ timestamp: '2026-08-05T11:30:00Z', now, maxAgeMs: 20 * 60 * 1000 })).toBe(false);
+    expect(isFresh({ timestamp: undefined, now })).toBe(false);
+    expect(isFresh({ timestamp: 'not-a-date', now })).toBe(false);
+  });
+
+  it('configuredThresholdPct: unset/malformed config -> null (opt-in not taken, AC.4)', () => {
+    expect(configuredThresholdPct(undefined)).toBeNull();
+    expect(configuredThresholdPct({})).toBeNull();
+    expect(configuredThresholdPct({ autopilot: {} })).toBeNull();
+    expect(configuredThresholdPct({ autopilot: { sessionPauseThresholdPct: 0 } })).toBeNull();
+    expect(configuredThresholdPct({ autopilot: { sessionPauseThresholdPct: 101 } })).toBeNull();
+    expect(configuredThresholdPct({ autopilot: { sessionPauseThresholdPct: 'high' } })).toBeNull();
+  });
+
+  it('configuredThresholdPct: a valid number opts in at that value', () => {
+    expect(configuredThresholdPct({ autopilot: { sessionPauseThresholdPct: 85 } })).toBe(85);
+  });
+
+  it('loadUsage: tolerates a missing or corrupt usage.json — never throws', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-sessionpause-'));
+    expect(await loadUsage(cwd)).toBeNull();
+    await mkdir(dirname(join(cwd, USAGE_RELPATH)), { recursive: true });
+    await writeFile(join(cwd, USAGE_RELPATH), '{not json', 'utf8');
+    await expect(loadUsage(cwd)).resolves.toBeNull();
+  });
+
+  describe('evaluateSessionPause — the orchestrator-facing decision (AC.1/AC.4)', () => {
+    it('AC.2/AC.4: config unset -> never pauses, regardless of usage data (today\'s behavior unchanged)', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-sessionpause-'));
+      await writeJson(join(cwd, USAGE_RELPATH), { timestamp: new Date().toISOString(), five_hour: { used_percentage: 99 } });
+      const dec = await evaluateSessionPause(cwd);
+      expect(dec.pause).toBe(false);
+      expect(dec.reason).toMatch(/not configured/);
+    });
+
+    it('opted in + fresh usage at/above threshold -> pauses', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-sessionpause-'));
+      await writeJson(join(cwd, CONFIG_RELPATH), { autopilot: { sessionPauseThresholdPct: 90 } });
+      await writeJson(join(cwd, USAGE_RELPATH), { timestamp: new Date().toISOString(), five_hour: { used_percentage: 92 } });
+      const dec = await evaluateSessionPause(cwd);
+      expect(dec.pause).toBe(true);
+      expect(dec.thresholdPct).toBe(90);
+      expect(dec.usedPercentage).toBe(92);
+      expect(dec.reason).toMatch(/Resume protocol/);
+    });
+
+    it('opted in + fresh usage below threshold -> does not pause', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-sessionpause-'));
+      await writeJson(join(cwd, CONFIG_RELPATH), { autopilot: { sessionPauseThresholdPct: 90 } });
+      await writeJson(join(cwd, USAGE_RELPATH), { timestamp: new Date().toISOString(), five_hour: { used_percentage: 50 } });
+      expect((await evaluateSessionPause(cwd)).pause).toBe(false);
+    });
+
+    it('opted in but no usage.json yet (never ran under Pro/Max) -> does not pause', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-sessionpause-'));
+      await writeJson(join(cwd, CONFIG_RELPATH), { autopilot: { sessionPauseThresholdPct: 90 } });
+      const dec = await evaluateSessionPause(cwd);
+      expect(dec.pause).toBe(false);
+      expect(dec.reason).toMatch(/no usage\.json yet/);
+    });
+
+    it('opted in but usage.json is stale (old session) -> does not pause', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-sessionpause-'));
+      await writeJson(join(cwd, CONFIG_RELPATH), { autopilot: { sessionPauseThresholdPct: 90 } });
+      const old = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h old
+      await writeJson(join(cwd, USAGE_RELPATH), { timestamp: old, five_hour: { used_percentage: 99 } });
+      const dec = await evaluateSessionPause(cwd, { maxAgeMs: 20 * 60 * 1000 });
+      expect(dec.pause).toBe(false);
+      expect(dec.reason).toMatch(/stale/);
+    });
   });
 });

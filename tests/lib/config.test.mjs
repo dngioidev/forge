@@ -151,6 +151,30 @@ describe('validateConfig', () => {
     const notObj = validCfg(); notObj.runner = { advancedCi: [] };
     expect(validateConfig(notObj).errors).toContain('runner.advancedCi: must be an object');
   });
+
+  // #378 — the optional `autopilot.sessionPauseThresholdPct` field (self-pause
+  // near the 5h session usage window). Absent means opt-in not taken (AC.4).
+  it('#378 AC.4: accepts an absent autopilot block (opt-in not taken, unchanged behavior)', () => {
+    expect(validateConfig(validCfg()).ok).toBe(true);
+  });
+
+  it('#378 AC.2: accepts a well-formed autopilot.sessionPauseThresholdPct', () => {
+    const cfg = validCfg();
+    cfg.autopilot = { sessionPauseThresholdPct: 90 };
+    expect(validateConfig(cfg)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('#378: rejects a non-object autopilot block', () => {
+    const cfg = validCfg(); cfg.autopilot = [];
+    expect(validateConfig(cfg).errors).toContain('autopilot: must be an object');
+  });
+
+  it('#378: rejects a non-numeric or out-of-range sessionPauseThresholdPct', () => {
+    for (const bad of ['90', 0, -1, 101, NaN, null]) {
+      const cfg = validCfg(); cfg.autopilot = { sessionPauseThresholdPct: bad };
+      expect(validateConfig(cfg).errors).toContain('autopilot.sessionPauseThresholdPct: must be a number between 0 and 100');
+    }
+  });
 });
 
 describe('normalizeRunner (#226/AC5 defaults)', () => {
