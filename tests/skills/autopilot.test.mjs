@@ -179,6 +179,13 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/security.?(response|hold)/i);
   });
 
+  it('#379: the delivery subagent spawn pins an explicit model, not a bare unpinned general-purpose', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // the spawn instruction names an explicit model override, tiered like every other forge role agent (#101)
+    expect(s).toMatch(/subagent_type:\s*general-purpose.*model:\s*["']?sonnet["']?/i);
+    expect(s).toMatch(/#101/);
+  });
+
   it('AC-2 front door + AC-5 files new work + AC-6 safety are all specified', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // auto-triage front door, under-specified => escalate + skip
