@@ -37,6 +37,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [Batch close](plans/2026-07-20-batch-close.md) — tasks for #123: comma-separated `--issue` in `board/close.mjs`.
 - [#289 — agy init emit](plans/2026-07-26-289-agy-init-emit.md) — tasks for #289 (ADR-0007 AC3): `forge init --host agy` emits the proven agy plugin package (co-located `plugin.json`, generated `mcp_config.json` + `hooks.json`, deny/capture shims, short-path staging).
 - [#307 — agy emit relocatable](plans/2026-08-04-307-agy-emit-relocatable.md) — tasks for #307 (epic #174): emit plugin-root-relative paths in `mcp_config.json` + `hooks.json` so the package survives `agy plugin install` (copy) and deletion of the `--out` dir.
+- [#386 — graph availability notice](plans/2026-08-06-386-graph-availability-notice.md) — tasks for #386 (parent #182): `forge:doctor` advises when `tsconfig.json` is present and `features.graph` isn't on, with the 3-step enable sequence.
 
 ## Spikes
 
