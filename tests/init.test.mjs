@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInit, parseArgs } from '../plugin/scripts/init.mjs';
@@ -45,29 +45,31 @@ describe('parseArgs', () => {
   });
 });
 
+// Shared fresh-bootstrap route set (module scope so both the fresh-bootstrap
+// describe and the docs-scaffold describe below can reuse it).
+function freshRoutes() {
+  let fieldsCall = 0;
+  return [
+    ['auth status', AUTH_OK],
+    ['repo view', REPO_VIEW],
+    ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 9, title: 'forge' }) }],
+    ['project link', { stdout: '' }], // #64: fresh create links the board to the repo
+
+    [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
+      fieldsCall += 1;
+      // first discovery: built-in status only, empty project; re-discovery: full set
+      return fieldsCall === 1
+        ? fieldsResponse(0, [{ id: 'PVTSSF_new1', name: 'Status', options: [{ id: 'a', name: 'Todo' }, { id: 'b', name: 'In Progress' }, { id: 'c', name: 'Done' }] }])
+        : fieldsResponse(0, FRESH_FULL_FIELDS);
+    }],
+    [(j) => j.includes('updateProjectV2Field'), { stdout: JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: { id: 'PVTSSF_new1', options: [] } } } }) }],
+    [(j) => j.includes('createProjectV2Field'), { stdout: JSON.stringify({ data: { createProjectV2Field: { projectV2Field: { id: 'PVTSSF_x', options: [] } } } }) }],
+    ['issue list', { stdout: '[]' }],
+    ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/42\n' }],
+  ];
+}
+
 describe('runInit — fresh bootstrap (AC-1.2)', () => {
-  function freshRoutes() {
-    let fieldsCall = 0;
-    return [
-      ['auth status', AUTH_OK],
-      ['repo view', REPO_VIEW],
-      ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 9, title: 'forge' }) }],
-      ['project link', { stdout: '' }], // #64: fresh create links the board to the repo
-
-      [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
-        fieldsCall += 1;
-        // first discovery: built-in status only, empty project; re-discovery: full set
-        return fieldsCall === 1
-          ? fieldsResponse(0, [{ id: 'PVTSSF_new1', name: 'Status', options: [{ id: 'a', name: 'Todo' }, { id: 'b', name: 'In Progress' }, { id: 'c', name: 'Done' }] }])
-          : fieldsResponse(0, FRESH_FULL_FIELDS);
-      }],
-      [(j) => j.includes('updateProjectV2Field'), { stdout: JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: { id: 'PVTSSF_new1', options: [] } } } }) }],
-      [(j) => j.includes('createProjectV2Field'), { stdout: JSON.stringify({ data: { createProjectV2Field: { projectV2Field: { id: 'PVTSSF_x', options: [] } } } }) }],
-      ['issue list', { stdout: '[]' }],
-      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/42\n' }],
-    ];
-  }
-
   it('creates project, standard fields, delivery log, forge.json, gitignore', async () => {
     const cwd = await tmpCwd();
     const { gh, calls } = fakeGh(freshRoutes());
@@ -215,6 +217,101 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
     expect(res.ok).toBe(true);
     const creates = calls.filter((c) => c.includes('createProjectV2Field'));
     expect(creates.length).toBe(2); // size + type only — priority not recreated
+  });
+});
+
+describe('runInit — docs scaffold (#389)', () => {
+  it('AC-389.1: fresh init on an empty repo seeds docs/{specs,plans,spikes,design,decisions,guides}/ + the route-index file', async () => {
+    const cwd = await tmpCwd();
+    const { gh } = fakeGh(freshRoutes());
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+
+    for (const sub of ['specs', 'plans', 'spikes', 'design', 'decisions', 'guides']) {
+      const entries = await readdir(join(cwd, 'docs', sub));
+      expect(entries).toEqual([]); // seeded empty — consumers fill them in
+    }
+    const index = await readFile(join(cwd, 'docs', 'README.md'), 'utf8');
+    expect(index).toMatch(/^# .* — docs route index/);
+    expect(index).toContain('One line per doc. Update this file whenever a doc lands, moves, or renames');
+    for (const heading of ['## Specs', '## Plans', '## Spikes', '## Design specs', '## Decisions', '## Guides']) {
+      expect(index).toContain(heading);
+    }
+  });
+
+  it('AC-389.1: fresh init leaves a pre-existing docs/ (found on disk before forge.json exists) completely untouched', async () => {
+    const cwd = await tmpCwd();
+    await mkdir(join(cwd, 'docs', 'custom'), { recursive: true });
+    await writeFile(join(cwd, 'docs', 'custom', 'notes.md'), '# pre-existing notes\n', 'utf8');
+
+    const { gh } = fakeGh(freshRoutes());
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+
+    // untouched: no seeded subdirs, no route-index file, custom content intact
+    await expect(readdir(join(cwd, 'docs'))).resolves.toEqual(['custom']);
+    expect(await readFile(join(cwd, 'docs', 'custom', 'notes.md'), 'utf8')).toBe('# pre-existing notes\n');
+    await expect(readFile(join(cwd, 'docs', 'README.md'), 'utf8')).rejects.toThrow();
+  });
+
+  it('AC-389.1: a non-ENOENT readdir failure (docs/ path exists but is not listable as a dir) skips seeding rather than assuming absent', async () => {
+    const cwd = await tmpCwd();
+    // docs is a plain FILE, not a directory: readdir(docsDir) throws ENOTDIR,
+    // a real docs/README.md-shaped path that must never be silently overwritten.
+    await writeFile(join(cwd, 'docs'), '# not actually a directory\n', 'utf8');
+
+    const { gh } = fakeGh(freshRoutes());
+    const logs = [];
+    const res = await runInit({ gh, cwd, log: (m) => logs.push(m), args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true); // a non-ENOENT docs error degrades, it never fails init
+    expect(logs.join(' ')).toMatch(/docs: scaffold skipped/i);
+    // the pre-existing docs path is byte-for-byte untouched
+    expect(await readFile(join(cwd, 'docs'), 'utf8')).toBe('# not actually a directory\n');
+  });
+
+  it('AC-389.1: adopt mode never seeds or touches docs/, even when docs/ is absent', async () => {
+    const cwd = await tmpCwd();
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed, null, 2), 'utf8');
+
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project view 8', { stdout: JSON.stringify({ id: BOARD8.projectId, number: 8, title: 'forge - AI dev platform' }) }],
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(14, BOARD8.fields)],
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/15\n' }],
+    ]);
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--skip-doctor']) });
+    expect(res.ok).toBe(true);
+
+    // adopt mode: no docs/ directory created at all
+    await expect(readdir(join(cwd, 'docs'))).rejects.toThrow();
+  });
+
+  it("AC-389.1: adopt mode on a repo with its own existing docs/ layout leaves it byte-for-byte untouched", async () => {
+    const cwd = await tmpCwd();
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed, null, 2), 'utf8');
+    await mkdir(join(cwd, 'docs', 'architecture'), { recursive: true });
+    await writeFile(join(cwd, 'docs', 'architecture', 'overview.md'), '# their own layout\n', 'utf8');
+
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project view 8', { stdout: JSON.stringify({ id: BOARD8.projectId, number: 8, title: 'forge - AI dev platform' }) }],
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(14, BOARD8.fields)],
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/15\n' }],
+    ]);
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--skip-doctor']) });
+    expect(res.ok).toBe(true);
+
+    await expect(readdir(join(cwd, 'docs'))).resolves.toEqual(['architecture']);
+    expect(await readFile(join(cwd, 'docs', 'architecture', 'overview.md'), 'utf8')).toBe('# their own layout\n');
+    await expect(readFile(join(cwd, 'docs', 'README.md'), 'utf8')).rejects.toThrow();
   });
 });
 

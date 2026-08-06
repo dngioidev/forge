@@ -38,6 +38,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [#289 — agy init emit](plans/2026-07-26-289-agy-init-emit.md) — tasks for #289 (ADR-0007 AC3): `forge init --host agy` emits the proven agy plugin package (co-located `plugin.json`, generated `mcp_config.json` + `hooks.json`, deny/capture shims, short-path staging).
 - [#307 — agy emit relocatable](plans/2026-08-04-307-agy-emit-relocatable.md) — tasks for #307 (epic #174): emit plugin-root-relative paths in `mcp_config.json` + `hooks.json` so the package survives `agy plugin install` (copy) and deletion of the `--out` dir.
 - [#386 — graph availability notice](plans/2026-08-06-386-graph-availability-notice.md) — tasks for #386 (parent #182): `forge:doctor` advises when `tsconfig.json` is present and `features.graph` isn't on, with the 3-step enable sequence.
+- [#389 — scaffold docs structure](plans/2026-08-06-389-scaffold-docs-structure.md) — tasks for #389 (parent #182): `forge:init` seeds `docs/{specs,plans,spikes,design,decisions,guides}/` + a route-index template on a fresh scaffold only, never on adopt; the convention documented as a named rule in `docs/guides/install.md`.
 
 ## Spikes
 
