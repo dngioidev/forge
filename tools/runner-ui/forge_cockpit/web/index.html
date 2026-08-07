@@ -41,6 +41,9 @@
     <button class="mode-btn" role="tab" id="tab-logs" aria-selected="false" aria-controls="m-logs" tabindex="-1" data-mode="logs">
       <span class="glyph" aria-hidden="true">&#8801;</span><span class="lbl-full">Logs</span>
     </button>
+    <button class="mode-btn" role="tab" id="tab-machine" aria-selected="false" aria-controls="m-machine" tabindex="-1" data-mode="machine">
+      <span class="glyph" aria-hidden="true">&#9679;</span><span class="lbl-full">Machine</span>
+    </button>
   </div>
 
   <section class="mode-view" id="m-usage" role="tabpanel" aria-labelledby="tab-usage" tabindex="0" hidden>
@@ -71,8 +74,20 @@
       <div id="logs-body"><div class="empty-mini">select a runner to read its logs</div></div>
     </div>
   </section>
+
+  <section class="mode-view" id="m-machine" role="tabpanel" aria-labelledby="tab-machine" tabindex="0" hidden>
+    <div class="panel">
+      <h3>this machine &middot; live</h3>
+      <div class="heat-rows" id="machine-rows" aria-busy="true">
+        <div class="empty-mini">reading…</div>
+      </div>
+    </div>
+    <div id="machine-error" hidden></div>
+  </section>
 </main>
 
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-addon-fit.js"></script>
 <script type="module" src="/static/app.mjs"></script>
 </body>
 </html>

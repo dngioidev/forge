@@ -12,6 +12,7 @@ app, served by uvicorn, that exposes each core as a loopback JSON endpoint —
 * ``GET  /api/logs``      — :func:`forge_cockpit.logs.read_logs`.
 * ``POST /api/provision`` — :func:`forge_cockpit.provision.provision` (install/uninstall).
 * ``GET  /api/usage``     — :func:`forge_cockpit.usage.collect_usage` (+ aggregates).
+* ``GET  /api/machine``   — :func:`forge_cockpit.machine.snapshot` (live CPU/mem/disk, #395).
 
 It is a **thin route layer**: it decodes the request, calls the matching core
 UNCHANGED, and serializes the core's typed result to JSON. No business logic
@@ -46,7 +47,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from forge_cockpit import discovery, terminal_bridge, usage
+from forge_cockpit import discovery, machine, terminal_bridge, usage
 from forge_cockpit.security import (
     LoopbackGuardMiddleware,
     authorize_websocket,
@@ -194,6 +195,18 @@ def _serialize_aggregates(aggs: dict[str, UsageAggregate]) -> dict:
     return {key: _serialize_aggregate(agg) for key, agg in aggs.items()}
 
 
+def _serialize_machine(snap: machine.MachineSnapshot) -> dict:
+    return {
+        "cpu_percent": snap.cpu_percent,
+        "memory_percent": snap.memory_percent,
+        "memory_used_bytes": snap.memory_used_bytes,
+        "memory_total_bytes": snap.memory_total_bytes,
+        "disk_percent": snap.disk_percent,
+        "disk_used_bytes": snap.disk_used_bytes,
+        "disk_total_bytes": snap.disk_total_bytes,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # App factory + routes (thin — decode, call the core, serialize).
 # --------------------------------------------------------------------------- #
@@ -319,6 +332,16 @@ def create_app(*, port: int = DEFAULT_PORT, session_token: str | None = None) ->
             "by_day": _serialize_aggregates(aggregate_by_day(records)),
             "by_model": _serialize_aggregates(aggregate_by_model(records)),
         }
+
+    @app.get("/api/machine")
+    def get_machine() -> dict:
+        """Live CPU/memory/disk snapshot (:func:`machine.snapshot`) — #395.
+
+        Session-scoped and live-only, per the runner-monitoring spike's
+        sequencing: no persistence, no history — a point-in-time read the UI
+        polls while the Machine tab is open, same pattern as ``/api/fleet``.
+        """
+        return _serialize_machine(machine.snapshot())
 
     @app.websocket("/api/terminal")
     async def terminal(websocket: WebSocket) -> None:

@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatTokens, formatCost, classifyRunner, statusLabel, controlsFor,
   logLevelOf, dayKey, sparkPath, actionGerund, clockStamp,
+  heatLevel, heatLabel, formatBytes,
 } from '../../tools/runner-ui/forge_cockpit/web/format.mjs';
 
 describe('formatTokens', () => {
@@ -106,6 +107,46 @@ describe('logLevelOf — level is text, not colour-only', () => {
 describe('dayKey', () => {
   it('formats a Date as YYYY-MM-DD (zero-padded)', () => {
     expect(dayKey(new Date(2026, 7, 3))).toBe('2026-08-03');
+  });
+});
+
+describe('heatLevel — machine metrics on the fleet-urgency heat scale (#395)', () => {
+  it('maps low load to cool, saturation to alarm', () => {
+    expect(heatLevel(0)).toBe('cool');
+    expect(heatLevel(15)).toBe('cool');
+    expect(heatLevel(45)).toBe('warm');
+    expect(heatLevel(70)).toBe('spark');
+    expect(heatLevel(85)).toBe('ember');
+    expect(heatLevel(97)).toBe('alarm');
+  });
+  it('is a monotonic step function at its own boundaries', () => {
+    expect(heatLevel(29.9)).toBe('cool');
+    expect(heatLevel(30)).toBe('warm');
+    expect(heatLevel(91.9)).toBe('ember');
+    expect(heatLevel(92)).toBe('alarm');
+  });
+  it('treats junk as 0 (cool), never throws', () => {
+    expect(heatLevel(undefined)).toBe('cool');
+    expect(heatLevel('nope')).toBe('cool');
+  });
+});
+
+describe('heatLabel — non-colour-only text for a heat level', () => {
+  it('gives a text label for every level', () => {
+    expect(heatLabel('cool')).toBe('idle');
+    expect(heatLabel('alarm')).toBe('saturated');
+  });
+});
+
+describe('formatBytes', () => {
+  it('picks the largest sensible unit', () => {
+    expect(formatBytes(8_000_000_000)).toBe('8.0 GB');
+    expect(formatBytes(500_000_000_000)).toBe('500.0 GB');
+    expect(formatBytes(2_500_000)).toBe('2.5 MB');
+    expect(formatBytes(900)).toBe('900 B');
+  });
+  it('treats junk as 0', () => {
+    expect(formatBytes(undefined)).toBe('0 B');
   });
 });
 

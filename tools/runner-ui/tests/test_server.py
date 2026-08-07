@@ -30,6 +30,7 @@ from forge_cockpit.discovery import (
     Target,
 )
 from forge_cockpit.logs import LogRead
+from forge_cockpit.machine import MachineSnapshot
 from forge_cockpit.provision import ProvisionResult
 from forge_cockpit.usage import UsageRecord
 
@@ -322,6 +323,32 @@ def test_usage_endpoint_returns_records_and_aggregates(client, monkeypatch):
     assert by_model["total_cost"] == pytest.approx(5.0 + 12.5)  # 1M*$5 + 0.5M*$25
     assert body["by_session"]["s1"]["turns"] == 1
     assert body["by_day"]["2026-08-03"]["turns"] == 1
+
+
+def test_machine_endpoint_returns_snapshot(client, monkeypatch):
+    """#395 — GET /api/machine wires :func:`machine.snapshot` unchanged to JSON."""
+    snap = MachineSnapshot(
+        cpu_percent=42.5,
+        memory_percent=61.0,
+        memory_used_bytes=8_000_000_000,
+        memory_total_bytes=16_000_000_000,
+        disk_percent=73.2,
+        disk_used_bytes=300_000_000_000,
+        disk_total_bytes=500_000_000_000,
+    )
+    monkeypatch.setattr(server.machine, "snapshot", lambda: snap)
+
+    body = client.get("/api/machine").json()
+
+    assert body == {
+        "cpu_percent": 42.5,
+        "memory_percent": 61.0,
+        "memory_used_bytes": 8_000_000_000,
+        "memory_total_bytes": 16_000_000_000,
+        "disk_percent": 73.2,
+        "disk_used_bytes": 300_000_000_000,
+        "disk_total_bytes": 500_000_000_000,
+    }
 
 
 def test_usage_response_is_metadata_only_no_content_fields(client, monkeypatch):

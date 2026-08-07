@@ -23,10 +23,38 @@ sidebar flattens into a horizontal-scroll strip above the main pane so the
 terminal and chart reclaim full width. Dark-only, drawing exclusively on the
 existing smithy token vocabulary (see Token delta) — zero new tokens.
 
+**#395 extension (2026-08-08) — terminal fix, fleet declutter, live machine
+metrics.** Three grounded problems surfaced from live use: the terminal never
+actually initialized in the browser (the vendored xterm.js/fit-addon scripts
+were never `<script>`-loaded — a gap in the original #354 landing, now fixed
+with a regression test locking the load order); offline runners accumulated
+indefinitely with no way to declutter (discovery never forgets a registration);
+and there were no machine-resource metrics. This extension adds: a **4th mode
+tab, Machine**, showing live CPU/mem/disk as heat-bar strips on the *existing*
+heat scale (signature element — real hardware load reads as literal heat, cool
+iron to alarm-red, the same vocabulary already mapped onto fleet health, not a
+new metaphor); a **closed-by-default offline disclosure** in the fleet sidebar
+(native `<details>`/`<summary>`, every entry stays reachable, none deleted);
+and terminal **reconnect with capped exponential backoff** (a dropped
+connection no longer requires a full page reload). Zero new tokens — see Token
+delta.
+
 ## States matrix
 Three representative surfaces: the **fleet mini-card**, a **control button**
 (start / stop / restart — every mutating control requires the session token),
-and the **usage panel**.
+and the **usage panel**. #395 adds two more: the **offline disclosure** and the
+**machine heat-row**.
+
+| state (#395) | normal content | long content | extreme content |
+| --- | --- | --- | --- |
+| default | offline disclosure: closed, dashed border, "N offline" summary in `ink.smoke`, ▸ marker; heat-row: label + `N% · <label>` value colored by `heatLevel()`, a filled bar | — | 0 offline: the disclosure element is omitted entirely (not rendered empty) |
+| hover | disclosure summary text brightens to `ink.ash`; the ▸ marker itself has no hover state | — | — |
+| focus | 2px `heat.ember` outline on the summary (native `<details>` focus target) | — | — |
+| active | expanded: ▾ marker (rotated ▸), offline cards render identically to online ones inside | — | — |
+| disabled | n/a — the disclosure and heat-rows have no disabled state | — | — |
+| loading | machine tab: `aria-busy="true"` + "reading…" placeholder before the first `/api/machine` response | — | — |
+| empty | machine tab with the endpoint unreachable: falls to the error row below, never a blank panel | — | — |
+| error | machine panel: `role=alert` banner ("machine metrics unreadable — …") in `error`, same pattern as the usage panel | error text wraps inside the banner | repeated poll failures keep the last good render (same fleet/usage precedent) |
 
 | state | normal content | long content | extreme content |
 | --- | --- | --- | --- |
@@ -65,32 +93,44 @@ appears it enters as a token-delta finding (a light-mode mapping of the
 differences only — no theme-specific one-off values.
 
 ## A11y contract
-- **Focus order:** wordmark/stamp → fleet mini-cards in list order, and within
-  a card its control buttons left-to-right (start/stop/restart/re-provision) →
-  main mode bar (Usage / Terminal / Logs tabs) → the active mode view's
-  interactive surface (the terminal, or usage/log scroll region) → session
-  pill. Reordering the fleet never traps focus.
+- **Focus order:** wordmark/stamp → fleet mini-cards in list order → the
+  offline disclosure summary (if present) → within a card its control buttons
+  left-to-right (start/stop/restart/re-provision) → main mode bar (Usage /
+  Terminal / Logs / Machine tabs) → the active mode view's interactive surface
+  (the terminal, or usage/log/machine scroll region) → session pill.
+  Reordering the fleet never traps focus. The offline disclosure sits after
+  every prominent card, before the mode bar — it never interrupts the online
+  card sequence.
 - **Roles / accessible names:** sidebar `aria-label="Fleet health"`; fleet list
   `role=list`, each card `role=listitem`; the update stamp
   `role=status aria-live=polite`; mode bar `role=tablist` with `role=tab` +
   `aria-selected` buttons controlling `role=tabpanel` views; the mis-target
-  message and usage error banner `role=alert`; the token chart `role=img` with
-  a text `aria-label` summarizing the trend; the terminal surface labeled and
-  keyboard-reachable.
+  message, usage error banner, and machine error banner `role=alert`; the
+  token chart `role=img` with a text `aria-label` summarizing the trend; each
+  machine heat-bar `role=img` with a text `aria-label` stating the metric,
+  percentage, and heat label (never color-only); the terminal surface labeled
+  and keyboard-reachable. The offline disclosure is a native `<details>`/
+  `<summary>` — expand/collapse, focus, and Enter/Space activation are the
+  browser's built-in semantics, not re-implemented.
 - **Contrast pairs (token references):** `ink.ash` on `iron.plate` / `iron.bg`
   (body + terminal text) ≥ 7:1; `ink.smoke` on `iron.plate` (secondary/meta)
   ≥ 4.5:1; `success` / `heat.spark` / `heat.alarm` / `error` status labels on
   `iron.bg` ≥ 4.5:1; `ink.steel` links on `iron.plate` ≥ 4.5:1.
 - **Target sizes:** every control (mini-card buttons, mode-bar tabs) ≥ 24px hit
   height (`min-height:24px` + padding); at 375 the strip's controls keep the
-  same floor.
+  same floor. The offline disclosure summary is a full-width click/tap target
+  (`padding:8px 10px`), comfortably above the floor.
 - **Non-color-only status:** fleet online / offline / mis-target never rely on
   the edge color alone — each carries a text label ("online" / "offline" /
   "mis-target") and mis-target adds a `role=alert` glyph line; log levels carry
-  an uppercase text level beside their color.
+  an uppercase text level beside their color. Machine heat-rows carry the same
+  discipline: every bar's value text reads "N% · idle/moderate/busy/high/
+  saturated" (`heatLabel()`), never a bare colored bar.
 - **Reduced motion behavior:** under `prefers-reduced-motion:reduce` the
   restart spinner and the terminal cursor blink both stop (static glyph /
-  steady cursor); the pane-toggle and card-hover transitions are removed.
+  steady cursor); the pane-toggle and card-hover transitions are removed; the
+  offline-disclosure marker rotation and the heat-bar fill width transition
+  are both removed (instant, no animated fill-in).
 
 ## Motion
 | element | property | duration token | easing token | reduced-motion |
@@ -99,6 +139,8 @@ differences only — no theme-specific one-off values.
 | control button (hover/active) | border-color, color, background | `motion.calm` (250ms) | default ease | none (transition removed) |
 | mini-card control spinner (loading) | rotate | 900ms linear loop | linear | animation none — static glyph |
 | terminal cursor | blink (opacity) | 1s step | step-start | animation none — steady cursor at reduced opacity |
+| offline-disclosure marker (#395) | rotate (▸→▾) | `motion.calm` (250ms) | default ease | none (transition removed) |
+| machine heat-bar fill (#395) | width | `motion.calm` (250ms) | default ease | none (transition removed) |
 
 ## Token delta
 - **Tokens used:** the smithy vocabulary only —
@@ -130,6 +172,19 @@ differences only — no theme-specific one-off values.
   beyond the console's situation-urgency metaphor — health, not situation. It
   is intentional reuse; if the two surfaces ever need independent scales this
   mapping must be revisited explicitly rather than forked silently.
+- **Reuse decision, #395 — the full heat scale for machine load:** `heatLevel()`
+  (`format.mjs`) maps a 0-100 load percentage onto all five heat steps —
+  `heat.cool` (idle) → `heat.warm` (moderate) → `heat.spark` (busy) →
+  `heat.ember` (high) → `heat.alarm` (saturated). This is a **third consumer**
+  of the heat vocabulary (after the console's situation-urgency and the
+  fleet's binary health), and the first to use the full five-step gradient
+  rather than a 2-3-way mapping — deliberate: CPU/mem/disk load is genuinely
+  continuous, unlike fleet health's online/offline/mis-target discretes. No
+  new tokens; thresholds (30/60/80/92%) are a presentation judgment in
+  `heatLevel()`, not a token concern.
+- **New tokens proposed:** none. Zero new tokens for the #395 extension —
+  the offline disclosure and machine panel are built entirely from
+  `iron.*`/`ink.*`/`heat.*`/`motion.calm` already in the vocabulary above.
 - **One-off values:** none (by definition — a one-off is a finding). Edge and
   hover washes are rgba() of the `heat.*` tokens at low alpha, not new colors.
 
