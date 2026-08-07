@@ -63,6 +63,18 @@ button.mini-ctl.loading { color:var(--heat-spark); border-color:rgba(255,209,102
 .spin { display:inline-block; width:8px; height:8px; border:2px solid rgba(255,209,102,.35); border-top-color:var(--heat-spark); border-radius:50%; animation:spin 900ms linear infinite; margin-right:3px; vertical-align:-1px; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .empty-mini { text-align:center; color:var(--ink-smoke); font-size:11px; padding:14px 8px; border:1px dashed var(--iron-seam); border-radius:2px; }
+
+/* #395 — offline runners collapse under a closed-by-default disclosure so a
+   fleet with a long history of stopped services doesn't bury the ones that
+   matter right now. Native <details>/<summary>: keyboard/AT-operable for free,
+   no JS state to track beyond what's already there. */
+.offline-group { border:1px dashed var(--iron-seam); border-radius:2px; }
+.offline-group summary { list-style:none; cursor:pointer; font-size:11px; color:var(--ink-smoke); text-transform:uppercase; letter-spacing:.06em; padding:8px 10px; display:flex; align-items:center; gap:6px; }
+.offline-group summary::-webkit-details-marker { display:none; }
+.offline-group summary::before { content:'▸'; font-size:9px; transition:transform var(--motion-calm); }
+.offline-group[open] summary::before { transform:rotate(90deg); }
+.offline-group summary:hover { color:var(--ink-ash); }
+.offline-group-list { display:flex; flex-direction:column; gap:8px; padding:0 8px 8px; }
 .sidebar-foot { padding:12px 16px; border-top:1px solid var(--iron-seam); }
 .session-pill { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-smoke); }
 .session-pill .dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 6px rgba(70,167,88,.5); }
@@ -102,6 +114,28 @@ svg.chart { width:100%; height:170px; display:block; overflow:visible; }
 .breakdown-row .figs { width:170px; text-align:right; color:var(--ink-ash); flex-shrink:0; }
 .err-banner { color:var(--error); border:1px dashed rgba(226,72,61,.5); padding:8px 10px; border-radius:2px; font-size:12px; margin-top:10px; }
 
+/* #395 — machine metrics, the signature element: CPU/mem/disk rendered on the
+   SAME heat.cool->heat.alarm scale already used for fleet urgency (format.mjs
+   heatLevel). Real hardware load reads as literal heat — cold iron at idle,
+   alarm-red at saturation — not a generic gauge widget. */
+.heat-rows { display:flex; flex-direction:column; gap:16px; }
+.heat-row-head { display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:6px; }
+.heat-row-label { font-size:11px; color:var(--ink-smoke); text-transform:uppercase; letter-spacing:.08em; }
+.heat-row-value { font-size:12px; }
+.heat-row-value.cool  { color:var(--ink-smoke); }
+.heat-row-value.warm  { color:var(--heat-warm); }
+.heat-row-value.spark { color:var(--heat-spark); }
+.heat-row-value.ember { color:var(--heat-ember); }
+.heat-row-value.alarm { color:var(--heat-alarm); }
+.heat-bar { height:10px; background:var(--iron-bg); border:1px solid var(--iron-seam); border-radius:2px; overflow:hidden; }
+.heat-bar-fill { display:block; height:100%; transition:width var(--motion-calm) ease; }
+.heat-bar-fill.cool  { background:var(--heat-cool); }
+.heat-bar-fill.warm  { background:var(--heat-warm); }
+.heat-bar-fill.spark { background:var(--heat-spark); }
+.heat-bar-fill.ember { background:var(--heat-ember); }
+.heat-bar-fill.alarm { background:var(--heat-alarm); box-shadow:0 0 8px rgba(226,72,61,.5); }
+.heat-row-detail { font-size:11px; color:var(--ink-smoke); margin-top:5px; }
+
 .term-pane { background:var(--iron-pit); border:1px solid var(--iron-seam); border-radius:3px; padding:8px 10px; height:calc(100vh - 190px); min-height:260px; overflow:hidden; }
 .term-pane .xterm { height:100%; }
 .term-note { margin-top:10px; font-size:11px; color:var(--ink-smoke); }
@@ -133,6 +167,9 @@ svg.chart { width:100%; height:170px; display:block; overflow:visible; }
   .sidebar { width:100%; border-right:none; border-bottom:1px solid var(--iron-seam); }
   .fleet-list { flex-direction:row; overflow-x:auto; overflow-y:visible; }
   .mini-card { min-width:200px; flex-shrink:0; }
+  .offline-group { min-width:160px; flex-shrink:0; }
+  .offline-group-list { flex-direction:row; }
+  .offline-group[open] .offline-group-list { flex-direction:column; min-width:200px; }
   .sidebar-foot { display:none; }
   .mode-bar { padding:8px 12px 0; }
   .mode-btn { padding:8px 10px; font-size:11px; }
@@ -147,4 +184,6 @@ svg.chart { width:100%; height:170px; display:block; overflow:visible; }
   .mode-view:not([hidden]) { animation:none; }
   .mode-btn, button.mini-ctl { transition:none; }
   .term-pane .xterm-cursor-blink .xterm-cursor { animation:none !important; }
+  .heat-bar-fill { transition:none; }
+  .offline-group summary::before { transition:none; }
 }

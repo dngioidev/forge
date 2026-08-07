@@ -104,6 +104,41 @@ export function dayKey(d = new Date()) {
 }
 
 /**
+ * Map a 0-100 load percentage onto the smithy heat scale (#395 — machine
+ * metrics signature). The same five-step scale already used for fleet urgency
+ * (heat.cool -> heat.alarm, see `classifyRunner`'s doc comment) applies here to
+ * real hardware load: a machine literally runs hotter under load, so the
+ * metaphor is not decorative — cool iron at idle, alarm-red at saturation.
+ * Thresholds are a deliberate, moderate curve (not evenly-spaced) so "warm" is
+ * the wide, unremarkable middle a runner box sits in most of the time, and
+ * "alarm" is reserved for genuine saturation. Returns one of
+ * 'cool' | 'warm' | 'spark' | 'ember' | 'alarm'.
+ */
+export function heatLevel(pct) {
+  const v = Number(pct) || 0;
+  if (v >= 92) return 'alarm';
+  if (v >= 80) return 'ember';
+  if (v >= 60) return 'spark';
+  if (v >= 30) return 'warm';
+  return 'cool';
+}
+
+/** The non-color-only text label for a heat level (a11y contract — status is never colour-only). */
+export function heatLabel(level) {
+  return { cool: 'idle', warm: 'moderate', spark: 'busy', ember: 'high', alarm: 'saturated' }[level] || 'unknown';
+}
+
+/** Format a byte count as a human string: 8_000_000_000 -> "8.0 GB". */
+export function formatBytes(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e12) return (v / 1e12).toFixed(1) + ' TB';
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + ' KB';
+  return Math.round(v) + ' B';
+}
+
+/**
  * Build an SVG path pair (area + line) from a list of numeric daily totals,
  * scaled into a `width` x `height` box. Pure geometry — returned as
  * { line, area, last:{x,y} }; the caller injects it into the chart <svg>.

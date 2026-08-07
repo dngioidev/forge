@@ -9,6 +9,7 @@
 import {
   formatTokens, formatCost, classifyRunner, statusLabel, controlsFor,
   logLevelOf, dayKey, sparkPath, actionGerund, clockStamp,
+  heatLevel, heatLabel, formatBytes,
 } from './format.mjs';
 
 const TOKEN = document.querySelector('meta[name="forge-session-token"]')?.content || '';
@@ -60,60 +61,88 @@ function fleetSignature() {
   }).join('~');
 }
 
+/** Build one fleet card — shared by the prominent (online/mis-target) group and
+ *  the collapsed offline disclosure, so the two groups render identically. */
+function renderCard(r) {
+  const key = runnerKey(r);
+  const status = classifyRunner(r);
+  const card = el('div', `mini-card ${status}${selectedKey === key ? ' selected' : ''}`);
+  card.setAttribute('role', 'listitem');
+  card.tabIndex = 0;
+  card.addEventListener('click', () => selectRunner(key));
+  card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectRunner(key); } });
+
+  const head = el('div', 'mini-head');
+  head.append(el('span', 'mini-name', r.repo || r.name));
+  const st = el('span', `mini-status ${status}`);
+  st.append(el('span', 'glyph', STATUS_GLYPH[status]), document.createTextNode(' ' + statusLabel(status)));
+  head.append(st);
+  card.append(head);
+
+  card.append(el('div', 'mini-plat', PLATFORM[r.mechanism] || r.mechanism));
+  const online = r.online || {};
+  const metaText = online.known
+    ? `${online.online ?? 0}/${online.total ?? 0} online · ${r.service_state}`
+    : `${r.service_state}`;
+  card.append(el('div', 'mini-meta', metaText));
+
+  if (status === 'mistarget') {
+    const errline = el('div', 'mini-error', `running, but GitHub reports 0 online runners for ${r.repo}`);
+    errline.setAttribute('role', 'alert');
+    card.append(errline);
+  }
+
+  const actions = el('div', 'mini-actions');
+  for (const c of controlsFor(status)) {
+    const btn = el('button', 'mini-ctl');
+    btn.type = 'button';
+    btn.dataset.action = c.action;
+    if (c.disabled) btn.disabled = true;
+    if (c.reason) btn.title = c.reason;
+    btn.textContent = (c.glyph ? c.glyph + ' ' : '') + (c.label || c.action);
+    btn.addEventListener('click', (e) => { e.stopPropagation(); runControl(r, c.action, card); });
+    actions.append(btn);
+  }
+  card.append(actions);
+  return card;
+}
+
+/** #395 — offline runners accumulate forever (discovery never forgets a
+ *  registration) with no de-dup, so left flat the list becomes mostly cold
+ *  iron. Online + mis-target stay prominent and unfiltered (data, not
+ *  clutter — a mis-target is the one status that most wants attention);
+ *  offline collapses under a closed-by-default <details> disclosure — every
+ *  entry stays reachable, none is deleted, but the default view declutters. */
 function renderFleet(force = false) {
   const sig = fleetSignature();
   if (!force && sig === lastFleetSig) return; // nothing changed — keep focus intact
   lastFleetSig = sig;
   const list = $('#fleet-list');
   list.setAttribute('aria-busy', 'false');
+  const wasOpen = list.querySelector('details')?.open ?? false;
   list.replaceChildren();
   if (fleet.length === 0) {
     list.append(el('div', 'empty-mini', 'no runners for this repo'));
     return;
   }
+  const offline = [];
   for (const r of fleet) {
-    const key = runnerKey(r);
     const status = classifyRunner(r);
-    const card = el('div', `mini-card ${status}${selectedKey === key ? ' selected' : ''}`);
-    card.setAttribute('role', 'listitem');
-    card.tabIndex = 0;
-    card.addEventListener('click', () => selectRunner(key));
-    card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectRunner(key); } });
-
-    const head = el('div', 'mini-head');
-    head.append(el('span', 'mini-name', r.repo || r.name));
-    const st = el('span', `mini-status ${status}`);
-    st.append(el('span', 'glyph', STATUS_GLYPH[status]), document.createTextNode(' ' + statusLabel(status)));
-    head.append(st);
-    card.append(head);
-
-    card.append(el('div', 'mini-plat', PLATFORM[r.mechanism] || r.mechanism));
-    const online = r.online || {};
-    const metaText = online.known
-      ? `${online.online ?? 0}/${online.total ?? 0} online · ${r.service_state}`
-      : `${r.service_state}`;
-    card.append(el('div', 'mini-meta', metaText));
-
-    if (status === 'mistarget') {
-      const errline = el('div', 'mini-error', `running, but GitHub reports 0 online runners for ${r.repo}`);
-      errline.setAttribute('role', 'alert');
-      card.append(errline);
-    }
-
-    const actions = el('div', 'mini-actions');
-    for (const c of controlsFor(status)) {
-      const btn = el('button', 'mini-ctl');
-      btn.type = 'button';
-      btn.dataset.action = c.action;
-      if (c.disabled) btn.disabled = true;
-      if (c.reason) btn.title = c.reason;
-      btn.textContent = (c.glyph ? c.glyph + ' ' : '') + (c.label || c.action);
-      btn.addEventListener('click', (e) => { e.stopPropagation(); runControl(r, c.action, card); });
-      actions.append(btn);
-    }
-    card.append(actions);
-    list.append(card);
+    if (status === 'offline') offline.push(r);
+    else list.append(renderCard(r));
   }
+  if (offline.length === 0) return;
+  const details = document.createElement('details');
+  details.className = 'offline-group';
+  details.open = wasOpen;
+  const summary = document.createElement('summary');
+  summary.textContent = `${offline.length} offline`;
+  details.append(summary);
+  const group = el('div', 'offline-group-list');
+  group.setAttribute('role', 'list');
+  for (const r of offline) group.append(renderCard(r));
+  details.append(group);
+  list.append(details);
 }
 
 async function runControl(r, action, card) {
@@ -268,6 +297,58 @@ function renderChart(series, empty) {
 }
 
 // --------------------------------------------------------------------------- //
+// Machine panel — live CPU/mem/disk (#395), signature: heat-bar strips on the
+// same heat.cool->heat.alarm scale as fleet urgency (real hardware load, not a
+// generic gauge widget — the forge metaphor applied to the box it runs on).
+// --------------------------------------------------------------------------- //
+async function loadMachine() {
+  const errBox = $('#machine-error');
+  errBox.hidden = true; errBox.replaceChildren();
+  try {
+    const data = await api('/api/machine');
+    renderMachine(data);
+  } catch (err) {
+    const banner = el('div', 'err-banner', `machine metrics unreadable — ${err.message}`);
+    banner.setAttribute('role', 'alert');
+    errBox.replaceChildren(banner);
+    errBox.hidden = false;
+  }
+}
+
+function heatRow(label, pct, detail) {
+  const level = heatLevel(pct);
+  const row = el('div', 'heat-row');
+  const head = el('div', 'heat-row-head');
+  head.append(el('span', 'heat-row-label', label));
+  head.append(el('span', `heat-row-value ${level} tabular`, `${Math.round(pct)}% · ${heatLabel(level)}`));
+  row.append(head);
+  const bar = el('div', 'heat-bar');
+  bar.setAttribute('role', 'img');
+  bar.setAttribute('aria-label', `${label} ${Math.round(pct)}% — ${heatLabel(level)}${detail ? `, ${detail}` : ''}`);
+  const fill = el('i', `heat-bar-fill ${level}`);
+  fill.style.width = `${Math.min(Math.max(pct, 0), 100)}%`;
+  bar.append(fill);
+  row.append(bar);
+  if (detail) row.append(el('div', 'heat-row-detail tabular', detail));
+  return row;
+}
+
+function renderMachine(data) {
+  const rows = $('#machine-rows');
+  rows.setAttribute('aria-busy', 'false');
+  rows.replaceChildren();
+  rows.append(heatRow('cpu', data.cpu_percent || 0));
+  rows.append(heatRow(
+    'memory', data.memory_percent || 0,
+    `${formatBytes(data.memory_used_bytes)} / ${formatBytes(data.memory_total_bytes)}`,
+  ));
+  rows.append(heatRow(
+    'disk', data.disk_percent || 0,
+    `${formatBytes(data.disk_used_bytes)} / ${formatBytes(data.disk_total_bytes)} free`,
+  ));
+}
+
+// --------------------------------------------------------------------------- //
 // Logs panel.
 // --------------------------------------------------------------------------- //
 async function loadLogs() {
@@ -339,30 +420,48 @@ function startTerminal() {
   const doFit = () => { try { fit && fit.fit(); } catch { /* pane hidden */ } };
   doFit();
 
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/api/terminal?token=${encodeURIComponent(TOKEN)}`);
-  ws.binaryType = 'arraybuffer';
   const enc = new TextEncoder();
-  const dec = new TextDecoder();
-
-  ws.onopen = () => {
-    note.textContent = 'terminal connected · live shell';
-    note.classList.remove('error');
-    sendResize();
-  };
-  ws.onmessage = (ev) => {
-    term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
-  };
-  ws.onclose = () => { note.textContent = 'terminal disconnected'; note.classList.add('error'); };
-  ws.onerror = () => { note.textContent = 'terminal connection error'; note.classList.add('error'); };
-
-  term.onData((d) => { if (ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d)); });
+  let ws = null;
+  let reconnectDelay = 1000;
+  let reconnectTimer = null;
 
   function sendResize() {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
     }
   }
+
+  // #395 AC.1 — a dropped connection previously required a full page reload to
+  // get a shell back. Reconnect with capped exponential backoff (1s -> 2s -> 4s
+  // -> 8s, held there) instead: a genuinely offline backend still fails fast on
+  // each attempt, so this never busy-loops.
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/api/terminal?token=${encodeURIComponent(TOKEN)}`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      reconnectDelay = 1000;
+      note.textContent = 'terminal connected · live shell';
+      note.classList.remove('error');
+      sendResize();
+    };
+    ws.onmessage = (ev) => {
+      term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
+    };
+    ws.onclose = () => {
+      note.textContent = `terminal disconnected — reconnecting in ${Math.round(reconnectDelay / 1000)}s…`;
+      note.classList.add('error');
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 8000);
+    };
+    ws.onerror = () => { note.textContent = 'terminal connection error'; note.classList.add('error'); };
+  }
+  connect();
+
+  term.onData((d) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d)); });
+
   const ro = new ResizeObserver(() => { doFit(); sendResize(); });
   ro.observe(mount);
   window.addEventListener('resize', () => { doFit(); sendResize(); });
@@ -372,11 +471,20 @@ function startTerminal() {
 // Mode bar (tablist).
 // --------------------------------------------------------------------------- //
 let currentMode = 'term';
-const MODES = { usage: 'm-usage', term: 'm-term', logs: 'm-logs' };
-const TABS = { usage: 'tab-usage', term: 'tab-term', logs: 'tab-logs' };
+const MODES = { usage: 'm-usage', term: 'm-term', logs: 'm-logs', machine: 'm-machine' };
+const TABS = { usage: 'tab-usage', term: 'tab-term', logs: 'tab-logs', machine: 'tab-machine' };
+
+// Usage and Machine each poll live data on an interval, but ONLY while their
+// tab is the visible one — Usage's /api/usage re-scans every transcript on
+// disk (spike-documented cost), and there's no reason to sample the machine
+// when nobody's looking. One tracked interval, started on entry and cleared
+// on every mode switch, covers both (never two intervals running at once).
+let activeTabInterval = null;
+const TAB_POLL = { usage: [loadUsage, 30000], machine: [loadMachine, 5000] };
 
 function switchMode(mode) {
   currentMode = mode;
+  if (activeTabInterval) { clearInterval(activeTabInterval); activeTabInterval = null; }
   for (const [m, tabId] of Object.entries(TABS)) {
     const tab = document.getElementById(tabId);
     const selected = m === mode;
@@ -384,13 +492,17 @@ function switchMode(mode) {
     tab.tabIndex = selected ? 0 : -1;
     document.getElementById(MODES[m]).hidden = !selected;
   }
-  if (mode === 'usage') loadUsage();
-  else if (mode === 'logs') loadLogs();
+  if (mode === 'logs') loadLogs();
   else if (mode === 'term') startTerminal();
+  else if (TAB_POLL[mode]) {
+    const [load, interval] = TAB_POLL[mode];
+    load();
+    activeTabInterval = setInterval(load, interval);
+  }
 }
 
 function wireTabs() {
-  const order = ['usage', 'term', 'logs'];
+  const order = ['usage', 'term', 'logs', 'machine'];
   for (const m of order) {
     const tab = document.getElementById(TABS[m]);
     tab.addEventListener('click', () => switchMode(m));

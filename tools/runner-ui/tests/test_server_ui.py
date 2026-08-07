@@ -61,6 +61,25 @@ def test_index_contains_the_key_regions(client):
     assert 'id="tab-term"' in body and 'aria-selected="true"' in body
 
 
+def test_index_actually_loads_the_vendored_terminal_scripts(client):
+    """#395 regression guard: the vendor xterm.js/fit-addon bundles were served
+    correctly from /static (see test_static_assets_served below) but index.html
+    never had a <script> tag pulling them in — app.mjs's `startTerminal()` found
+    `window.Terminal` undefined and bailed before ever opening the websocket, so
+    the terminal never worked in the browser. This asserts the actual load path,
+    not just that the files are servable."""
+    body = client.get("/").text
+    assert '/static/vendor/xterm.js"' in body
+    assert '/static/vendor/xterm-addon-fit.js"' in body
+    # The vendor scripts must appear as plain (non-module) tags BEFORE app.mjs —
+    # they're UMD bundles that self-attach to `window`, and app.mjs (a deferred
+    # module script) reads `window.Terminal`/`window.FitAddon` at call time.
+    xterm_pos = body.index("vendor/xterm.js")
+    fit_pos = body.index("vendor/xterm-addon-fit.js")
+    app_pos = body.index('src="/static/app.mjs"')
+    assert xterm_pos < app_pos and fit_pos < app_pos
+
+
 # --------------------------------------------------------------------------- #
 # AC.1/AC.3 — the static assets (app + vendored xterm.js) are served.
 # --------------------------------------------------------------------------- #
