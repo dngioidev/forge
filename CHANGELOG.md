@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.0 — 2026-08-07
+
+### Docs
+
+- groundgate routine-vs-grounded boundary audit (#388) (#393) ([#388](https://github.com/dngioidev/forge/issues/388) [#393](https://github.com/dngioidev/forge/issues/393))
+- autopilot concurrent-run safety + parallel-mode feasibility (#387) (#392) ([#387](https://github.com/dngioidev/forge/issues/387) [#392](https://github.com/dngioidev/forge/issues/392))
+- runner-tool failures + machine monitoring research (#383) (#384) ([#383](https://github.com/dngioidev/forge/issues/383) [#384](https://github.com/dngioidev/forge/issues/384))
+
+### Features
+
+- seed a baseline docs/ structure + document the route-index rule (#394) ([#394](https://github.com/dngioidev/forge/issues/394))
+- advise when graph-RAG is available but off (#386) (#391) ([#386](https://github.com/dngioidev/forge/issues/386) [#391](https://github.com/dngioidev/forge/issues/391))
+- add /forge:docsync-check (expose docsync.mjs as a command) (#390) ([#390](https://github.com/dngioidev/forge/issues/390))
+
 ## v1.1.0 — 2026-08-05
 
 ### Docs
