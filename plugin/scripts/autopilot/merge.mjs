@@ -53,18 +53,26 @@ export function evaluateMergeBar(signals = {}, { critical = false } = {}) {
 export const DEFAULT_FRESH_TRANSITION_MAX_AGE_MS = 20000;
 
 /**
- * #407 AC.2 — is a monitor-observed transition (`{pr, state, at}`, written by
- * `monitors/ci-watch.mjs`) fresh enough to satisfy `ciGreen` WITHOUT firing a
+ * #407 AC.2 — is a monitor-observed transition (`{pr, state, sha, at}`, written
+ * by `monitors/ci-watch.mjs`) fresh enough to satisfy `ciGreen` WITHOUT firing a
  * redundant GraphQL re-fetch? Pure: no IO, so the boundary is unit-tested
- * directly. Deliberately narrow — same PR, state exactly `'pass'`, and within
- * `maxAgeMs` of `now` — anything else (wrong PR, stale, pending/fail, missing/
- * unparsable timestamp) returns false and the caller falls through to the real
- * re-check. This is what keeps "nothing merges on red" intact (spec §3.1/§5):
- * the shortcut can only ever confirm an ALREADY-fresh green, never skip past a
- * red or stale one.
+ * directly. Deliberately narrow — same PR, state exactly `'pass'`, within
+ * `maxAgeMs` of `now`, AND (#411) bound to the caller's confirmed current head
+ * commit (`headRefOid`) — anything else (wrong PR, stale, pending/fail,
+ * missing/unparsable timestamp, missing/mismatched sha) returns false and the
+ * caller falls through to the real re-check. The sha bind closes a gap #407
+ * shipped: without it, a push landing on the PR inside the freshness window
+ * (after the monitor's last "pass" poll, before its next one) could leave a
+ * stale green reading for the OLD commit that this check would otherwise
+ * accept for the NEW one. This is what keeps "nothing merges on red" intact
+ * (spec §3.1/§5): the shortcut can only ever confirm an ALREADY-fresh green
+ * for the CURRENT commit, never skip past a red, stale, or superseded one.
  */
-export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs = DEFAULT_FRESH_TRANSITION_MAX_AGE_MS } = {}) {
+export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs = DEFAULT_FRESH_TRANSITION_MAX_AGE_MS, headRefOid } = {}) {
   if (!state || state.pr !== pr || state.state !== 'pass') return false;
+  // #411: fail closed unless both sides of the sha bind are present and equal —
+  // an omitted/unresolvable headRefOid must never silently skip the check.
+  if (!headRefOid || !state.sha || state.sha !== headRefOid) return false;
   const at = Date.parse(state.at ?? '');
   if (Number.isNaN(at)) return false;
   const age = now - at;
@@ -83,19 +91,37 @@ export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs =
  * real re-fetch always runs, so the mandatory pre-merge green confirmation is
  * never skipped, only its network cost is — the safety property spec §5 calls
  * out is untouched.
+ *
+ * #411: `headRefOid` is the caller's cheaply-confirmed current head commit for
+ * this PR (see `runMerge` — a local `git rev-parse HEAD`, zero GraphQL cost,
+ * so the call-reduction intent above is unaffected). `isFreshGreenTransition`
+ * fails closed without it, so a caller that can't cheaply confirm a candidate
+ * head (e.g. a `ctx` with no `cwd`) always falls through to the real re-fetch
+ * below rather than trusting a possibly-stale cached reading. IMPORTANT: this
+ * local read is a CHEAP PRE-FILTER, not the authoritative check — it can only
+ * ever confirm "this process's own checkout hasn't moved," not "GitHub's PR
+ * head hasn't moved" (an out-of-band push from another actor/bot would leave
+ * both the local checkout AND the cached reading stale together, so this
+ * comparison alone can't catch it). The AUTHORITATIVE bind is downstream, at
+ * the live `gh pr merge --match-head-commit` call in `runMerge` — this
+ * function also returns the `headRefOid` it green-lit (from `freshState.sha`
+ * via the shortcut, or freshly fetched below) precisely so that call can pin
+ * to it and have GitHub itself reject a merge if the real remote head has
+ * since moved, atomically, with no TOCTOU between this check and the merge.
  */
-export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {}) {
+export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs, headRefOid } = {}) {
   // #407 review nit: destructuring defaults already fire on an explicit `undefined`
   // (isFreshGreenTransition's own `now = Date.now()`/`maxAgeMs = ...` params handle
   // that), so passing `now`/`maxAgeMs` straight through is equivalent to — and
   // simpler than — conditionally spreading them in.
-  if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs })) {
-    return { ok: true, green: true, viaFreshTransition: true };
+  if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs, headRefOid })) {
+    return { ok: true, green: true, viaFreshTransition: true, headRefOid: freshState.sha };
   }
   // headRefName rides along (#408): a red result may need `classifyCiFailure`
   // below, which needs the branch — one field added to an existing call, not
-  // an extra round-trip.
-  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefName'], { parseJson: true });
+  // an extra round-trip. headRefOid (#411) is the commit this rollup reading
+  // belongs to — returned below so `runMerge` can pin the live merge to it.
+  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefName,headRefOid'], { parseJson: true });
   if (!res.ok) return { ok: false, green: false, error: res.stderr || 'pr view failed' };
   const rollup = res.json?.statusCheckRollup ?? [];
   if (rollup.length === 0) return { ok: true, green: false, reason: 'no checks reported yet' };
@@ -128,7 +154,9 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   const workflowNames = new Set(bad.map((c) => c.workflowName || null));
   const classifiable = workflowNames.size === 1 && !workflowNames.has(null);
   const workflowName = classifiable ? [...workflowNames][0] : null;
-  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable };
+  // headRefOid (#411): the commit this rollup reading belongs to, returned so
+  // `runMerge` can pin the live `gh pr merge` to it via `--match-head-commit`.
+  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable, headRefOid: res.json?.headRefOid ?? null };
 }
 
 /**
@@ -265,6 +293,16 @@ export async function forceNewSha(execRun, { base = 'origin/main' } = {}) {
   return { ok: true };
 }
 
+/** #411: the shortcut's own binding check — a cheap LOCAL `git rev-parse HEAD`
+ * (no GraphQL call, so AC.2's call-reduction intent is unaffected). Returns
+ * null on any failure (detached weirdness, not a repo, etc.) so the caller
+ * fails closed to the real re-fetch rather than binding to a wrong/empty sha. */
+async function currentHeadSha(cwd, execFn) {
+  const res = await execFn('git', ['-C', cwd, 'rev-parse', 'HEAD']);
+  const sha = res.ok ? res.stdout.trim() : '';
+  return sha || null;
+}
+
 /**
  * Live merge, gated by the bar. `signals` carries the orchestrator's held
  * verdicts (ship/gates/reviewer/security); CI is checked here. When auto-merge
@@ -275,33 +313,37 @@ export async function forceNewSha(execRun, { base = 'origin/main' } = {}) {
  * carries autoMergeEnabled:false semantics so a run with no live grant never
  * attempts a merge that would stall.
  *
- * #408 AC.2/AC.3 — before a real (non-empty) bad-checks result routes to the
+ * #408 AC.2/AC.3 - before a real (non-empty) bad-checks result routes to the
  * ordinary "blocked on ci" fix-wave/escalation path, it is classified: is
- * this GitHub's Actions infra being down, or an actual failure? An outage
+ * this GitHubs Actions infra being down, or an actual failure? An outage
  * gets the empirically-proven recovery (a fresh commit SHA via rebase +
  * repush), bounded by `maxOutageAttempts` (default 2, "a small number" per
- * the ticket) and threaded across separate invocations via `outageAttempt` —
+ * the ticket) and threaded across separate invocations via `outageAttempt` -
  * the same pattern the orchestrator already uses for `signals` (it holds the
  * count, this stays a thin per-call gate). A successful recovery returns
- * `outcome:'retry'` (a fresh SHA was just pushed — CI must be re-watched, not
+ * `outcome:retry` (a fresh SHA was just pushed - CI must be re-watched, not
  * re-checked instantly) rather than either merging or escalating. Exhausted
  * attempts fall through to a real "blocked on ci" result, but with an honest,
- * distinguishing reason (AC.3) instead of silently treating GitHub's outage
+ * distinguishing reason (AC.3) instead of silently treating GitHubs outage
  * as if the change itself were broken. Every outage event is journaled
- * (AC.4) — `gate-fail` with `outage:true` — so the run report and
+ * (AC.4) - `gate-fail` with `outage:true` - so the run report and
  * `board digest` can tell a real fix wave from GitHub being down twice.
- * `deps` overrides the IO (`execRun`, `classify`, `journal`) for tests — no
- * real git/gh/network runs unless the outage path actually triggers.
+ * `deps` overrides the IO (`execRun`, `classify`, `journal`, and - #411 -
+ * `execFn`, the local head-sha checks process runner) for tests - no real
+ * git/gh/network runs unless the relevant path actually triggers.
  */
-// #408 review fix (LOW) — the MCP tool schema types outageAttempt/maxOutageAttempts
+// #408 review fix (LOW) - the MCP tool schema types outageAttempt/maxOutageAttempts
 // as `integer` but the shared RPC validator (`plugin/mcp/lib/rpc.mjs` validateInput)
 // has no min/max enforcement, so a schema `maximum` alone would be documentation
 // only. Clamp for real, here, the one place both the CLI and every host (MCP,
-// direct script) funnel through — a caller can shrink the bound but never grow it
+// direct script) funnel through - a caller can shrink the bound but never grow it
 // past a sane ceiling, so "a small number of attempts" holds regardless of input.
 const MAX_OUTAGE_ATTEMPTS_CEILING = 10;
 
 export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null, outageAttempt = 0, maxOutageAttempts = 2 } = {}, log = console.log, deps = {}) {
+  // #411: the local head-sha checks process runner - swappable via deps like
+  // every other injected IO in this function (execRun, classifyCiFailure, journal).
+  const execFn = deps.execFn ?? run;
   if (!Number.isInteger(issue) || !Number.isInteger(pr)) return { ok: false, error: '--issue and --pr are required' };
   outageAttempt = Number.isInteger(outageAttempt) && outageAttempt >= 0 ? outageAttempt : 0;
   maxOutageAttempts = Number.isInteger(maxOutageAttempts) ? Math.min(Math.max(maxOutageAttempts, 0), MAX_OUTAGE_ATTEMPTS_CEILING) : 2;
@@ -318,7 +360,11 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   // loadCiWatchState already never throws (internal try/catch in ci-watch.mjs) —
   // no .catch() needed here (#407 review nit).
   const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
-  const ci = await ciGreen(ctx.gh, pr, { freshState });
+  // #411: only bother resolving the local head sha when there's an actual
+  // freshState candidate to bind it to — no point paying even a local spawn
+  // for the (common, once CI is slow) case where there's nothing on disk yet.
+  const headRefOid = freshState && ctx.cwd ? await currentHeadSha(ctx.cwd, execFn) : null;
+  const ci = await ciGreen(ctx.gh, pr, { freshState, headRefOid });
   if (!ci.ok) return { ok: false, error: ci.error };
   // #408 — `ci.classifiable` (fail-closed): only attempt outage classification
   // when every bad check is attributable to the SAME single workflow. A bad
@@ -375,7 +421,19 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
     log(`autopilot: merge bar RED for #${issue} — blocked on ${bar.blockedOn.join(', ')}${bar.escalate ? ' (escalate)' : ''}`);
     return { ok: false, merged: false, blockedOn: bar.blockedOn, escalate: bar.escalate };
   }
-  const merged = await ctx.gh(['pr', 'merge', String(pr), '--squash', '--delete-branch']);
+  // #411: pin the LIVE merge to the exact commit `ciGreen` just confirmed green
+  // — `--match-head-commit` is validated server-side by GitHub at the moment
+  // of merge, atomically. This is the AUTHORITATIVE bind (see the `ciGreen`
+  // doc comment): it closes the gap the local `headRefOid` pre-filter above
+  // can't — an out-of-band push that moved the PR's real remote head between
+  // the check and this call (or one this checkout was never even aware of)
+  // makes `gh pr merge` fail instead of squashing an uncorroborated commit.
+  // `ci.headRefOid` can be null in a degenerate case (a `gh` double/response
+  // that omits it) — degrade to the pre-#411 unpinned call rather than
+  // blocking a legitimately green merge on a missing hardening signal.
+  const mergeArgs = ['pr', 'merge', String(pr), '--squash', '--delete-branch'];
+  if (ci.headRefOid) mergeArgs.push('--match-head-commit', ci.headRefOid);
+  const merged = await ctx.gh(mergeArgs);
   if (!merged.ok) return { ok: false, error: merged.stderr || 'gh pr merge failed' };
   log(`autopilot: merged #${issue} via PR #${pr} (squash)`);
   return { ok: true, merged: true, outcome: 'merged' };
