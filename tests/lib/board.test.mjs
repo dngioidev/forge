@@ -196,7 +196,9 @@ describe('getRepoInfo / getProjectFields memoization (AC-407.3)', () => {
 // footgun rather than a live bug — but a `process.chdir()` reuse of the SAME
 // `gh` instance must still fetch fresh instead of silently serving the
 // previous cwd's cached owner/name/field IDs.
-describe('cache key includes cwd, not just the gh instance (AC-415.1-3)', () => {
+// AC-415.3 (the regression test requirement) is satisfied by both `it`s below —
+// each IS the chdir regression test for its respective function.
+describe('cache key includes cwd, not just the gh instance (AC-415.1, AC-415.2, AC-415.3)', () => {
   const repoViewFor = (owner, name, branch) => ({
     ok: true,
     json: { owner: { login: owner }, name, defaultBranchRef: { name: branch } },

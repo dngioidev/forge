@@ -134,6 +134,9 @@ const FIELDS_QUERY = `query($id: ID!) {
 /** Returns { itemsCount, fields: { <lowercased name>: {id, name, options:[{id,name}]} } }
  * Memoized per (gh, cwd, projectId) — #407 AC.3 / #415, see the cache docblock above `getRepoInfo`. */
 export async function getProjectFields(gh, projectId, { refresh = false } = {}) {
+  // `::` separator: safe in practice — projectId is a GitHub ProjectV2 node id
+  // (alphanumeric, e.g. "PVT_..."), and a cwd can't contain ':' outside a
+  // Windows drive letter, so no real (cwd, projectId) pair can collide here.
   const key = `${process.cwd()}::${projectId}`;
   const byKey = projectFieldsCache.get(gh);
   if (!refresh && byKey?.has(key)) return byKey.get(key);
