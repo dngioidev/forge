@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.3.0 — 2026-08-08
+
+### Fixes
+
+- key the repo/field cache by cwd, not just the gh instance (#419) ([#419](https://github.com/dngioidev/forge/issues/419))
+- bind ciGreen's fresh-transition shortcut to the PR's head SHA (#411) (#417) ([#411](https://github.com/dngioidev/forge/issues/411) [#417](https://github.com/dngioidev/forge/issues/417))
+- board_status calls the shared runStatus instead of reimplementing it (#399) (#403) ([#399](https://github.com/dngioidev/forge/issues/399) [#403](https://github.com/dngioidev/forge/issues/403))
+- correct false 'grant holds all session' merge-auth claim (#402) ([#402](https://github.com/dngioidev/forge/issues/402))
+- terminal load bug, offline-runner clutter, live machine metrics (#396) ([#396](https://github.com/dngioidev/forge/issues/396))
+
+### Features
+
+- local GitHub outbox for deferrable board writes (#414) (#418) ([#414](https://github.com/dngioidev/forge/issues/414) [#418](https://github.com/dngioidev/forge/issues/418))
+- detect + auto-recover from GitHub Actions platform outages (#408) (#412) ([#408](https://github.com/dngioidev/forge/issues/408) [#412](https://github.com/dngioidev/forge/issues/412))
+- wire the dead rate-budget preflight + cut GraphQL call volume (#407) (#410) ([#407](https://github.com/dngioidev/forge/issues/407) [#410](https://github.com/dngioidev/forge/issues/410))
+- expose receipt/log/digest/reparent/close as forge-core MCP tools (#406) ([#406](https://github.com/dngioidev/forge/issues/406))
+
+### Docs
+
+- local GitHub outbox design for deferrable writes (#409) (#413) ([#409](https://github.com/dngioidev/forge/issues/409) [#413](https://github.com/dngioidev/forge/issues/413))
+- GitHub resilience — rate-limit demand reduction + outage recovery (#407) ([#407](https://github.com/dngioidev/forge/issues/407))
+- characterize + investigate the harness classifier's merge-denial pattern (#398) (#405) ([#398](https://github.com/dngioidev/forge/issues/398) [#405](https://github.com/dngioidev/forge/issues/405))
+- annotate removed forge-control/console lines in route index (#404) ([#404](https://github.com/dngioidev/forge/issues/404))
+
 ## v1.2.0 — 2026-08-07
 
 ### Docs

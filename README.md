@@ -4,7 +4,7 @@
 
 [![verify](https://github.com/dngioidev/forge/actions/workflows/verify.yml/badge.svg)](https://github.com/dngioidev/forge/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-1.2.0-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.3.0-blue.svg)](CHANGELOG.md)
 
 ## What is forge?
 
