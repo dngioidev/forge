@@ -168,7 +168,7 @@ runs on agy without MCP at all. `forge-core` exists so board/gate/autopilot
 branching gets typed returns (pass/fail, the merge-bar vector) instead of
 stdout-scraping.
 
-### Tool usage reference (15 tools: forge-core 9 + forge-graph 6)
+### Tool usage reference (21 tools: forge-core 15 + forge-graph 6)
 
 One line each — what it does, and when a host calls it. Full schemas live in
 each server's `TOOLS` export ([`plugin/mcp/forge/server.mjs`](../../plugin/mcp/forge/server.mjs),
