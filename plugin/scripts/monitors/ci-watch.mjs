@@ -17,6 +17,7 @@
  */
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { lstat } from 'node:fs/promises';
 import { run, makeGh } from '../lib/exec.mjs';
 import { writeJson, readJson } from '../lib/jsonfile.mjs';
 import { freshGuard, trackFailure } from './poll-guard.mjs';
@@ -26,20 +27,35 @@ export const CI_WATCH_RELPATH = join('.forge', 'autopilot', 'ci-watch.json');
 
 /** Best-effort persist of the last observed rollup state. A write failure must
  * never crash the monitor loop — it only means the fresh-transition shortcut
- * is unavailable next merge, not that anything is broken. */
-export async function writeCiWatchState(cwd, { pr, state, at = new Date().toISOString() }) {
+ * is unavailable next merge, not that anything is broken. `sha` (#411) is the
+ * commit (`headRefOid`) this observation was taken at, so a consumer can bind
+ * the reading to a specific commit instead of trusting the timestamp alone. */
+export async function writeCiWatchState(cwd, { pr, state, sha = null, at = new Date().toISOString() }) {
   try {
-    await writeJson(join(cwd, CI_WATCH_RELPATH), { pr, state, at });
+    await writeJson(join(cwd, CI_WATCH_RELPATH), { pr, state, sha, at });
     return true;
   } catch {
     return false;
   }
 }
 
-/** Tolerant read: an absent or corrupt file both mean "no fresh data" (mirrors `sessionpause.mjs`'s `loadUsage`). */
+/** Tolerant read: an absent or corrupt file both mean "no fresh data" (mirrors
+ * `sessionpause.mjs`'s `loadUsage`). #411: the write path is symlink-safe
+ * (atomic temp-file + rename, `jsonfile.mjs`), but a plain `readFile` follows
+ * symlinks — a local attacker with pre-existing write access to `.forge/autopilot/`
+ * could otherwise plant a symlink here to forge a fake green reading. `lstat`
+ * (which does NOT follow links) gates the read so a symlinked path is treated
+ * exactly like a missing/corrupt file — never dereferenced. */
 export async function loadCiWatchState(cwd) {
+  const path = join(cwd, CI_WATCH_RELPATH);
   try {
-    return await readJson(join(cwd, CI_WATCH_RELPATH));
+    const st = await lstat(path);
+    if (st.isSymbolicLink()) return null;
+  } catch {
+    return null; // absent (or unstattable) — readJson would treat it the same way
+  }
+  try {
+    return await readJson(path);
   } catch {
     return null;
   }
@@ -72,17 +88,18 @@ export function isNoPr(res) {
 }
 
 export async function poll(gh, prev) {
-  const res = await gh(['pr', 'view', '--json', 'number,headRefName,statusCheckRollup'], { parseJson: true });
+  const res = await gh(['pr', 'view', '--json', 'number,headRefName,headRefOid,statusCheckRollup'], { parseJson: true });
   if (!res.ok) {
     // Distinguish "no PR yet" (benign, quiet) from a standing gh failure (#318).
-    if (isNoPr(res)) return { prev, pr: null, line: null, ok: true };
-    return { prev, pr: null, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed') };
+    if (isNoPr(res)) return { prev, pr: null, sha: null, line: null, ok: true };
+    return { prev, pr: null, sha: null, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed') };
   }
   const state = rollupState(res.json?.statusCheckRollup);
   const pr = res.json?.number ?? null;
+  const sha = res.json?.headRefOid ?? null; // #411: the commit this rollup reading belongs to
   const changed = transition(prev, state);
-  if (!changed) return { prev: state, pr, line: null, ok: true };
-  return { prev: state, pr, line: `CI ${state} on PR #${res.json.number} (${res.json.headRefName})`, ok: true };
+  if (!changed) return { prev: state, pr, sha, line: null, ok: true };
+  return { prev: state, pr, sha, line: `CI ${state} on PR #${res.json.number} (${res.json.headRefName})`, ok: true };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
@@ -101,7 +118,10 @@ if (isMain) {
       prev = r.prev;
       // #407 AC.2: persist every observed reading (not just transitions) so
       // ciGreen()'s freshness window always has an accurate "at" timestamp.
-      if (r.ok && r.pr != null) await writeCiWatchState(process.cwd(), { pr: r.pr, state: r.prev });
+      // #411: also persist the commit (`sha`) this reading was taken at, so
+      // ciGreen() can bind the fresh-transition shortcut to the PR's CURRENT
+      // head instead of trusting the timestamp alone.
+      if (r.ok && r.pr != null) await writeCiWatchState(process.cwd(), { pr: r.pr, state: r.prev, sha: r.sha });
       if (r.line) console.log(r.line);
       surface(r.ok, r.reason);
     } catch (err) {

@@ -52,18 +52,26 @@ export function evaluateMergeBar(signals = {}, { critical = false } = {}) {
 export const DEFAULT_FRESH_TRANSITION_MAX_AGE_MS = 20000;
 
 /**
- * #407 AC.2 — is a monitor-observed transition (`{pr, state, at}`, written by
- * `monitors/ci-watch.mjs`) fresh enough to satisfy `ciGreen` WITHOUT firing a
+ * #407 AC.2 — is a monitor-observed transition (`{pr, state, sha, at}`, written
+ * by `monitors/ci-watch.mjs`) fresh enough to satisfy `ciGreen` WITHOUT firing a
  * redundant GraphQL re-fetch? Pure: no IO, so the boundary is unit-tested
- * directly. Deliberately narrow — same PR, state exactly `'pass'`, and within
- * `maxAgeMs` of `now` — anything else (wrong PR, stale, pending/fail, missing/
- * unparsable timestamp) returns false and the caller falls through to the real
- * re-check. This is what keeps "nothing merges on red" intact (spec §3.1/§5):
- * the shortcut can only ever confirm an ALREADY-fresh green, never skip past a
- * red or stale one.
+ * directly. Deliberately narrow — same PR, state exactly `'pass'`, within
+ * `maxAgeMs` of `now`, AND (#411) bound to the caller's confirmed current head
+ * commit (`headRefOid`) — anything else (wrong PR, stale, pending/fail,
+ * missing/unparsable timestamp, missing/mismatched sha) returns false and the
+ * caller falls through to the real re-check. The sha bind closes a gap #407
+ * shipped: without it, a push landing on the PR inside the freshness window
+ * (after the monitor's last "pass" poll, before its next one) could leave a
+ * stale green reading for the OLD commit that this check would otherwise
+ * accept for the NEW one. This is what keeps "nothing merges on red" intact
+ * (spec §3.1/§5): the shortcut can only ever confirm an ALREADY-fresh green
+ * for the CURRENT commit, never skip past a red, stale, or superseded one.
  */
-export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs = DEFAULT_FRESH_TRANSITION_MAX_AGE_MS } = {}) {
+export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs = DEFAULT_FRESH_TRANSITION_MAX_AGE_MS, headRefOid } = {}) {
   if (!state || state.pr !== pr || state.state !== 'pass') return false;
+  // #411: fail closed unless both sides of the sha bind are present and equal —
+  // an omitted/unresolvable headRefOid must never silently skip the check.
+  if (!headRefOid || !state.sha || state.sha !== headRefOid) return false;
   const at = Date.parse(state.at ?? '');
   if (Number.isNaN(at)) return false;
   const age = now - at;
@@ -82,13 +90,20 @@ export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs =
  * real re-fetch always runs, so the mandatory pre-merge green confirmation is
  * never skipped, only its network cost is — the safety property spec §5 calls
  * out is untouched.
+ *
+ * #411: `headRefOid` is the caller's live-confirmed current head commit for
+ * this PR (see `runMerge` — a local `git rev-parse HEAD`, zero GraphQL cost,
+ * so the call-reduction intent above is unaffected). `isFreshGreenTransition`
+ * fails closed without it, so a caller that can't cheaply confirm the current
+ * head (e.g. a `ctx` with no `cwd`) always falls through to the real re-fetch
+ * below rather than trusting a possibly-stale cached reading.
  */
-export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {}) {
+export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs, headRefOid } = {}) {
   // #407 review nit: destructuring defaults already fire on an explicit `undefined`
   // (isFreshGreenTransition's own `now = Date.now()`/`maxAgeMs = ...` params handle
   // that), so passing `now`/`maxAgeMs` straight through is equivalent to — and
   // simpler than — conditionally spreading them in.
-  if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs })) {
+  if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs, headRefOid })) {
     return { ok: true, green: true, viaFreshTransition: true };
   }
   const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup'], { parseJson: true });
@@ -102,6 +117,16 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context) };
 }
 
+/** #411: the shortcut's own binding check — a cheap LOCAL `git rev-parse HEAD`
+ * (no GraphQL call, so AC.2's call-reduction intent is unaffected). Returns
+ * null on any failure (detached weirdness, not a repo, etc.) so the caller
+ * fails closed to the real re-fetch rather than binding to a wrong/empty sha. */
+async function currentHeadSha(cwd, execFn) {
+  const res = await execFn('git', ['-C', cwd, 'rev-parse', 'HEAD']);
+  const sha = res.ok ? res.stdout.trim() : '';
+  return sha || null;
+}
+
 /**
  * Live merge, gated by the bar. `signals` carries the orchestrator's held
  * verdicts (ship/gates/reviewer/security); CI is checked here. When auto-merge
@@ -110,9 +135,10 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
  * grant) — park at the PR (awaiting-human) and let the loop continue. `mode` is
  * the effective merge mode from the preflight, recorded in run.json; pr-only
  * carries autoMergeEnabled:false semantics so a run with no live grant never
- * attempts a merge that would stall.
+ * attempts a merge that would stall. `execFn` (default `run`) is the injected
+ * process runner for the #411 local head-sha check — swappable in tests.
  */
-export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null }, log = console.log) {
+export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null }, log = console.log, execFn = run) {
   if (!Number.isInteger(issue) || !Number.isInteger(pr)) return { ok: false, error: '--issue and --pr are required' };
   if (mode === 'pr-only' || !autoMergeEnabled(ctx.config)) {
     const why = mode === 'pr-only' ? 'merge-auth preflight resolved pr-only (no in-session grant)' : 'features.autopilotAutoMerge=false';
@@ -127,7 +153,11 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   // loadCiWatchState already never throws (internal try/catch in ci-watch.mjs) —
   // no .catch() needed here (#407 review nit).
   const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
-  const ci = await ciGreen(ctx.gh, pr, { freshState });
+  // #411: only bother resolving the local head sha when there's an actual
+  // freshState candidate to bind it to — no point paying even a local spawn
+  // for the (common, once CI is slow) case where there's nothing on disk yet.
+  const headRefOid = freshState && ctx.cwd ? await currentHeadSha(ctx.cwd, execFn) : null;
+  const ci = await ciGreen(ctx.gh, pr, { freshState, headRefOid });
   if (!ci.ok) return { ok: false, error: ci.error };
   const bar = evaluateMergeBar({ ...signals, ci: ci.green }, { critical });
   if (!bar.merge) {
