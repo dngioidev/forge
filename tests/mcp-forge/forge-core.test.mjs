@@ -44,7 +44,12 @@ describe('AC-288.1: rpc.mjs is the shared transport (forge-graph regression-free
     expect(init.result.serverInfo.name).toBe('forge-core');
     const list = await h({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     expect(list.result.tools.map((t) => t.name).sort()).toEqual(
-      ['autopilot_merge', 'autopilot_merge_bar', 'autopilot_select', 'board_comment', 'board_create', 'board_escalate', 'board_move', 'board_status', 'gate_run', 'release_readiness'],
+      [
+        'autopilot_merge', 'autopilot_merge_bar', 'autopilot_select',
+        'board_close', 'board_comment', 'board_create', 'board_digest', 'board_escalate',
+        'board_log', 'board_move', 'board_receipt', 'board_reparent', 'board_status',
+        'gate_run', 'release_readiness',
+      ],
     );
     expect((await call(h, 'nope_tool', {})).error.code).toBe(-32602);
     expect((await h({ jsonrpc: '2.0', id: 9, method: 'bogus' })).error.code).toBe(-32601);
@@ -52,8 +57,8 @@ describe('AC-288.1: rpc.mjs is the shared transport (forge-graph regression-free
     expect(await h({ jsonrpc: '2.0', method: 'notifications/initialized' })).toBe(null);
   });
 
-  it('exposes exactly the 10 documented tools and the 9 gate names', () => {
-    expect(TOOLS).toHaveLength(10);
+  it('exposes exactly the 15 documented tools and the 9 gate names', () => {
+    expect(TOOLS).toHaveLength(15);
     expect(GATE_NAMES).toEqual(['ac', 'conventions', 'dep', 'docsync', 'ground', 'license', 'plandrift', 'situation', 'testintent']);
   });
 });
@@ -110,6 +115,64 @@ describe('AC-288.2: every tool is callable and returns its documented structured
     expect(body(await call(h, 'board_status', { issue: 2 })).items).toEqual([{ number: 2, title: 'two' }]);
     // #399: the catch-up card (same fields runStatus/the CLI compute) rides along.
     expect(out).toMatchObject({ ok: true, counts: { backlog: 0, ready: 0, inProgress: 0, inReview: 0, blocked: 0, done: 0 }, next: 'pick the next ready/backlog item' });
+  });
+
+  it('AC-400.1: board_receipt -> {ok,action,id}; args pass through to runReceipt unchanged', async () => {
+    let seen;
+    const h = build({ deps: { runReceipt: async (_ctx, a) => { seen = a; return { ok: true, action: 'created', id: 55 }; } } });
+    const out = body(await call(h, 'board_receipt', { issue: 400, pr: 401, sha: 'abc1234', title: 'a title' }));
+    expect(out).toEqual({ ok: true, action: 'created', id: 55 });
+    expect(seen).toEqual({ issue: 400, pr: 401, sha: 'abc1234', title: 'a title' });
+  });
+
+  it('AC-400.1: board_log -> {ok,action,id}; args pass through to runLog unchanged', async () => {
+    let seen;
+    const h = build({ deps: { runLog: async (_ctx, a) => { seen = a; return { ok: true, action: 'updated', id: 9 }; } } });
+    const out = body(await call(h, 'board_log', { pr: 401, sha: 'abc1234', title: 'a title', issues: '400', date: '2026-08-08' }));
+    expect(out).toEqual({ ok: true, action: 'updated', id: 9 });
+    expect(seen).toEqual({ pr: 401, sha: 'abc1234', title: 'a title', issues: '400', date: '2026-08-08' });
+  });
+
+  it('AC-400.1: board_digest -> {ok,changed,rows}', async () => {
+    let seen;
+    const h = build({ deps: { runDigest: async (_ctx, a) => { seen = a; return { ok: true, changed: true, rows: 3 }; } } });
+    const out = body(await call(h, 'board_digest', { epic: 182 }));
+    expect(out).toEqual({ ok: true, changed: true, rows: 3 });
+    expect(seen).toEqual({ epic: 182 });
+  });
+
+  it('AC-400.1: board_reparent -> {ok,moved,from,to}; ctx gh/owner/repo thread through to runReparent(gh,owner,repo,args,log)', async () => {
+    let seenArgs;
+    const seenGh = [];
+    const ctx = { ...okCtx, gh: async (...a) => { seenGh.push(a); return { ok: true }; } };
+    const h = build({
+      getCtx: async () => ctx,
+      deps: { runReparent: async (gh, owner, repo, a) => { seenArgs = { gh, owner, repo, a }; return { ok: true, moved: true, from: 10, to: 182 }; } },
+    });
+    const out = body(await call(h, 'board_reparent', { issue: 400, parent: 182 }));
+    expect(out).toEqual({ ok: true, moved: true, from: 10, to: 182 });
+    expect(seenArgs.gh).toBe(ctx.gh);
+    expect(seenArgs.owner).toBe(ctx.owner);
+    expect(seenArgs.repo).toBe(ctx.repo);
+    expect(seenArgs.a).toEqual({ issue: 400, parent: 182 });
+  });
+
+  it('AC-400.1: board_reparent no-op -> {ok,moved:false,from:null,to:null}', async () => {
+    const h = build({ deps: { runReparent: async () => ({ ok: true, moved: false }) } });
+    expect(body(await call(h, 'board_reparent', { issue: 400, parent: 182 }))).toEqual({ ok: true, moved: false, from: null, to: null });
+  });
+
+  it('AC-400.1: board_close -> {ok,issue,reason,status}; note optional', async () => {
+    let seen;
+    const h = build({ deps: { runClose: async (_ctx, a) => { seen = a; return { ok: true, issue: 400, reason: 'completed', status: 'done' }; } } });
+    const out = body(await call(h, 'board_close', { issue: 400, reason: 'completed' }));
+    expect(out).toEqual({ ok: true, issue: 400, reason: 'completed', status: 'done' });
+    expect(seen).toEqual({ issue: 400, reason: 'completed', note: null });
+  });
+
+  it('AC-400.1: board_close rejects a reason outside the enum with a teaching -32602 error', async () => {
+    const h = build();
+    expect((await call(h, 'board_close', { issue: 400, reason: 'because' })).error.message).toMatch(/'reason' must be one of/);
   });
 
   it('AC-288.2: gate_run situation -> {ok,level:pass,findings[]}', async () => {
@@ -275,6 +338,13 @@ describe('AC-288.4: at least one failure path per tool group', () => {
     expect(res.result.isError).toBe(true);
     expect(body(res)).toMatchObject({ ok: false });
     expect(body(res).error).toMatch(/did NOT persist/);
+  });
+
+  it('AC-400.2: board group — an engine error from a newly-wrapped tool surfaces as isError + {ok:false,error}', async () => {
+    const h = build({ deps: { runDigest: async () => ({ ok: false, error: '--epic <number> is required' }) } });
+    const res = await call(h, 'board_digest', { epic: 182 });
+    expect(res.result.isError).toBe(true);
+    expect(body(res)).toEqual({ ok: false, error: '--epic <number> is required' });
   });
 
   it('AC-288.4: board group — an unavailable board context teaches instead of crashing', async () => {

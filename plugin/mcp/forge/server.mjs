@@ -31,6 +31,11 @@ import { runComment, PHASES } from '../../scripts/board/comment.mjs';
 import { runCreate, withDefaults } from '../../scripts/board/create.mjs';
 import { runEscalate } from '../../scripts/board/escalate.mjs';
 import { runStatus } from '../../scripts/board/status.mjs';
+import { runReceipt } from '../../scripts/board/receipt.mjs';
+import { runLog } from '../../scripts/board/log.mjs';
+import { runDigest } from '../../scripts/board/digest.mjs';
+import { runReparent } from '../../scripts/board/reparent.mjs';
+import { runClose, REASONS as CLOSE_REASONS } from '../../scripts/board/close.mjs';
 import { selectNext, actionableQueue, normalize } from '../../scripts/autopilot/select.mjs';
 import { isShaped } from '../../scripts/autopilot/readiness.mjs';
 import { evaluateMergeBar, runMerge } from '../../scripts/autopilot/merge.mjs';
@@ -114,6 +119,66 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { issue: { type: 'integer' } }, required: [] },
   },
   {
+    name: 'board_receipt',
+    description: 'Post/update the idempotent merge receipt on an issue for a given PR (marker receipt:pr-<n>); returns whether the comment was created or updated.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issue: { type: 'integer' },
+        pr: { type: 'integer' },
+        sha: { type: 'string' },
+        title: { type: 'string' },
+      },
+      required: ['issue', 'pr'],
+    },
+  },
+  {
+    name: 'board_log',
+    description: 'Post/update one delivery-log row (marker log:pr-<n>) on the pinned delivery-log issue (board.deliveryLogIssue); returns whether the row was created or updated.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pr: { type: 'integer' },
+        sha: { type: 'string' },
+        title: { type: 'string' },
+        issues: { type: 'string' },
+        date: { type: 'string' },
+      },
+      required: ['pr'],
+    },
+  },
+  {
+    name: 'board_digest',
+    description: "Refresh an epic's managed digest block (blocked-first child table + flow metrics) from the current board + journal state; returns whether it changed and the child count.",
+    inputSchema: {
+      type: 'object',
+      properties: { epic: { type: 'integer' } },
+      required: ['epic'],
+    },
+  },
+  {
+    name: 'board_reparent',
+    description: 'Move a sub-issue to a different parent epic (addSubIssue with replaceParent); idempotent no-op if the issue is already under that parent.',
+    inputSchema: {
+      type: 'object',
+      properties: { issue: { type: 'integer' }, parent: { type: 'integer' } },
+      required: ['issue', 'parent'],
+    },
+  },
+  {
+    name: 'board_close',
+    description: "Close an issue for a special reason (completed/not-planned/not-needed/superseded/duplicate), reflect it on the board honestly (done vs Won't do), and post a trail:closed note. Idempotent on an already-closed issue.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issue: { type: 'integer' },
+        reason: { type: 'string', enum: Object.keys(CLOSE_REASONS) },
+        note: { type: 'string' },
+      },
+      required: ['issue', 'reason'],
+    },
+  },
+  {
     name: 'gate_run',
     description: 'Run one mechanical gate and return its verdict as {level:pass|fail, findings[]}. gate is one of ac|conventions|dep|docsync|ground|license|plandrift|situation|testintent.',
     inputSchema: {
@@ -181,6 +246,7 @@ export const TOOLS = [
 /** Default engine bindings; injectable so each tool's contract is testable without live gh/git. */
 export const DEFAULT_DEPS = {
   runMove, runComment, runCreate, runEscalate, runStatus,
+  runReceipt, runLog, runDigest, runReparent, runClose,
   selectNext, actionableQueue, normalize, isShaped,
   evaluateMergeBar, runMerge, computeReadiness, loadConfig,
   execFn: run,
@@ -332,6 +398,44 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
             if (!status.ok) return teach(id, status.error);
             const { owner, repo, projectNumber, situation, counts, blocked, inProgress, openPrs, next } = status.data;
             return toolText(id, { ok: true, items, owner, repo, projectNumber, situation, counts, blocked, inProgress, openPrs, next });
+          });
+
+        case 'board_receipt':
+          return board(id, async (ctx) => {
+            const r = await deps.runReceipt(ctx, { issue: args.issue, pr: args.pr, sha: args.sha ?? null, title: args.title ?? '' }, noop);
+            if (!r.ok) return teach(id, r.error);
+            return toolText(id, { ok: true, action: r.action, id: r.id ?? null });
+          });
+
+        case 'board_log':
+          return board(id, async (ctx) => {
+            const r = await deps.runLog(ctx, { pr: args.pr, sha: args.sha ?? null, title: args.title ?? '', issues: args.issues ?? '', date: args.date ?? null }, noop);
+            if (!r.ok) return teach(id, r.error);
+            return toolText(id, { ok: true, action: r.action, id: r.id ?? null });
+          });
+
+        case 'board_digest':
+          return board(id, async (ctx) => {
+            const r = await deps.runDigest(ctx, { epic: args.epic }, noop);
+            if (!r.ok) return teach(id, r.error);
+            return toolText(id, { ok: true, changed: r.changed, rows: r.rows });
+          });
+
+        case 'board_reparent':
+          // runReparent's signature is (gh, owner, repo, args, log) rather than ctx-first
+          // like the other board tools (#87 predates boardctx.mjs's ctx shape) — destructure
+          // the same gh/owner/repo the resolved ctx already carries so no new logic is added.
+          return board(id, async (ctx) => {
+            const r = await deps.runReparent(ctx.gh, ctx.owner, ctx.repo, { issue: args.issue, parent: args.parent }, noop);
+            if (!r.ok) return teach(id, r.error);
+            return toolText(id, { ok: true, moved: r.moved, from: r.from ?? null, to: r.to ?? null });
+          });
+
+        case 'board_close':
+          return board(id, async (ctx) => {
+            const r = await deps.runClose(ctx, { issue: args.issue, reason: args.reason, note: args.note ?? null }, noop);
+            if (!r.ok) return teach(id, r.error);
+            return toolText(id, { ok: true, issue: r.issue, reason: r.reason, status: r.status });
           });
 
         case 'gate_run': {
