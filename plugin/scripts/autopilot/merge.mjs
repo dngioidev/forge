@@ -84,7 +84,11 @@ export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs =
  * out is untouched.
  */
 export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {}) {
-  if (isFreshGreenTransition(freshState, pr, { ...(now !== undefined ? { now } : {}), ...(maxAgeMs !== undefined ? { maxAgeMs } : {}) })) {
+  // #407 review nit: destructuring defaults already fire on an explicit `undefined`
+  // (isFreshGreenTransition's own `now = Date.now()`/`maxAgeMs = ...` params handle
+  // that), so passing `now`/`maxAgeMs` straight through is equivalent to — and
+  // simpler than — conditionally spreading them in.
+  if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs })) {
     return { ok: true, green: true, viaFreshTransition: true };
   }
   const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup'], { parseJson: true });
@@ -120,7 +124,9 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   // green transition skips the redundant GraphQL re-fetch. A ctx without
   // `cwd` (e.g. a test double) or a missing/stale/wrong-pr file both degrade
   // to today's unconditional re-fetch — never a behavior change on their own.
-  const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd).catch(() => null) : null;
+  // loadCiWatchState already never throws (internal try/catch in ci-watch.mjs) —
+  // no .catch() needed here (#407 review nit).
+  const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
   const ci = await ciGreen(ctx.gh, pr, { freshState });
   if (!ci.ok) return { ok: false, error: ci.error };
   const bar = evaluateMergeBar({ ...signals, ci: ci.green }, { critical });
