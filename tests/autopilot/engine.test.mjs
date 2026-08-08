@@ -356,7 +356,9 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     const res = await runMerge({ config: {}, gh, cwd }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {}, execFn);
     expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
     expect(calls.some((c) => c.startsWith('pr view'))).toBe(false);
-    expect(calls).toContain('pr merge 9 --squash --delete-branch');
+    // #411: the live merge is pinned to the exact sha ciGreen just confirmed —
+    // the AUTHORITATIVE bind (GitHub validates this server-side at merge time).
+    expect(calls).toContain('pr merge 9 --squash --delete-branch --match-head-commit aaa111');
   });
 
   it('AC-407.2: a stale/absent ci-watch.json still runs the real pre-merge re-check (no ctx.cwd or no file = today\'s behavior)', async () => {
@@ -364,7 +366,27 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     // no cwd on ctx at all — must behave exactly as before this ticket
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
     expect(res.merged).toBe(true);
-    expect(calls).toContain('pr view 9 --json statusCheckRollup');
+    expect(calls).toContain('pr view 9 --json statusCheckRollup,headRefOid');
+  });
+
+  it('#411: the real re-fetch path ALSO pins the live merge — --match-head-commit uses the freshly-fetched headRefOid', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { statusCheckRollup: green, headRefOid: 'live-sha' } };
+      return { ok: true };
+    };
+    // no cwd → no shortcut candidate at all — this exercises the plain re-fetch path picking up headRefOid.
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res.merged).toBe(true);
+    expect(calls).toContain('pr merge 9 --squash --delete-branch --match-head-commit live-sha');
+  });
+
+  it('#411: a gh response that omits headRefOid degrades to the pre-#411 unpinned merge call — never blocks an otherwise-green merge', async () => {
+    const { calls, gh } = ghDouble(green); // ghDouble's mocked pr-view response has no headRefOid field
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res.merged).toBe(true);
+    expect(calls).toContain('pr merge 9 --squash --delete-branch'); // no --match-head-commit appended
   });
 
   it('#411: a stale-SHA transition (HEAD moved since the cached "pass") is rejected — the merge still succeeds, but via the real re-check', async () => {
