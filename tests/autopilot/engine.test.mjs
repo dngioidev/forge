@@ -193,7 +193,7 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
     expect((await ciGreen(gh({ statusCheckRollup: [{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }] }))).green).toBe(true);
   });
 
-  describe('ciGreen fresh-transition shortcut (#407 AC.2) — reduces the 3 idle CI pollers to 2', () => {
+  describe('ciGreen fresh-transition shortcut (AC-407.2) — reduces the 3 idle CI pollers to 2', () => {
     const now = Date.parse('2026-08-08T12:00:00Z');
 
     it('isFreshGreenTransition: same pr + pass + within the window -> true', () => {
@@ -305,7 +305,7 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
   });
 
-  it('#407 AC.2: a fresh forge-ci monitor transition on disk lets runMerge skip its own "pr view" re-fetch', async () => {
+  it('AC-407.2: a fresh forge-ci monitor transition on disk lets runMerge skip its own "pr view" re-fetch', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'forge-merge-'));
     await writeCiWatchState(cwd, { pr: 9, state: 'pass' }); // "at" defaults to now
     const calls = [];
@@ -320,7 +320,7 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     expect(calls).toContain('pr merge 9 --squash --delete-branch');
   });
 
-  it('#407 AC.2: a stale/absent ci-watch.json still runs the real pre-merge re-check (no ctx.cwd or no file = today\'s behavior)', async () => {
+  it('AC-407.2: a stale/absent ci-watch.json still runs the real pre-merge re-check (no ctx.cwd or no file = today\'s behavior)', async () => {
     const { calls, gh } = ghDouble(green);
     // no cwd on ctx at all — must behave exactly as before this ticket
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
@@ -808,7 +808,7 @@ describe('autopilot session-window self-pause (#378, AC.6) — statusline-poll m
 // but had zero callers. This wires it into the run-start preflight + a periodic
 // per-N-iterations recheck. Mirrors #360's own exec.test.mjs style: hermetic,
 // injected gh, no real API, no real sleep.
-describe('autopilot rate-budget preflight (#407, AC.1/AC.4) — the dead rateBudget() finally wired in', () => {
+describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateBudget() finally wired in', () => {
   it('shouldPauseForBudget pauses ONLY on a COMPLETED low reading', () => {
     expect(shouldPauseForBudget({ ok: true, low: true, remaining: 50, limit: 5000 })).toBe(true);
     expect(shouldPauseForBudget({ ok: true, low: false, remaining: 4000, limit: 5000 })).toBe(false);
@@ -828,7 +828,7 @@ describe('autopilot rate-budget preflight (#407, AC.1/AC.4) — the dead rateBud
     expect(budgetCheckDue(5, 5)).toBe(true); // a custom cadence
   });
 
-  it('AC.4: evaluateRateBudget PAUSES the run on a mocked low-budget rate_limit response — no real API, no real sleep', async () => {
+  it('AC-407.4: evaluateRateBudget PAUSES the run on a mocked low-budget rate_limit response — no real API, no real sleep', async () => {
     let calls = 0;
     const gh = makeGh(async (cmd, args) => {
       calls++;
@@ -843,7 +843,7 @@ describe('autopilot rate-budget preflight (#407, AC.1/AC.4) — the dead rateBud
     expect(calls).toBe(1); // one check, synchronous — no polling/sleeping involved
   });
 
-  it('AC.1: a comfortable budget does not pause the run', async () => {
+  it('AC-407.1: a comfortable budget does not pause the run', async () => {
     const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 4000, reset: 0 } } }), stderr: '' }));
     const decision = await evaluateRateBudget(gh, { lowWater: DEFAULT_LOW_WATER });
     expect(decision).toMatchObject({ pause: false, ok: true });

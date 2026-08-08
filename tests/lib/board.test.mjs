@@ -100,7 +100,7 @@ describe('createSingleSelectField mutation shape (AC-B11.1, #55)', () => {
 // lookup more than once); a FRESH gh double (a new test) proves the cache never
 // leaks across a different `gh` instance — exactly the isolation a separate
 // process/run needs.
-describe('getRepoInfo / getProjectFields memoization (#407 AC.3)', () => {
+describe('getRepoInfo / getProjectFields memoization (AC-407.3)', () => {
   const repoView = () => ({ ok: true, json: { owner: { login: 'dngioidev' }, name: 'forge', defaultBranchRef: { name: 'main' } } });
   const fieldsOk = (itemsCount = 3) => ({
     ok: true,

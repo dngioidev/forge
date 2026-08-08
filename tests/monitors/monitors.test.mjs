@@ -39,7 +39,7 @@ describe('CI monitor (#151)', () => {
   // #407 AC.2 — the monitor persists its last observed state so merge.mjs's
   // ciGreen() can thread a very-recent known-green transition into the
   // pre-merge check instead of firing a redundant GraphQL re-fetch.
-  describe('ci-watch state persistence (#407 AC.2)', () => {
+  describe('ci-watch state persistence (AC-407.2)', () => {
     it('writeCiWatchState -> loadCiWatchState round-trips {pr, state, at}', async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
       expect(await loadCiWatchState(cwd)).toBeNull(); // absent -> null, never throws
