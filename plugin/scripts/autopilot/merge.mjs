@@ -7,9 +7,10 @@
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { run, makeGh } from '../lib/exec.mjs';
+import { run, makeGh, isPlatformOutage, platformOutageNotice } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { loadCiWatchState } from '../monitors/ci-watch.mjs';
+import { append as journalAppend } from '../lib/journal.mjs';
 
 /**
  * The five MECHANICAL signals of the merge bar (spec §4 items 1–5). All must be
@@ -91,7 +92,10 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs })) {
     return { ok: true, green: true, viaFreshTransition: true };
   }
-  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup'], { parseJson: true });
+  // headRefName rides along (#408): a red result may need `classifyCiFailure`
+  // below, which needs the branch — one field added to an existing call, not
+  // an extra round-trip.
+  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefName'], { parseJson: true });
   if (!res.ok) return { ok: false, green: false, error: res.stderr || 'pr view failed' };
   const rollup = res.json?.statusCheckRollup ?? [];
   if (rollup.length === 0) return { ok: true, green: false, reason: 'no checks reported yet' };
@@ -99,7 +103,166 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
     const state = c.conclusion ?? c.state; // CheckRun uses conclusion; StatusContext uses state
     return state !== 'SUCCESS' && state !== 'NEUTRAL' && state !== 'SKIPPED';
   });
-  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context) };
+  // #408 — a bad CheckRun carries the workflow that produced it; a repo can run
+  // several workflows on the same branch/push, so `classifyCiFailure` needs
+  // this to scope its `gh run list` to the actual failing workflow instead of
+  // "whichever workflow happened to run last."
+  //
+  // Security fix (3rd review pass, #408): the bad-check SET can span more
+  // than one workflow (or include a StatusContext, which carries no
+  // workflowName at all — e.g. an external check like a deploy preview).
+  // Picking just the FIRST bad check's workflow and classifying only that one
+  // run would let a fast-failing decoy workflow (genuinely outaged) get the
+  // whole CI-red waved through as "just an outage" while a REAL failure in a
+  // completely different workflow was never even looked at. So `classifiable`
+  // is true ONLY when every bad check is a CheckRun attributable to the SAME
+  // single workflow — any ambiguity (multiple workflows, or any check we
+  // can't attribute to one at all) means `runMerge` skips outage
+  // classification entirely and treats the result as a real failure,
+  // fail-closed. `workflowName` is only meaningful when `classifiable` is true.
+  // `|| null` (not `??`) deliberately normalizes an empty-string workflowName
+  // to null too — `classifyCiFailure`'s own `--workflow` guard is a plain
+  // truthiness check, so an empty string there would silently skip scoping;
+  // treating it as unresolved here (never classifiable) keeps the two in
+  // lockstep (4th review pass, #408).
+  const workflowNames = new Set(bad.map((c) => c.workflowName || null));
+  const classifiable = workflowNames.size === 1 && !workflowNames.has(null);
+  const workflowName = classifiable ? [...workflowNames][0] : null;
+  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable };
+}
+
+/**
+ * #408 AC.1/AC.2 — before treating a red/pending CI result as a real gate
+ * failure, rule out a GitHub Actions platform outage. Only fires when
+ * `ciGreen` already found actual bad checks (`pending.length > 0`) — an
+ * empty rollup ("no checks reported yet") is just "too early," not a
+ * signature to investigate, so it costs nothing extra in that (common)
+ * case. Never throws on a missing/malformed response — degrades to "not an
+ * outage" so a genuine regression is never masked as GitHub's fault.
+ *
+ * Security note (found in review, #408): a job's failed-step LOG TEXT is not
+ * a trustworthy signal on its own — it is whatever the repo's own workflow
+ * steps printed, which an attacker (a malicious PR, or any genuinely failing
+ * test/lint whose assertion message happens to echo the right words) can
+ * shape. Trusting text alone would let a crafted failure message spoof the
+ * outage signature and get a REAL regression (including a security-relevant
+ * one) waved off as "GitHub is down," plus trigger the automatic force-push
+ * recovery on attacker-influenced input. So the textual match is only
+ * evidence of LAST resort, gated behind a structural corroboration GitHub's
+ * own job orchestration assigns — not something a workflow step's stdout can
+ * forge: whether the failing job ever got past its injected "Set up job"
+ * step to run any of the repo's own defined steps. The action-download-info
+ * resolution failure this ticket targets happens DURING that setup phase,
+ * before user code runs — so "failed during setup" is the honest structural
+ * fingerprint of an infra outage, and "a user-defined step ran and failed"
+ * is definitionally a real failure regardless of what its log text says.
+ */
+export async function classifyCiFailure(gh, { branch, workflowName, stuckQueuedMs } = {}) {
+  if (!branch) return { outage: false, reason: null };
+  // #408 review fix — scope to the workflow that actually produced the bad
+  // check when known; an unscoped `run list` returns the branch's single
+  // latest run across EVERY workflow, which can be a different (unrelated,
+  // possibly green) workflow than the one `ciGreen` found bad checks on.
+  // `ciGreen` only ever passes a `workflowName` here when EVERY bad check
+  // shares that one workflow (`ci.classifiable` — 3rd review pass), closing
+  // the "decoy workflow masks a real failure in a different workflow" gap.
+  //
+  // Accepted residual risk (review, #408): `workflowName` is the workflow's
+  // *display name* (editable via the workflow file's own `name:` key), not
+  // an ID cross-checked back to the specific CheckRun. A same-branch decoy
+  // workflow with a colliding display name could still misdirect this
+  // lookup. Exploiting it requires push/workflow-modify access to the repo —
+  // a materially higher privilege bar than the PR-content-only spoofing this
+  // ticket's structural fixes close — and a wrong-run lookup still degrades
+  // safely: it either finds no matching run (outage:false) or a
+  // genuinely-outaged run that still has to pass `failedDuringSetup` below,
+  // never a raw name match alone.
+  const listArgs = ['run', 'list', '--branch', branch, '--limit', '1', '--json', 'databaseId,status,createdAt'];
+  if (workflowName) listArgs.push('--workflow', workflowName);
+  const runs = await gh(listArgs, { parseJson: true });
+  const latest = runs.ok && Array.isArray(runs.json) ? runs.json[0] : null;
+  if (!latest) return { outage: false, reason: null };
+  if (latest.status && latest.status !== 'completed') {
+    const queuedForMs = Date.now() - new Date(latest.createdAt).getTime();
+    const outageOpts = stuckQueuedMs != null ? { stuckQueuedMs } : {};
+    // #408 review fix — pass the run's ACTUAL status through instead of
+    // hardcoding 'QUEUED': isPlatformOutage only trips its stuck-queued
+    // trigger for a genuinely QUEUED run, so a merely slow but healthy
+    // `in_progress`/`waiting` run past stuckQueuedMs is correctly left alone.
+    if (isPlatformOutage({ status: latest.status, queuedForMs }, outageOpts)) {
+      return { outage: true, reason: `job stuck ${latest.status} for ${Math.round(queuedForMs / 60000)}m with no progress` };
+    }
+    return { outage: false, reason: null };
+  }
+  if (!failedDuringSetup(await gh(['run', 'view', String(latest.databaseId), '--json', 'jobs'], { parseJson: true }))) {
+    return { outage: false, reason: null }; // a real job/step ran and failed — never masked by log text alone
+  }
+  const log = await gh(['run', 'view', String(latest.databaseId), '--log-failed']);
+  if (isPlatformOutage(log)) {
+    return { outage: true, reason: 'GitHub Actions returned Service Unavailable resolving action-download-info' };
+  }
+  return { outage: false, reason: null };
+}
+
+/**
+ * Structural corroboration for `classifyCiFailure` above: did EVERY failing
+ * job in the run never get past GitHub's own injected "Set up job" step?
+ * `gh run view --json jobs` returns each job's `steps` array with
+ * GitHub-assigned conclusions (`success`/`failure`/`skipped`/`cancelled`/
+ * null) — every job has "Set up job" as `steps[0]` and "Complete job" as the
+ * last entry, injected by the Actions service itself, not by the workflow
+ * file or any step's own output. A job's failure counts as "during setup"
+ * when `steps[0]` didn't succeed, or every step between the bookends is
+ * unset/skipped/cancelled (none of the repo's own steps ever ran) — matching
+ * where an action-download-info resolution failure actually occurs.
+ *
+ * Security fix (2nd review pass, #408): this must require ALL failing jobs
+ * to pass that test, not just one. `classifyCiFailure`'s subsequent
+ * `--log-failed` fetch is RUN-WIDE (every failing job's log, concatenated),
+ * not scoped to a single job — so checking only the first failing job left a
+ * bypass: a workflow with a genuine decoy job that fails during setup (e.g.
+ * a bad `uses:` ref) would corroborate the check while a SECOND, real job's
+ * genuine failure (whose own message could echo the outage phrases,
+ * deliberately or by coincidence) rides along in the same aggregated log
+ * text and still gets classified as "outage." Requiring every failing job to
+ * be a setup-phase failure closes that: the moment ANY failing job ran a
+ * real step, the whole run is correctly treated as a real failure and the
+ * log text is never even fetched — a single real failure can no longer hide
+ * behind a co-occurring one that's structurally legitimate. Degrades to
+ * `false` (not an outage) on any malformed/empty response or when no job
+ * actually failed.
+ */
+export function failedDuringSetup(jobsRes) {
+  const jobs = jobsRes?.ok && Array.isArray(jobsRes.json?.jobs) ? jobsRes.json.jobs : [];
+  const failing = jobs.filter((j) => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped');
+  if (failing.length === 0) return false;
+  return failing.every((job) => {
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    if (steps.length === 0) return true; // no step breakdown at all — this job never even got that far
+    const setup = steps[0];
+    if (setup?.conclusion && setup.conclusion !== 'success') return true;
+    const middle = steps.slice(1, -1);
+    return middle.every((s) => !s.conclusion || s.conclusion === 'skipped' || s.conclusion === 'cancelled');
+  });
+}
+
+/**
+ * #408 AC.2 — the empirically-proven recovery: force a fresh commit SHA via a
+ * trivial rebase + `--force-with-lease` repush. Re-running the SAME SHA
+ * (`gh run rerun --failed`) did not reliably help this session (spec §2.2) —
+ * only a new SHA broke the stuck-queue pattern. `execRun` is injected
+ * (mirrors exec.mjs's own DI convention for `run`), so no real git/network
+ * runs in tests.
+ */
+export async function forceNewSha(execRun, { base = 'origin/main' } = {}) {
+  const [, remote, ref] = /^(\w+)\/(.+)$/.exec(base) ?? [null, 'origin', base];
+  const fetch = await execRun('git', ['fetch', remote, ref]);
+  if (!fetch.ok) return { ok: false, error: fetch.stderr || 'git fetch failed' };
+  const rebase = await execRun('git', ['rebase', base]);
+  if (!rebase.ok) return { ok: false, error: rebase.stderr || 'git rebase failed — resolve conflicts before retrying' };
+  const push = await execRun('git', ['push', '--force-with-lease']);
+  if (!push.ok) return { ok: false, error: push.stderr || 'git push --force-with-lease failed' };
+  return { ok: true };
 }
 
 /**
@@ -111,9 +274,37 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
  * the effective merge mode from the preflight, recorded in run.json; pr-only
  * carries autoMergeEnabled:false semantics so a run with no live grant never
  * attempts a merge that would stall.
+ *
+ * #408 AC.2/AC.3 — before a real (non-empty) bad-checks result routes to the
+ * ordinary "blocked on ci" fix-wave/escalation path, it is classified: is
+ * this GitHub's Actions infra being down, or an actual failure? An outage
+ * gets the empirically-proven recovery (a fresh commit SHA via rebase +
+ * repush), bounded by `maxOutageAttempts` (default 2, "a small number" per
+ * the ticket) and threaded across separate invocations via `outageAttempt` —
+ * the same pattern the orchestrator already uses for `signals` (it holds the
+ * count, this stays a thin per-call gate). A successful recovery returns
+ * `outcome:'retry'` (a fresh SHA was just pushed — CI must be re-watched, not
+ * re-checked instantly) rather than either merging or escalating. Exhausted
+ * attempts fall through to a real "blocked on ci" result, but with an honest,
+ * distinguishing reason (AC.3) instead of silently treating GitHub's outage
+ * as if the change itself were broken. Every outage event is journaled
+ * (AC.4) — `gate-fail` with `outage:true` — so the run report and
+ * `board digest` can tell a real fix wave from GitHub being down twice.
+ * `deps` overrides the IO (`execRun`, `classify`, `journal`) for tests — no
+ * real git/gh/network runs unless the outage path actually triggers.
  */
-export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null }, log = console.log) {
+// #408 review fix (LOW) — the MCP tool schema types outageAttempt/maxOutageAttempts
+// as `integer` but the shared RPC validator (`plugin/mcp/lib/rpc.mjs` validateInput)
+// has no min/max enforcement, so a schema `maximum` alone would be documentation
+// only. Clamp for real, here, the one place both the CLI and every host (MCP,
+// direct script) funnel through — a caller can shrink the bound but never grow it
+// past a sane ceiling, so "a small number of attempts" holds regardless of input.
+const MAX_OUTAGE_ATTEMPTS_CEILING = 10;
+
+export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null, outageAttempt = 0, maxOutageAttempts = 2 } = {}, log = console.log, deps = {}) {
   if (!Number.isInteger(issue) || !Number.isInteger(pr)) return { ok: false, error: '--issue and --pr are required' };
+  outageAttempt = Number.isInteger(outageAttempt) && outageAttempt >= 0 ? outageAttempt : 0;
+  maxOutageAttempts = Number.isInteger(maxOutageAttempts) ? Math.min(Math.max(maxOutageAttempts, 0), MAX_OUTAGE_ATTEMPTS_CEILING) : 2;
   if (mode === 'pr-only' || !autoMergeEnabled(ctx.config)) {
     const why = mode === 'pr-only' ? 'merge-auth preflight resolved pr-only (no in-session grant)' : 'features.autopilotAutoMerge=false';
     log(`autopilot: ${why} — parking #${issue} at PR #${pr} (awaiting-human)`);
@@ -129,6 +320,56 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
   const ci = await ciGreen(ctx.gh, pr, { freshState });
   if (!ci.ok) return { ok: false, error: ci.error };
+  // #408 — `ci.classifiable` (fail-closed): only attempt outage classification
+  // when every bad check is attributable to the SAME single workflow. A bad
+  // set spanning multiple workflows (or any check with no resolvable
+  // workflow) skips classification entirely — never risk waving through a
+  // real failure in one workflow behind another's genuine outage.
+  //
+  // Security fix (4th review pass, #408): `!critical` gates this whole branch.
+  // A critical finding (security/review) must force an escalation "regardless
+  // of the other signals" (see `evaluateMergeBar`'s own doc comment below) —
+  // that invariant would be silently violated if an autonomous force-push
+  // recovery attempt could still fire and `return` before `evaluateMergeBar`
+  // ever runs. `critical` is an orchestrator-held verdict, not attacker
+  // input, but the fix is cheap and the invariant is exactly what this
+  // ticket's own merge bar promises, so outage recovery never preempts it.
+  if (!ci.green && ci.pending?.length && ci.classifiable && !critical) {
+    const classify = deps.classifyCiFailure ?? classifyCiFailure;
+    const cls = await classify(ctx.gh, { branch: ci.branch, workflowName: ci.workflowName });
+    if (cls.outage) {
+      const journal = deps.journalAppend ?? journalAppend;
+      if (outageAttempt >= maxOutageAttempts) {
+        const reason = `GitHub Actions platform outage, not your change (${cls.reason}) — recovery exhausted after ${maxOutageAttempts} attempt(s)`;
+        log(`autopilot: ${reason}`);
+        if (ctx.cwd) await journal(ctx.cwd, 'gate-fail', { gate: 'ci', ticket: `#${issue}`, pr, outage: true, phase: 'exhausted', reason: cls.reason, attempts: outageAttempt });
+        return { ok: false, merged: false, blockedOn: ['ci'], outage: true, outageExhausted: true, reason };
+      }
+      log(platformOutageNotice(cls.reason, outageAttempt + 1, maxOutageAttempts));
+      const force = deps.forceNewSha ?? forceNewSha;
+      const execRun = deps.execRun ?? run;
+      const recovered = await force(execRun);
+      if (ctx.cwd) {
+        await journal(ctx.cwd, 'gate-fail', {
+          gate: 'ci', ticket: `#${issue}`, pr, outage: true,
+          phase: recovered.ok ? 'recovered' : 'recovery-failed',
+          reason: cls.reason, attempt: outageAttempt + 1,
+        });
+      }
+      // #408 review fix — a failed recovery attempt (rebase conflict, rejected
+      // push) still carries the outage context forward: without `outage`/
+      // `reason` here, a caller (incl. the MCP tool's error path) sees only a
+      // raw git error string and loses "this was outage-recovery attempt N,"
+      // making the run report/trail dishonestly silent about why it happened.
+      if (!recovered.ok) {
+        return {
+          ok: false, error: recovered.error, outage: true, outageAttempt: outageAttempt + 1,
+          reason: `platform-outage recovery attempt ${outageAttempt + 1}/${maxOutageAttempts} failed: ${recovered.error}`,
+        };
+      }
+      return { ok: true, merged: false, retried: true, outage: true, outageAttempt: outageAttempt + 1, outcome: 'retry' };
+    }
+  }
   const bar = evaluateMergeBar({ ...signals, ci: ci.green }, { critical });
   if (!bar.merge) {
     log(`autopilot: merge bar RED for #${issue} — blocked on ${bar.blockedOn.join(', ')}${bar.escalate ? ' (escalate)' : ''}`);
@@ -141,11 +382,14 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
 }
 
 function parseArgs(argv) {
-  const a = { issue: null, pr: null, signals: {}, critical: false };
+  const a = { issue: null, pr: null, signals: {}, critical: false, outageAttempt: 0 };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--issue') a.issue = Number(argv[++i]);
     else if (argv[i] === '--pr') a.pr = Number(argv[++i]);
     else if (argv[i] === '--critical') a.critical = true;
+    // #408 — the orchestrator threads the attempt count across separate
+    // invocations (a fresh SHA needs a fresh CI run to watch in between).
+    else if (argv[i] === '--outage-attempt') a.outageAttempt = Number(argv[++i]);
     else if (argv[i].startsWith('--') && BAR_SIGNALS.includes(argv[i].slice(2))) a.signals[argv[i].slice(2)] = true;
   }
   return a;

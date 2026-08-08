@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
-import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
+import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
@@ -230,6 +230,48 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
     });
   });
 
+  it('#408: ciGreen surfaces the failing CheckRun\'s workflowName for classifyCiFailure to scope on (null when unknown, e.g. a StatusContext)', async () => {
+    const gh = (json) => async () => ({ ok: true, json });
+    const withWorkflow = await ciGreen(gh({ statusCheckRollup: [{ conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' }] }));
+    expect(withWorkflow.workflowName).toBe('verify');
+    const withoutWorkflow = await ciGreen(gh({ statusCheckRollup: [{ state: 'ERROR', context: 'legacy-status' }] })); // StatusContext has no workflowName
+    expect(withoutWorkflow.workflowName).toBe(null);
+  });
+
+  // SECURITY (3rd review pass, #408): a decoy WORKFLOW (not just a decoy job
+  // within one workflow) must never let a real failure in a DIFFERENT
+  // workflow ride through as "just an outage."
+  describe('#408: ciGreen.classifiable — fail-closed when the bad-check set is ambiguous across workflows', () => {
+    const gh = (json) => async () => ({ ok: true, json });
+
+    it('classifiable=true when every bad check shares exactly one workflow', async () => {
+      const ci = await ciGreen(gh({ statusCheckRollup: [
+        { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },
+        { conclusion: 'FAILURE', name: 'gitleaks', workflowName: 'verify' },
+        { conclusion: 'SUCCESS', name: 'license', workflowName: 'verify' }, // passing checks don't count
+      ] }));
+      expect(ci.classifiable).toBe(true);
+      expect(ci.workflowName).toBe('verify');
+    });
+
+    it('classifiable=false when bad checks span MULTIPLE workflows — a decoy workflow must not mask a real one', async () => {
+      const ci = await ciGreen(gh({ statusCheckRollup: [
+        { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },  // genuinely outaged
+        { conclusion: 'FAILURE', name: 'scan', workflowName: 'secret-scan' },   // a REAL failure elsewhere
+      ] }));
+      expect(ci.classifiable).toBe(false);
+      expect(ci.workflowName).toBe(null);
+    });
+
+    it('classifiable=false when ANY bad check has no resolvable workflow (e.g. a StatusContext)', async () => {
+      const ci = await ciGreen(gh({ statusCheckRollup: [
+        { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },
+        { state: 'ERROR', context: 'external-deploy-check' }, // no workflowName at all — can't verify
+      ] }));
+      expect(ci.classifiable).toBe(false);
+    });
+  });
+
   it('runMerge: disabled → park; bar red → no merge call; all green → squash-merge', async () => {
     const calls = [];
     const gh = async (args) => {
@@ -325,7 +367,7 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     // no cwd on ctx at all — must behave exactly as before this ticket
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
     expect(res.merged).toBe(true);
-    expect(calls).toContain('pr view 9 --json statusCheckRollup');
+    expect(calls).toContain('pr view 9 --json statusCheckRollup,headRefName');
   });
 });
 
@@ -859,5 +901,441 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
 
   it('DEFAULT_LOW_WATER matches rateBudget\'s own default (200)', () => {
     expect(DEFAULT_LOW_WATER).toBe(200);
+  });
+});
+
+// #408 — detect + auto-recover from GitHub Actions platform outages (distinct from #360's rate limiting).
+describe('classifyCiFailure (AC-408.1/AC-408.2, #408) — is a red CI result GitHub, or the change?', () => {
+  it('no branch known -> not an outage, no gh calls', async () => {
+    const calls = [];
+    const gh = async (args) => { calls.push(args); return { ok: true, json: [] }; };
+    expect(await classifyCiFailure(gh, { branch: null })).toEqual({ outage: false, reason: null });
+    expect(calls).toEqual([]);
+  });
+
+  it('no runs found for the branch -> not an outage', async () => {
+    const gh = async () => ({ ok: true, json: [] });
+    expect(await classifyCiFailure(gh, { branch: 'feat/x' })).toEqual({ outage: false, reason: null });
+  });
+
+  it('review fix (#408): scopes `gh run list` to the failing check\'s own workflow when known — a repo can run several workflows on one push', async () => {
+    const seenArgs = [];
+    const gh = async (args) => { seenArgs.push(args); return { ok: true, json: [] }; };
+    await classifyCiFailure(gh, { branch: 'feat/x', workflowName: 'verify' });
+    expect(seenArgs[0]).toEqual(['run', 'list', '--branch', 'feat/x', '--limit', '1', '--json', 'databaseId,status,createdAt', '--workflow', 'verify']);
+    seenArgs.length = 0;
+    await classifyCiFailure(gh, { branch: 'feat/x' }); // no workflowName known (e.g. a StatusContext, not a CheckRun) -> unscoped, unchanged
+    expect(seenArgs[0]).toEqual(['run', 'list', '--branch', 'feat/x', '--limit', '1', '--json', 'databaseId,status,createdAt']);
+  });
+
+  it('review fix (#408): a merely slow but healthy in_progress run past the threshold is NOT misclassified as stuck-queued', async () => {
+    const createdAt = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20m ago, well past a 10m threshold
+    const gh = async () => ({ ok: true, json: [{ databaseId: 1, status: 'in_progress', createdAt }] });
+    expect((await classifyCiFailure(gh, { branch: 'feat/x', stuckQueuedMs: 10 * 60 * 1000 })).outage).toBe(false);
+  });
+
+  it('a run stuck queued past the threshold -> outage', async () => {
+    const createdAt = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20m ago
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 1, status: 'queued', createdAt }] };
+      throw new Error('should not fetch logs for a queued run');
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x', stuckQueuedMs: 10 * 60 * 1000 });
+    expect(cls.outage).toBe(true);
+    expect(cls.reason).toMatch(/stuck queued for \d+m/);
+  });
+
+  it('a run still queued but under the threshold -> not (yet) an outage', async () => {
+    const createdAt = new Date(Date.now() - 1000).toISOString();
+    const gh = async () => ({ ok: true, json: [{ databaseId: 1, status: 'queued', createdAt }] });
+    expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
+  });
+
+  it('a completed run whose failed-log text carries the outage signature, corroborated by a setup-phase job failure -> outage', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) {
+        return { ok: true, json: { jobs: [{ name: 'actionlint', conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] }] } };
+      }
+      if (args[0] === 'run' && args[1] === 'view') {
+        expect(args).toContain('42');
+        expect(args).toContain('--log-failed');
+        return { ok: false, stdout: '', stderr: 'Failed to resolve action download info. Error: Service Unavailable' };
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x' });
+    expect(cls.outage).toBe(true);
+    expect(cls.reason).toMatch(/Service Unavailable/);
+  });
+
+  it('a completed run with an ordinary test-failure log -> NOT an outage (never masks a real regression)', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      return { ok: false, stdout: '', stderr: 'AssertionError: expected 1 to equal 2\n  at test.mjs:10' };
+    };
+    expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
+  });
+
+  it('SECURITY (#408 review): a REAL failing user step whose message happens to echo the outage phrases is NOT classified as an outage', async () => {
+    // The job ran a repo-defined step ("Run tests") that genuinely failed — its
+    // assertion text happens to contain the exact outage phrases (a hostile PR
+    // could craft this deliberately). Job-structure corroboration must win: the
+    // job got PAST setup and a real step ran, so this must never be "outage".
+    let fetchedLog = false;
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) {
+        return {
+          ok: true,
+          json: { jobs: [{ name: 'unit-tests', conclusion: 'failure', steps: [
+            { name: 'Set up job', conclusion: 'success' },
+            { name: 'Checkout', conclusion: 'success' },
+            { name: 'Run tests', conclusion: 'failure' },
+            { name: 'Complete job', conclusion: 'failure' },
+          ] } ] },
+        };
+      }
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('--log-failed')) {
+        fetchedLog = true;
+        return { ok: false, stdout: '', stderr: 'AssertionError: Failed to resolve action download info. Error: Service Unavailable (planted by a hostile test)' };
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x' });
+    expect(cls.outage).toBe(false);
+    expect(fetchedLog).toBe(false); // never even reads the spoofable log text once structure says "real step ran"
+  });
+
+  it('SECURITY (2nd review pass, #408): a genuine setup-phase decoy job cannot launder a co-occurring REAL job failure into "outage" end-to-end', async () => {
+    // Two jobs failed in the same run: 'flaky-action' genuinely failed during
+    // setup (a real, non-malicious infra hiccup on ITS OWN job) while
+    // 'unit-tests' ran a real step and genuinely failed for a real reason.
+    // The run-wide --log-failed text (fetched only if failedDuringSetup allows
+    // it) would otherwise let the setup-phase job "vouch" for the whole run.
+    let fetchedLog = false;
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) {
+        return {
+          ok: true,
+          json: { jobs: [
+            { name: 'flaky-action', conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] },
+            { name: 'unit-tests', conclusion: 'failure', steps: [
+              { name: 'Set up job', conclusion: 'success' },
+              { name: 'Run tests', conclusion: 'failure' },
+              { name: 'Complete job', conclusion: 'failure' },
+            ] },
+          ] },
+        };
+      }
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('--log-failed')) {
+        fetchedLog = true;
+        return { ok: false, stdout: '', stderr: 'flaky-action: Failed to resolve action download info. Error: Service Unavailable\nunit-tests: AssertionError: expected 1 to equal 2' };
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x' });
+    expect(cls.outage).toBe(false); // the real unit-tests failure must win — never masked by the co-occurring decoy
+    expect(fetchedLog).toBe(false); // structure alone rules this out before the spoofable log text is ever read
+  });
+
+  it('degrades to "not an outage" on a malformed run-list response, never throws', async () => {
+    const gh = async () => ({ ok: true, json: null });
+    await expect(classifyCiFailure(gh, { branch: 'feat/x' })).resolves.toEqual({ outage: false, reason: null });
+  });
+
+  it('degrades to "not an outage" when the jobs lookup itself fails', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      return { ok: false, stderr: 'boom' };
+    };
+    expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
+  });
+});
+
+describe('failedDuringSetup (#408 security follow-up) — structural corroboration, not spoofable via step log text', () => {
+  const jobsRes = (jobs) => ({ ok: true, json: { jobs } });
+
+  it('true when the injected "Set up job" step itself failed', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] }]))).toBe(true);
+  });
+
+  it('true when no repo-defined step between the bookends ever ran (all skipped/cancelled/unset)', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Checkout', conclusion: 'skipped' },
+      { name: 'Build', conclusion: null },
+      { name: 'Complete job', conclusion: 'failure' },
+    ] }]))).toBe(true);
+  });
+
+  it('false once ANY repo-defined step actually ran and failed — a real failure, never masked', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Run tests', conclusion: 'failure' },
+      { name: 'Complete job', conclusion: 'failure' },
+    ] }]))).toBe(false);
+  });
+
+  it('false when no job actually failed (conclusion success/skipped)', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'success', steps: [] }]))).toBe(false);
+    expect(failedDuringSetup(jobsRes([]))).toBe(false);
+  });
+
+  it('true when there is no step breakdown at all (the job never even got that far)', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [] }]))).toBe(true);
+  });
+
+  it('degrades to false on a malformed/failed jobs response, never throws', () => {
+    expect(failedDuringSetup({ ok: false })).toBe(false);
+    expect(failedDuringSetup({ ok: true, json: null })).toBe(false);
+    expect(failedDuringSetup(null)).toBe(false);
+  });
+
+  // SECURITY (2nd review pass, #408): the decoy-job bypass. classifyCiFailure's
+  // --log-failed fetch is RUN-WIDE (every failing job's log), not scoped to one
+  // job — checking only the FIRST failing job here would let a genuine
+  // setup-phase decoy job "corroborate" an outage while a SECOND, real job's
+  // genuine failure (whose text could echo the outage phrases) rides along in
+  // the same aggregated log and still gets classified as an outage.
+  it('SECURITY: false when ANY failing job among several ran a real step, even if ANOTHER job genuinely failed during setup (no decoy bypass)', () => {
+    const setupFailure = { conclusion: 'failure', name: 'decoy', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] };
+    const realFailure = { conclusion: 'failure', name: 'unit-tests', steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Run tests', conclusion: 'failure' },
+      { name: 'Complete job', conclusion: 'failure' },
+    ] };
+    // Decoy listed FIRST — a `.find()`-based check would corroborate on it alone.
+    expect(failedDuringSetup(jobsRes([setupFailure, realFailure]))).toBe(false);
+    // Order must not matter either.
+    expect(failedDuringSetup(jobsRes([realFailure, setupFailure]))).toBe(false);
+  });
+
+  it('true only when EVERY failing job in a multi-job run failed during setup', () => {
+    const a = { conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }] };
+    const b = { conclusion: 'failure', steps: [] }; // no breakdown — also counts as setup-phase
+    const passing = { conclusion: 'success', steps: [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run tests', conclusion: 'success' }] };
+    expect(failedDuringSetup(jobsRes([a, b, passing]))).toBe(true); // the passing job is irrelevant — only failing jobs are evaluated
+  });
+});
+
+describe('forceNewSha (AC-408.2, #408) — the empirically-proven recovery: fresh SHA via rebase + repush', () => {
+  it('fetches, rebases onto the base, and force-with-lease pushes, in order', async () => {
+    const calls = [];
+    const execRun = async (cmd, args) => { calls.push([cmd, ...args].join(' ')); return { ok: true, code: 0, stdout: '', stderr: '' }; };
+    const res = await forceNewSha(execRun);
+    expect(res).toEqual({ ok: true });
+    expect(calls).toEqual(['git fetch origin main', 'git rebase origin/main', 'git push --force-with-lease']);
+  });
+
+  it('stops and surfaces the error at the first failing step (fetch/rebase/push)', async () => {
+    const failFetch = await forceNewSha(async () => ({ ok: false, stderr: 'network down' }));
+    expect(failFetch).toMatchObject({ ok: false, error: 'network down' });
+
+    let step = 0;
+    const failRebase = await forceNewSha(async () => (++step === 1 ? { ok: true } : { ok: false, stderr: 'CONFLICT' }));
+    expect(failRebase).toMatchObject({ ok: false, error: 'CONFLICT' });
+    expect(failRebase.error).toMatch(/CONFLICT/);
+
+    step = 0;
+    const failPush = await forceNewSha(async () => (++step <= 2 ? { ok: true } : { ok: false, stderr: 'stale ref' }));
+    expect(failPush).toMatchObject({ ok: false, error: 'stale ref' });
+  });
+});
+
+describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/AC-408.3/AC-408.4, #408)', () => {
+  const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
+  const outageLog = { ok: false, stdout: '', stderr: 'Failed to resolve action download info. Error: Service Unavailable' };
+  const setupFailureJobs = { ok: true, json: { jobs: [{ conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] }] } };
+
+  // A gh double where the PR's rollup shows one real bad check (not empty — the
+  // classification path only triggers on genuine bad checks, not "too early"),
+  // and the job-structure lookup shows the failure happened during setup (the
+  // structural corroboration `classifyCiFailure` requires — #408 security fix).
+  const outageGhDouble = () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') {
+        // workflowName present + a single distinct workflow across all bad
+        // checks is what makes ci.classifiable true (#408, 3rd review pass).
+        return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE', workflowName: 'verify' }] } };
+      }
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 9, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) return setupFailureJobs;
+      if (args[0] === 'run' && args[1] === 'view') return outageLog;
+      return { ok: true };
+    };
+    return { calls, gh };
+  };
+
+  it('AC-408.2: an outage attempts recovery (fresh SHA) instead of routing straight to the fix-wave/escalation path', async () => {
+    const { gh, calls } = outageGhDouble();
+    const execCalls = [];
+    const execRun = async (cmd, args) => { execCalls.push([cmd, ...args].join(' ')); return { ok: true, code: 0, stdout: '', stderr: '' }; };
+    const journalCalls = [];
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 0 },
+      () => {},
+      { execRun, journalAppend: async (...a) => { journalCalls.push(a); } },
+    );
+    expect(res).toMatchObject({ ok: true, merged: false, retried: true, outage: true, outageAttempt: 1, outcome: 'retry' });
+    expect(execCalls).toEqual(['git fetch origin main', 'git rebase origin/main', 'git push --force-with-lease']);
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false); // never merges mid-recovery
+    // AC-408.4: the outage is journaled, distinguishable from a real gate failure.
+    expect(journalCalls).toHaveLength(1);
+    const [cwd, kind, data] = journalCalls[0];
+    expect(cwd).toBe('/fake/cwd');
+    expect(kind).toBe('gate-fail');
+    expect(data).toMatchObject({ outage: true, phase: 'recovered', pr: 9 });
+  });
+
+  it('review fix (#408): a FAILED recovery attempt (rebase conflict / rejected push) still carries outage context, not just a raw git error', async () => {
+    const { gh } = outageGhDouble();
+    const journalCalls = [];
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 0 },
+      () => {},
+      { execRun: async () => ({ ok: false, code: 1, stdout: '', stderr: 'CONFLICT (content): Merge conflict in file.mjs' }), journalAppend: async (...a) => { journalCalls.push(a); } },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('CONFLICT');
+    expect(res.outage).toBe(true);
+    expect(res.outageAttempt).toBe(1);
+    expect(res.reason).toMatch(/platform-outage recovery attempt 1\/2 failed/);
+    expect(journalCalls[0][2]).toMatchObject({ outage: true, phase: 'recovery-failed' });
+  });
+
+  it('AC-408.2: bounded — exhausts after maxOutageAttempts and falls through to a real blocked-on-ci result', async () => {
+    const { gh, calls } = outageGhDouble();
+    const journalCalls = [];
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 2, maxOutageAttempts: 2 },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt recovery once exhausted'); }, journalAppend: async (...a) => { journalCalls.push(a); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.outageExhausted).toBe(true);
+    expect(res.blockedOn).toContain('ci');
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+    // AC-408.3: the honest reason distinguishes GitHub's outage from the change itself.
+    expect(res.reason).toMatch(/GitHub Actions platform outage, not your change/);
+    expect(journalCalls[0][2]).toMatchObject({ outage: true, phase: 'exhausted' });
+  });
+
+  it('AC-408.3: a real gate failure (not an outage signature) is never masked — routes to the ordinary bar-red path', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'unit-tests', conclusion: 'FAILURE' }] } };
+      }
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 9, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view') return { ok: false, stdout: '', stderr: 'AssertionError: 1 !== 2' };
+      return { ok: true };
+    };
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {}, { execRun: async () => { throw new Error('must not run recovery on a real failure'); } });
+    expect(res.merged).toBe(false);
+    expect(res.outage).toBeUndefined();
+    expect(res.blockedOn).toContain('ci');
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('never attempts outage classification on an empty rollup ("no checks reported yet") — cheap, common case stays untouched', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { headRefName: 'feat/x', statusCheckRollup: [] } };
+      return { ok: true };
+    };
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res.blockedOn).toContain('ci');
+    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // no run list / run view calls fired
+  });
+
+  it('SECURITY (3rd review pass, #408): a decoy workflow never masks a genuine failure in a DIFFERENT workflow — end to end', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return {
+          ok: true,
+          json: {
+            headRefName: 'feat/408-x',
+            statusCheckRollup: [
+              { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },   // a genuine GH outage on THIS workflow
+              { conclusion: 'FAILURE', name: 'scan', workflowName: 'secret-scan' },    // a REAL failure on a DIFFERENT workflow
+            ],
+          },
+        };
+      }
+      return { ok: true }; // run list/view must never even be called — classification is skipped entirely
+    };
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 1, pr: 9, signals: heldVerdicts },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt recovery — the bad set spans multiple workflows'); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.outage).toBeUndefined(); // never even classified — ci.classifiable was false
+    expect(res.blockedOn).toContain('ci');
+    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // zero classification calls fired
+  });
+
+  it('review fix (#408, LOW): maxOutageAttempts is clamped server-side regardless of caller input', async () => {
+    const { gh } = outageGhDouble();
+    // A caller passing an absurd maxOutageAttempts still gets a bounded, sane cap.
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 999999, maxOutageAttempts: 999999 },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt recovery — outageAttempt is already past the clamped ceiling'); }, journalAppend: async () => {} },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.outageExhausted).toBe(true);
+    expect(res.reason).toContain('recovery exhausted after 10 attempt(s)'); // clamped to MAX_OUTAGE_ATTEMPTS_CEILING
+  });
+
+  it('SECURITY (4th review pass, #408): critical:true forces escalation regardless — never lets an outage-recovery force-push preempt it', async () => {
+    const { gh, calls } = outageGhDouble();
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, critical: true },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt any git action when critical:true'); }, journalAppend: async () => { throw new Error('must not even classify when critical:true'); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.escalate).toBe(true);
+    expect(res.blockedOn).toContain('security:critical');
+    expect(res.outage).toBeUndefined(); // outage classification never even ran
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('review fix (#408, LOW): an empty-string workflowName is treated as unresolved, not classifiable — stays in lockstep with classifyCiFailure\'s truthiness guard', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { ok: true, json: { headRefName: 'feat/x', statusCheckRollup: [{ conclusion: 'FAILURE', name: 'actionlint', workflowName: '' }] } };
+      }
+      return { ok: true };
+    };
+    const ci = await ciGreen(gh, 9);
+    expect(ci.classifiable).toBe(false);
+    expect(ci.workflowName).toBe(null);
+  });
+
+  it('does not require ctx.cwd — recovery still runs (just skips journaling) when no cwd is present', async () => {
+    const { gh } = outageGhDouble();
+    const res = await runMerge(
+      { config: {}, gh /* no cwd */ },
+      { issue: 408, pr: 9, signals: heldVerdicts },
+      () => {},
+      { execRun: async () => ({ ok: true, code: 0, stdout: '', stderr: '' }) },
+    );
+    expect(res).toMatchObject({ ok: true, retried: true, outage: true });
   });
 });

@@ -3,7 +3,7 @@ import { readFile, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rollupState, transition, poll as ciPoll, isNoPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH } from '../../plugin/scripts/monitors/ci-watch.mjs';
+import { rollupState, transition, poll as ciPoll, isNoPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH, allQueued } from '../../plugin/scripts/monitors/ci-watch.mjs';
 import { newlyResolved, poll as decisionsPoll } from '../../plugin/scripts/monitors/decisions-watch.mjs';
 import { trackFailure, freshGuard, FAILURE_THRESHOLD, REEMIT_EVERY } from '../../plugin/scripts/monitors/poll-guard.mjs';
 
@@ -64,6 +64,70 @@ describe('CI monitor (#151)', () => {
       await writeCiWatchState(cwd, { pr: 9, state: 'pass' });
       expect((await loadCiWatchState(cwd)).state).toBe('pass');
     });
+  });
+});
+
+// #408 — GitHub Actions platform-outage detection on the CI-watch path.
+describe('CI monitor — platform-outage detection (AC-408.1/AC-408.4, #408)', () => {
+  it('allQueued: true only when every check is QUEUED; false on empty, mixed, or in-progress', () => {
+    expect(allQueued([])).toBe(false);
+    expect(allQueued([{ status: 'QUEUED' }, { status: 'QUEUED' }])).toBe(true);
+    expect(allQueued([{ status: 'queued' }])).toBe(true); // case-insensitive
+    expect(allQueued([{ status: 'QUEUED' }, { status: 'IN_PROGRESS' }])).toBe(false);
+    expect(allQueued([{ conclusion: 'SUCCESS' }])).toBe(false);
+  });
+
+  it('poll suspects an outage once a fully-queued rollup crosses the threshold, using its own clock', async () => {
+    const gh = async () => ({ ok: true, json: { number: 7, headRefName: 'feat/y', statusCheckRollup: [{ status: 'QUEUED' }, { status: 'QUEUED' }] } });
+    let now = 1_000_000;
+    const clock = () => now;
+    const first = await ciPoll(gh, null, { now: clock, stuckQueuedMs: 60_000 });
+    expect(first.queuedSince).toBe(1_000_000);
+    expect(first.line).toMatch(/CI pending on PR #7/); // ordinary null->pending transition; not stuck yet
+    now += 30_000; // still under threshold
+    const second = await ciPoll(gh, first.prev, { queuedSince: first.queuedSince, outageReported: first.outageReported, now: clock, stuckQueuedMs: 60_000 });
+    expect(second.line).toBe(null);
+    now += 40_000; // now 70s queued, past the 60s threshold
+    const third = await ciPoll(gh, second.prev, { queuedSince: second.queuedSince, outageReported: second.outageReported, now: clock, stuckQueuedMs: 60_000 });
+    expect(third.outage).toBe(true);
+    expect(third.line).toMatch(/CI outage-suspected on PR #7 \(feat\/y\)/);
+    expect(third.line).toMatch(/stuck queued/);
+    expect(third.line).not.toMatch(/^CI pending/); // not the ordinary transition line
+  });
+
+  it('reports the outage line at most once per stuck episode (no per-poll spam)', async () => {
+    const gh = async () => ({ ok: true, json: { number: 7, headRefName: 'feat/y', statusCheckRollup: [{ status: 'QUEUED' }] } });
+    let now = 0;
+    const clock = () => now;
+    let state = await ciPoll(gh, null, { now: clock, stuckQueuedMs: 1000 });
+    now = 2000; // past threshold
+    state = await ciPoll(gh, state.prev, { queuedSince: state.queuedSince, outageReported: state.outageReported, now: clock, stuckQueuedMs: 1000 });
+    expect(state.outage).toBe(true);
+    now = 4000; // still stuck, well past threshold — must NOT re-emit
+    state = await ciPoll(gh, state.prev, { queuedSince: state.queuedSince, outageReported: state.outageReported, now: clock, stuckQueuedMs: 1000 });
+    expect(state.outage).toBe(false);
+    expect(state.line).toBe(null);
+  });
+
+  it('queuedSince and the outage flag reset the moment the rollup stops being all-queued', async () => {
+    let now = 0;
+    const clock = () => now;
+    const stuckGh = async () => ({ ok: true, json: { number: 7, headRefName: 'feat/y', statusCheckRollup: [{ status: 'QUEUED' }] } });
+    let state = await ciPoll(stuckGh, null, { now: clock, stuckQueuedMs: 1000 });
+    now = 5000;
+    state = await ciPoll(stuckGh, state.prev, { queuedSince: state.queuedSince, outageReported: state.outageReported, now: clock, stuckQueuedMs: 1000 });
+    expect(state.outage).toBe(true);
+    const progressedGh = async () => ({ ok: true, json: { number: 7, headRefName: 'feat/y', statusCheckRollup: [{ status: 'IN_PROGRESS' }] } });
+    state = await ciPoll(progressedGh, state.prev, { queuedSince: state.queuedSince, outageReported: state.outageReported, now: clock, stuckQueuedMs: 1000 });
+    expect(state.queuedSince).toBe(null);
+    expect(state.outageReported).toBe(false);
+  });
+
+  it('a real fail transition still emits the ordinary CI fail line, not an outage line', async () => {
+    const gh = async () => ({ ok: true, json: { number: 7, headRefName: 'feat/y', statusCheckRollup: [{ conclusion: 'FAILURE' }] } });
+    const r = await ciPoll(gh, null);
+    expect(r.line).toMatch(/CI fail on PR #7/);
+    expect(r.outage).toBe(false);
   });
 });
 

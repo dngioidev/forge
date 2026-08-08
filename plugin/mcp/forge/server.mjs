@@ -228,7 +228,7 @@ export const TOOLS = [
   },
   {
     name: 'autopilot_merge',
-    description: 'EXECUTE the gated live merge — the SINGLE sanctioned autopilot merge path. Checks CI, evaluates the full bar over {ship,gates,reviewer,security,ci}, and squash-merges ONLY when every signal is green (fail-closed: a missing/red signal or critical never merges). Returns {merged, parked, outcome, blockedOn}. Claude-only by policy per ADR-0007 — a raw `gh pr merge` bypasses this bar and is NOT sanctioned; features.autopilotAutoMerge:false parks at the PR.',
+    description: 'EXECUTE the gated live merge — the SINGLE sanctioned autopilot merge path. Checks CI, evaluates the full bar over {ship,gates,reviewer,security,ci}, and squash-merges ONLY when every signal is green (fail-closed: a missing/red signal or critical never merges). A real CI red is first classified (#408): a GitHub Actions platform outage attempts a bounded rebase+repush recovery (returns outcome:"retry" — re-invoke with an incremented outageAttempt after CI re-runs) instead of routing straight to escalation; exhausted recovery reports an honest reason distinguishing "GitHub platform outage, not your change" from a real gate failure. Returns {merged, parked, outcome, blockedOn, outage, outageAttempt, outageExhausted, reason}. Claude-only by policy per ADR-0007 — a raw `gh pr merge` bypasses this bar and is NOT sanctioned; features.autopilotAutoMerge:false parks at the PR.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -237,6 +237,8 @@ export const TOOLS = [
         signals: { type: 'object' },
         critical: { type: 'boolean' },
         mode: { type: 'string', enum: ['auto-merge', 'pr-only'], description: 'Effective merge mode from the run-start merge-auth preflight (run.json). "pr-only" (no in-session grant) parks at the PR — never merges.' },
+        outageAttempt: { type: 'integer', description: '#408 — how many platform-outage recovery attempts this ticket has already used. The caller threads this across separate autopilot_merge calls (starts at 0); a response with outcome:"retry" means one recovery attempt was just made — re-invoke with outageAttempt+1 after the fresh commit\'s CI completes. Clamped server-side (non-negative; a garbage value is treated as 0).' },
+        maxOutageAttempts: { type: 'integer', description: '#408 — bound on outage-recovery attempts before giving up honestly (default 2, clamped server-side to a ceiling of 10 regardless of caller input).' },
       },
       required: ['issue', 'pr', 'signals'],
     },
@@ -489,10 +491,25 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
           // bar, and only then squash-merges — so the merge cannot happen on red
           // by construction. A red bar is NOT an operational error: surface it as
           // a structured {merged:false, blockedOn} so the caller sees the block.
+          // #408 — outageAttempt/maxOutageAttempts thread through so the bounded
+          // platform-outage recovery (and its honest reason once exhausted)
+          // actually reaches the only Claude-callable merge path, not just the
+          // direct CLI/test callers of runMerge.
           return board(id, async (ctx) => {
-            const r = await deps.runMerge(ctx, { issue: args.issue, pr: args.pr, signals: args.signals, critical: args.critical ?? false, mode: args.mode ?? null }, noop);
-            if (r.error) return teach(id, r.error);
-            return toolText(id, { ok: true, merged: r.merged ?? false, parked: r.parked ?? false, outcome: r.outcome ?? null, blockedOn: r.blockedOn ?? [], escalate: r.escalate ?? false });
+            const r = await deps.runMerge(ctx, {
+              issue: args.issue, pr: args.pr, signals: args.signals, critical: args.critical ?? false, mode: args.mode ?? null,
+              outageAttempt: args.outageAttempt ?? 0, maxOutageAttempts: args.maxOutageAttempts ?? 2,
+            }, noop);
+            // #408 review fix — a failed outage-recovery attempt (rebase conflict,
+            // rejected push) still returns `r.error`, but it carries outage context
+            // (`outage`/`outageAttempt`/`reason`) that a bare `teach()` would drop,
+            // leaving the caller with only a raw git error and no idea this was a
+            // recovery attempt rather than an ordinary tool failure.
+            if (r.error) return r.outage ? toolText(id, { ok: false, error: r.error, outage: true, outageAttempt: r.outageAttempt ?? null, reason: r.reason ?? null }, true) : teach(id, r.error);
+            return toolText(id, {
+              ok: true, merged: r.merged ?? false, parked: r.parked ?? false, outcome: r.outcome ?? null, blockedOn: r.blockedOn ?? [], escalate: r.escalate ?? false,
+              outage: r.outage ?? false, outageAttempt: r.outageAttempt ?? null, outageExhausted: r.outageExhausted ?? false, reason: r.reason ?? null,
+            });
           });
       }
     } catch (e) {
