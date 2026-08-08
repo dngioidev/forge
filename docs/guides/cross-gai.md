@@ -152,10 +152,11 @@ were declared only in `plugin.json`. agy reads a sibling plugin-root
   it on your build with `agy plugin validate forge` after install; the in-place
   discovery flow avoids the question entirely. Live confirmation lands with the
   #290 dogfood.
-- `forge-graph` is always registered. `forge-core` (the 9-tool board/gate/
-  autopilot server from [#288](https://github.com/dngioidev/forge/issues/288)) is
-  registered **only when its server file exists** in the source — the emitter
-  guards on `mcp/forge/server.mjs` being present. Since #288 merged, a fresh emit
+- `forge-graph` is always registered. `forge-core` (the 15-tool board/gate/
+  autopilot server from [#288](https://github.com/dngioidev/forge/issues/288),
+  [#400](https://github.com/dngioidev/forge/issues/400)) is registered **only
+  when its server file exists** in the source — the emitter guards on
+  `mcp/forge/server.mjs` being present. Since #288 merged, a fresh emit
   registers both.
 - Note that agy's plugin MCP config has **no `httpUrl` / `timeout`** support and
   buggy env-expansion; both forge servers are plain stdio (`command`/`args`),
@@ -166,6 +167,43 @@ agent has a `run_command` tool, so the entire `forge <area> <cmd>` shell tier
 runs on agy without MCP at all. `forge-core` exists so board/gate/autopilot
 branching gets typed returns (pass/fail, the merge-bar vector) instead of
 stdout-scraping.
+
+### Tool usage reference (15 tools: forge-core 9 + forge-graph 6)
+
+One line each — what it does, and when a host calls it. Full schemas live in
+each server's `TOOLS` export ([`plugin/mcp/forge/server.mjs`](../../plugin/mcp/forge/server.mjs),
+[`plugin/mcp/graph/server.mjs`](../../plugin/mcp/graph/server.mjs)).
+
+**forge-core** (board/gate/release/autopilot — typed returns over `scripts/*.mjs`):
+
+| Tool | Does | Call it when |
+| --- | --- | --- |
+| `board_move` | Moves a ticket to a board status; reports whether it changed and re-verified. | The ticket needs to change lifecycle column (e.g. ready -> inProgress). |
+| `board_comment` | Posts an idempotent ticket-trail comment for a lifecycle phase. | Every trail milestone (started/plan/pr/ci-green/...) — never re-narrate, just call it. |
+| `board_create` | Creates (or resumes) a ticket with board item + fields. | New work is identified and needs a ticket before it can be picked up. |
+| `board_escalate` | Blocks a ticket, posts a decision comment with >=2 options, writes a pending decision. | Genuinely blocked on a human call — the halt-and-ask spine. |
+| `board_status` | Returns the same catch-up card as `forge board status`, plus normalized items[]. | Resuming work, or a host needs the current board picture / next action. |
+| `board_receipt` | Posts/updates the idempotent merge receipt on an issue for a PR (#400). | A PR that closes an issue has merged — record the receipt on that issue. |
+| `board_log` | Posts/updates one delivery-log row on the pinned delivery-log issue (#400). | A PR merged and the delivery log needs its one-line row. |
+| `board_digest` | Refreshes an epic's managed digest block (child table + flow metrics) (#400). | An epic's children changed state and its summary needs to reflect that. |
+| `board_reparent` | Moves a sub-issue to a different parent epic (#400). | A ticket was filed under the wrong epic and needs restructuring. |
+| `board_close` | Closes an issue for a special reason (completed/not-planned/etc.) and reflects it on the board (#400). | Closing something that isn't a normal "done" move — duplicate, superseded, won't do. |
+| `gate_run` | Runs one mechanical gate (ac/conventions/dep/docsync/ground/license/plandrift/situation/testintent) and returns its pass/fail verdict. | Before shipping, or whenever a specific gate's verdict is needed programmatically. |
+| `release_readiness` | Evaluates the release-readiness checklist item-by-item. | Deciding whether the repo is safe to cut a release. |
+| `autopilot_select` | Picks the next actionable ticket and the ordered queue (read-only). | Autopilot (or a host driving it) needs to know what to work on next. |
+| `autopilot_merge_bar` | Computes the {merge, blockedOn} vector from a signal set — pure, no side effect. | A host wants to know if a PR *would* pass the merge bar without merging it. |
+| `autopilot_merge` | Executes the gated live merge — the single sanctioned auto-merge path (Claude-only by policy). | All signals are believed green and the PR should actually be squash-merged now. |
+
+**forge-graph** (read-only code-graph RAG over `plugin/mcp/graph/queries.mjs`; requires `features.graph`):
+
+| Tool | Does | Call it when |
+| --- | --- | --- |
+| `find_component` | Finds components/exports by name substring. | Before writing anything new — check whether it already exists. |
+| `who_uses` | Finds who renders/imports a symbol or uses a token. | Assessing the impact of touching a symbol/token before changing it. |
+| `similar_props` | Ranks props interfaces by member overlap. | Looking for a near-duplicate interface to reuse instead of adding a new one. |
+| `blast_radius` | Finds transitive dependents (files, tests, stories) of a set of files. | Deciding the test set for a change. |
+| `code_for_ticket` | Finds files linked to a ticket via commit-message issue refs. | Picking up a ticket and needing to know what code it previously touched. |
+| `reuse_candidates` | Ranks existing exports/components against a feature description. | Before creating new files — check for reuse candidates first. |
 
 ---
 
@@ -363,4 +401,4 @@ parallel subagent fan-out, and slash-command UX. The only differences are:
 - [0007-agy-adapter reference](../decisions/0007-agy-adapter/README.md) — the
   verified-working spike output the emitter productizes.
 - `plugin/scripts/agy/emit.mjs` — the `forge init --host agy` emitter (#289).
-- `plugin/mcp/forge/server.mjs` — the `forge-core` MCP server, 9 tools (#288).
+- `plugin/mcp/forge/server.mjs` — the `forge-core` MCP server, 15 tools (#288, #400).
