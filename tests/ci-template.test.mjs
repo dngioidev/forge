@@ -91,7 +91,10 @@ describe('license gate CI wiring (#343)', () => {
     const licenseJob = wf.slice(wf.indexOf('\n  license:'));
     expect(licenseJob).toContain('runs-on: ubuntu-latest');
     expect(licenseJob).toContain('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1');
-    expect(licenseJob).toContain('pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda');
+    // pnpm/action-setup: assert it's wired in and pinned to a full commit SHA
+    // (not a floating tag), but NOT the exact SHA — a routine Dependabot version
+    // bump re-pins this line and shouldn't require a companion test edit (#420).
+    expect(licenseJob).toMatch(/pnpm\/action-setup@[0-9a-f]{40}/);
     expect(licenseJob).toContain('actions/setup-node@820762786026740c76f36085b0efc47a31fe5020');
     expect(licenseJob).toContain('pnpm install --frozen-lockfile');
   });
