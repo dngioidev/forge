@@ -196,26 +196,59 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
   describe('ciGreen fresh-transition shortcut (AC-407.2) — reduces the 3 idle CI pollers to 2', () => {
     const now = Date.parse('2026-08-08T12:00:00Z');
 
-    it('isFreshGreenTransition: same pr + pass + within the window -> true', () => {
-      const state = { pr: 9, state: 'pass', at: new Date(now - 5000).toISOString() };
-      expect(isFreshGreenTransition(state, 9, { now, maxAgeMs: 20000 })).toBe(true);
+    it('isFreshGreenTransition: same pr + pass + within the window + matching headRefOid -> true', () => {
+      const state = { pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 5000).toISOString() };
+      expect(isFreshGreenTransition(state, 9, { now, maxAgeMs: 20000, headRefOid: 'aaa111' })).toBe(true);
     });
 
     it('isFreshGreenTransition: wrong pr, non-pass, stale, or unparsable timestamp all fall through', () => {
       const at = new Date(now - 5000).toISOString();
-      expect(isFreshGreenTransition({ pr: 10, state: 'pass', at }, 9, { now, maxAgeMs: 20000 })).toBe(false); // wrong pr
-      expect(isFreshGreenTransition({ pr: 9, state: 'pending', at }, 9, { now, maxAgeMs: 20000 })).toBe(false); // not pass
-      expect(isFreshGreenTransition({ pr: 9, state: 'fail', at }, 9, { now, maxAgeMs: 20000 })).toBe(false); // not pass
-      expect(isFreshGreenTransition({ pr: 9, state: 'pass', at: new Date(now - 999999).toISOString() }, 9, { now, maxAgeMs: 20000 })).toBe(false); // stale
-      expect(isFreshGreenTransition({ pr: 9, state: 'pass', at: 'not-a-date' }, 9, { now })).toBe(false); // unparsable
-      expect(isFreshGreenTransition(null, 9, { now })).toBe(false); // no state at all
+      const opts = { now, maxAgeMs: 20000, headRefOid: 'aaa111' };
+      expect(isFreshGreenTransition({ pr: 10, state: 'pass', sha: 'aaa111', at }, 9, opts)).toBe(false); // wrong pr
+      expect(isFreshGreenTransition({ pr: 9, state: 'pending', sha: 'aaa111', at }, 9, opts)).toBe(false); // not pass
+      expect(isFreshGreenTransition({ pr: 9, state: 'fail', sha: 'aaa111', at }, 9, opts)).toBe(false); // not pass
+      expect(isFreshGreenTransition({ pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 999999).toISOString() }, 9, opts)).toBe(false); // stale
+      expect(isFreshGreenTransition({ pr: 9, state: 'pass', sha: 'aaa111', at: 'not-a-date' }, 9, { now, headRefOid: 'aaa111' })).toBe(false); // unparsable
+      expect(isFreshGreenTransition(null, 9, { now, headRefOid: 'aaa111' })).toBe(false); // no state at all
     });
 
-    it('ciGreen: a fresh known-green transition satisfies the check WITHOUT calling gh', async () => {
+    // #411 — the fresh-transition shortcut must bind to the PR's CURRENT head
+    // commit, not just replay a same-pr/pass/timestamp match. Without this, a
+    // push landing inside the freshness window (after the monitor's last
+    // "pass" poll, before its next one) could let a stale green for the OLD
+    // commit satisfy the check for the NEW one.
+    describe('#411 — the shortcut is bound to the current commit, not just pr/state/age', () => {
+      it('isFreshGreenTransition: a stale sha (HEAD moved since the cached pass) is rejected even though pr/state/age all match', () => {
+        const state = { pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 5000).toISOString() };
+        expect(isFreshGreenTransition(state, 9, { now, maxAgeMs: 20000, headRefOid: 'bbb222' })).toBe(false);
+      });
+
+      it('isFreshGreenTransition: no headRefOid supplied at all fails closed (never silently skips the sha check)', () => {
+        const state = { pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 5000).toISOString() };
+        expect(isFreshGreenTransition(state, 9, { now, maxAgeMs: 20000 })).toBe(false);
+      });
+
+      it('isFreshGreenTransition: a cached reading with no sha of its own is rejected even against a real current head', () => {
+        const state = { pr: 9, state: 'pass', at: new Date(now - 5000).toISOString() }; // pre-#411 shape, no sha
+        expect(isFreshGreenTransition(state, 9, { now, maxAgeMs: 20000, headRefOid: 'aaa111' })).toBe(false);
+      });
+
+      it('ciGreen: a stale-SHA transition is rejected — falls through to the real gh re-fetch even though pr/state/age all matched', async () => {
+        let calls = 0;
+        const gh = async () => { calls++; return { ok: true, json: { statusCheckRollup: [{ conclusion: 'SUCCESS' }] } }; };
+        const freshState = { pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 3000).toISOString() };
+        const res = await ciGreen(gh, 9, { freshState, now, maxAgeMs: 20000, headRefOid: 'bbb222' }); // HEAD moved since the cached pass
+        expect(res.green).toBe(true); // still green — but via the real re-fetch, not the shortcut
+        expect(res.viaFreshTransition).toBeUndefined();
+        expect(calls).toBe(1); // the re-fetch DID fire — a stale sha never short-circuits the check
+      });
+    });
+
+    it('ciGreen: a fresh, SHA-bound known-green transition satisfies the check WITHOUT calling gh', async () => {
       let calls = 0;
       const gh = async () => { calls++; return { ok: true, json: { statusCheckRollup: [] } }; }; // would be NOT green if actually called
-      const freshState = { pr: 9, state: 'pass', at: new Date(now - 3000).toISOString() };
-      const res = await ciGreen(gh, 9, { freshState, now, maxAgeMs: 20000 });
+      const freshState = { pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 3000).toISOString() };
+      const res = await ciGreen(gh, 9, { freshState, now, maxAgeMs: 20000, headRefOid: 'aaa111' });
       expect(res).toMatchObject({ ok: true, green: true, viaFreshTransition: true });
       expect(calls).toBe(0); // the redundant GraphQL re-fetch never fired
     });
@@ -223,9 +256,9 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
     it('ciGreen: a stale/wrong-pr/missing freshState always falls through to the real re-fetch — the safety property stays intact', async () => {
       let calls = 0;
       const gh = async () => { calls++; return { ok: true, json: { statusCheckRollup: [{ conclusion: 'SUCCESS' }] } }; };
-      await ciGreen(gh, 9, { freshState: null });
-      await ciGreen(gh, 9, { freshState: { pr: 10, state: 'pass', at: new Date(now - 1000).toISOString() }, now });
-      await ciGreen(gh, 9, { freshState: { pr: 9, state: 'pass', at: new Date(now - 999999).toISOString() }, now });
+      await ciGreen(gh, 9, { freshState: null, headRefOid: 'aaa111' });
+      await ciGreen(gh, 9, { freshState: { pr: 10, state: 'pass', sha: 'aaa111', at: new Date(now - 1000).toISOString() }, now, headRefOid: 'aaa111' });
+      await ciGreen(gh, 9, { freshState: { pr: 9, state: 'pass', sha: 'aaa111', at: new Date(now - 999999).toISOString() }, now, headRefOid: 'aaa111' });
       expect(calls).toBe(3); // every one of these re-fetched — never skipped a red/stale/wrong-pr case
     });
   });
@@ -347,16 +380,22 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
   });
 
-  it('AC-407.2: a fresh forge-ci monitor transition on disk lets runMerge skip its own "pr view" re-fetch', async () => {
+  it('AC-407.2/#411: a fresh, SHA-bound forge-ci monitor transition on disk lets runMerge skip its own "pr view" re-fetch', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'forge-merge-'));
-    await writeCiWatchState(cwd, { pr: 9, state: 'pass' }); // "at" defaults to now
+    await writeCiWatchState(cwd, { pr: 9, state: 'pass', sha: 'aaa111' }); // "at" defaults to now
     const calls = [];
     const gh = async (args) => {
       calls.push(args.join(' '));
-      if (args[0] === 'pr' && args[1] === 'view') throw new Error('should not re-fetch — a fresh transition was already on disk');
+      if (args[0] === 'pr' && args[1] === 'view') throw new Error('should not re-fetch — a fresh, SHA-bound transition was already on disk');
       return { ok: true };
     };
-    const res = await runMerge({ config: {}, gh, cwd }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    // #411: the local head-sha lookup (`git rev-parse HEAD`) is injected — HEAD matches the cached reading's sha.
+    const execFn = async (cmd, args) => {
+      expect(cmd).toBe('git');
+      expect(args).toEqual(['-C', cwd, 'rev-parse', 'HEAD']);
+      return { ok: true, stdout: 'aaa111\n', stderr: '' };
+    };
+    const res = await runMerge({ config: {}, gh, cwd }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {}, execFn);
     expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
     expect(calls.some((c) => c.startsWith('pr view'))).toBe(false);
     expect(calls).toContain('pr merge 9 --squash --delete-branch');
@@ -368,6 +407,31 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
     expect(res.merged).toBe(true);
     expect(calls).toContain('pr view 9 --json statusCheckRollup,headRefName');
+  });
+
+  it('#411: a stale-SHA transition (HEAD moved since the cached "pass") is rejected — the merge still succeeds, but via the real re-check', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-merge-'));
+    await writeCiWatchState(cwd, { pr: 9, state: 'pass', sha: 'old-sha' }); // cached BEFORE a push moved HEAD
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { statusCheckRollup: green } };
+      return { ok: true };
+    };
+    const execFn = async () => ({ ok: true, stdout: 'new-sha\n', stderr: '' }); // HEAD has since moved past the cached reading
+    const res = await runMerge({ config: {}, gh, cwd }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {}, execFn);
+    expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' }); // still merges — CI IS green, just confirmed for real
+    expect(calls.some((c) => c.startsWith('pr view'))).toBe(true); // the stale cached "pass" did NOT short-circuit the check
+  });
+
+  it('#411: a failed local `git rev-parse HEAD` (execFn error) fails closed to the real re-check, never crashes', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-merge-'));
+    await writeCiWatchState(cwd, { pr: 9, state: 'pass', sha: 'aaa111' });
+    const { gh, calls } = ghDouble(green);
+    const execFn = async () => ({ ok: false, stdout: '', stderr: 'not a git repo' });
+    const res = await runMerge({ config: {}, gh, cwd }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {}, execFn);
+    expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
+    expect(calls.some((c) => c.startsWith('pr view'))).toBe(true);
   });
 });
 

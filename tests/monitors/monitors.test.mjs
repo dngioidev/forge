@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFile, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,28 +27,37 @@ describe('CI monitor (#151)', () => {
   it('poll stays quiet with no PR, and reports the transition when checks land', async () => {
     const quiet = await ciPoll(async () => ({ ok: false }), null);
     expect(quiet.line).toBe(null);
-    const gh = async () => ({ ok: true, json: { number: 42, headRefName: 'feat/x', statusCheckRollup: [{ conclusion: 'SUCCESS' }] } });
+    const gh = async () => ({ ok: true, json: { number: 42, headRefName: 'feat/x', headRefOid: 'aaa111', statusCheckRollup: [{ conclusion: 'SUCCESS' }] } });
     const first = await ciPoll(gh, null);
     expect(first.line).toMatch(/CI pass on PR #42 \(feat\/x\)/);
     expect(first.pr).toBe(42); // #407 AC.2: poll() now surfaces the pr number so the caller can persist it
+    expect(first.sha).toBe('aaa111'); // #411: poll() also surfaces the commit this rollup reading belongs to
     const second = await ciPoll(gh, first.prev); // unchanged → silent
     expect(second.line).toBe(null);
     expect(second.pr).toBe(42);
+    expect(second.sha).toBe('aaa111');
   });
 
   // #407 AC.2 — the monitor persists its last observed state so merge.mjs's
   // ciGreen() can thread a very-recent known-green transition into the
   // pre-merge check instead of firing a redundant GraphQL re-fetch.
   describe('ci-watch state persistence (AC-407.2)', () => {
-    it('writeCiWatchState -> loadCiWatchState round-trips {pr, state, at}', async () => {
+    it('writeCiWatchState -> loadCiWatchState round-trips {pr, state, sha, at}', async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
       expect(await loadCiWatchState(cwd)).toBeNull(); // absent -> null, never throws
-      await writeCiWatchState(cwd, { pr: 9, state: 'pass' });
+      await writeCiWatchState(cwd, { pr: 9, state: 'pass', sha: 'aaa111' });
       const loaded = await loadCiWatchState(cwd);
       expect(loaded.pr).toBe(9);
       expect(loaded.state).toBe('pass');
+      expect(loaded.sha).toBe('aaa111'); // #411: the commit this reading was taken at
       expect(typeof loaded.at).toBe('string'); // defaulted to "now" when the caller omits it
       expect(Date.parse(loaded.at)).not.toBeNaN();
+    });
+
+    it('writeCiWatchState defaults sha to null when the caller omits it', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
+      await writeCiWatchState(cwd, { pr: 9, state: 'pass' });
+      expect((await loadCiWatchState(cwd)).sha).toBeNull();
     });
 
     it('loadCiWatchState tolerates a corrupt file — never throws', async () => {
@@ -63,6 +72,30 @@ describe('CI monitor (#151)', () => {
       await writeCiWatchState(cwd, { pr: 9, state: 'pending' });
       await writeCiWatchState(cwd, { pr: 9, state: 'pass' });
       expect((await loadCiWatchState(cwd)).state).toBe('pass');
+    });
+
+    // #411 — the write path was already symlink-safe (atomic temp-file + rename);
+    // the read path used a plain `readFile`, which DOES follow symlinks. A local
+    // attacker with pre-existing write access to `.forge/autopilot/` could plant
+    // a symlink at the ci-watch.json path pointing at attacker-controlled content
+    // to forge a fake green reading. `loadCiWatchState` must never dereference it.
+    it('loadCiWatchState never follows a symlink planted at the state path', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
+      const targetDir = await mkdtemp(join(tmpdir(), 'forge-ciwatch-target-'));
+      const target = join(targetDir, 'forged.json');
+      await writeFile(target, JSON.stringify({ pr: 9, state: 'pass', sha: 'forged-sha', at: new Date().toISOString() }));
+      const linkPath = join(cwd, CI_WATCH_RELPATH);
+      await mkdir(dirname(linkPath), { recursive: true });
+      try {
+        await symlink(target, linkPath, 'file');
+      } catch (err) {
+        // Symlink creation needs elevated privilege on some platforms (notably
+        // Windows without Developer Mode/admin) — the guard itself is exercised
+        // by the platforms that CAN create one; skip rather than false-fail here.
+        if (err?.code === 'EPERM' || err?.code === 'EACCES') return;
+        throw err;
+      }
+      await expect(loadCiWatchState(cwd)).resolves.toBeNull(); // never dereferenced — treated as absent, not as the forged content
     });
   });
 });
