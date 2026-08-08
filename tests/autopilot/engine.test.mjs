@@ -1340,7 +1340,7 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
     };
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
     expect(res.blockedOn).toContain('ci');
-    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // no run list / run view calls fired
+    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName,headRefOid']); // no run list / run view calls fired
   });
 
   it('SECURITY (3rd review pass, #408): a decoy workflow never masks a genuine failure in a DIFFERENT workflow — end to end', async () => {
@@ -1370,7 +1370,7 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
     expect(res.merged).toBe(false);
     expect(res.outage).toBeUndefined(); // never even classified — ci.classifiable was false
     expect(res.blockedOn).toContain('ci');
-    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // zero classification calls fired
+    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName,headRefOid']); // zero classification calls fired
   });
 
   it('review fix (#408, LOW): maxOutageAttempts is clamped server-side regardless of caller input', async () => {
