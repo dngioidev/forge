@@ -238,6 +238,40 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
     expect(withoutWorkflow.workflowName).toBe(null);
   });
 
+  // SECURITY (3rd review pass, #408): a decoy WORKFLOW (not just a decoy job
+  // within one workflow) must never let a real failure in a DIFFERENT
+  // workflow ride through as "just an outage."
+  describe('#408: ciGreen.classifiable — fail-closed when the bad-check set is ambiguous across workflows', () => {
+    const gh = (json) => async () => ({ ok: true, json });
+
+    it('classifiable=true when every bad check shares exactly one workflow', async () => {
+      const ci = await ciGreen(gh({ statusCheckRollup: [
+        { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },
+        { conclusion: 'FAILURE', name: 'gitleaks', workflowName: 'verify' },
+        { conclusion: 'SUCCESS', name: 'license', workflowName: 'verify' }, // passing checks don't count
+      ] }));
+      expect(ci.classifiable).toBe(true);
+      expect(ci.workflowName).toBe('verify');
+    });
+
+    it('classifiable=false when bad checks span MULTIPLE workflows — a decoy workflow must not mask a real one', async () => {
+      const ci = await ciGreen(gh({ statusCheckRollup: [
+        { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },  // genuinely outaged
+        { conclusion: 'FAILURE', name: 'scan', workflowName: 'secret-scan' },   // a REAL failure elsewhere
+      ] }));
+      expect(ci.classifiable).toBe(false);
+      expect(ci.workflowName).toBe(null);
+    });
+
+    it('classifiable=false when ANY bad check has no resolvable workflow (e.g. a StatusContext)', async () => {
+      const ci = await ciGreen(gh({ statusCheckRollup: [
+        { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },
+        { state: 'ERROR', context: 'external-deploy-check' }, // no workflowName at all — can't verify
+      ] }));
+      expect(ci.classifiable).toBe(false);
+    });
+  });
+
   it('runMerge: disabled → park; bar red → no merge call; all green → squash-merge', async () => {
     const calls = [];
     const gh = async (args) => {
@@ -1124,7 +1158,9 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
     const gh = async (args) => {
       calls.push(args.join(' '));
       if (args[0] === 'pr' && args[1] === 'view') {
-        return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE' }] } };
+        // workflowName present + a single distinct workflow across all bad
+        // checks is what makes ci.classifiable true (#408, 3rd review pass).
+        return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE', workflowName: 'verify' }] } };
       }
       if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 9, status: 'completed', createdAt: new Date().toISOString() }] };
       if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) return setupFailureJobs;
@@ -1219,6 +1255,50 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
     expect(res.blockedOn).toContain('ci');
     expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // no run list / run view calls fired
+  });
+
+  it('SECURITY (3rd review pass, #408): a decoy workflow never masks a genuine failure in a DIFFERENT workflow — end to end', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return {
+          ok: true,
+          json: {
+            headRefName: 'feat/408-x',
+            statusCheckRollup: [
+              { conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' },   // a genuine GH outage on THIS workflow
+              { conclusion: 'FAILURE', name: 'scan', workflowName: 'secret-scan' },    // a REAL failure on a DIFFERENT workflow
+            ],
+          },
+        };
+      }
+      return { ok: true }; // run list/view must never even be called — classification is skipped entirely
+    };
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 1, pr: 9, signals: heldVerdicts },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt recovery — the bad set spans multiple workflows'); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.outage).toBeUndefined(); // never even classified — ci.classifiable was false
+    expect(res.blockedOn).toContain('ci');
+    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // zero classification calls fired
+  });
+
+  it('review fix (#408, LOW): maxOutageAttempts is clamped server-side regardless of caller input', async () => {
+    const { gh } = outageGhDouble();
+    // A caller passing an absurd maxOutageAttempts still gets a bounded, sane cap.
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 999999, maxOutageAttempts: 999999 },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt recovery — outageAttempt is already past the clamped ceiling'); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.outageExhausted).toBe(true);
+    expect(res.reason).toContain('recovery exhausted after 10 attempt(s)'); // clamped to MAX_OUTAGE_ATTEMPTS_CEILING
   });
 
   it('does not require ctx.cwd — recovery still runs (just skips journaling) when no cwd is present', async () => {

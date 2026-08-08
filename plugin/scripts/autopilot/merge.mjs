@@ -106,21 +106,24 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   // #408 — a bad CheckRun carries the workflow that produced it; a repo can run
   // several workflows on the same branch/push, so `classifyCiFailure` needs
   // this to scope its `gh run list` to the actual failing workflow instead of
-  // "whichever workflow happened to run last" (a StatusContext entry has no
-  // workflowName — falls back to unscoped, same as before).
+  // "whichever workflow happened to run last."
   //
-  // Accepted residual risk (review, #408): this is the workflow's *display
-  // name* (editable via the workflow file's own `name:` key), not an ID
-  // cross-checked back to this specific CheckRun. A same-branch decoy
-  // workflow with a colliding name could misdirect the `run list` lookup.
-  // Exploiting it requires push/workflow-modify access to the repo — a
-  // materially higher privilege bar than the PR-content-only spoofing this
-  // ticket's structural fix (`failedDuringSetup`) closes — and a wrong-run
-  // lookup still degrades safely: it either finds no matching run
-  // (outage:false) or a genuinely-outaged run that still has to pass the
-  // per-job structural corroboration below, never a raw name match alone.
-  const workflowName = bad.map((c) => c.workflowName).find(Boolean) ?? null;
-  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName };
+  // Security fix (3rd review pass, #408): the bad-check SET can span more
+  // than one workflow (or include a StatusContext, which carries no
+  // workflowName at all — e.g. an external check like a deploy preview).
+  // Picking just the FIRST bad check's workflow and classifying only that one
+  // run would let a fast-failing decoy workflow (genuinely outaged) get the
+  // whole CI-red waved through as "just an outage" while a REAL failure in a
+  // completely different workflow was never even looked at. So `classifiable`
+  // is true ONLY when every bad check is a CheckRun attributable to the SAME
+  // single workflow — any ambiguity (multiple workflows, or any check we
+  // can't attribute to one at all) means `runMerge` skips outage
+  // classification entirely and treats the result as a real failure,
+  // fail-closed. `workflowName` is only meaningful when `classifiable` is true.
+  const workflowNames = new Set(bad.map((c) => c.workflowName ?? null));
+  const classifiable = workflowNames.size === 1 && !workflowNames.has(null);
+  const workflowName = classifiable ? [...workflowNames][0] : null;
+  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable };
 }
 
 /**
@@ -155,6 +158,20 @@ export async function classifyCiFailure(gh, { branch, workflowName, stuckQueuedM
   // check when known; an unscoped `run list` returns the branch's single
   // latest run across EVERY workflow, which can be a different (unrelated,
   // possibly green) workflow than the one `ciGreen` found bad checks on.
+  // `ciGreen` only ever passes a `workflowName` here when EVERY bad check
+  // shares that one workflow (`ci.classifiable` — 3rd review pass), closing
+  // the "decoy workflow masks a real failure in a different workflow" gap.
+  //
+  // Accepted residual risk (review, #408): `workflowName` is the workflow's
+  // *display name* (editable via the workflow file's own `name:` key), not
+  // an ID cross-checked back to the specific CheckRun. A same-branch decoy
+  // workflow with a colliding display name could still misdirect this
+  // lookup. Exploiting it requires push/workflow-modify access to the repo —
+  // a materially higher privilege bar than the PR-content-only spoofing this
+  // ticket's structural fixes close — and a wrong-run lookup still degrades
+  // safely: it either finds no matching run (outage:false) or a
+  // genuinely-outaged run that still has to pass `failedDuringSetup` below,
+  // never a raw name match alone.
   const listArgs = ['run', 'list', '--branch', branch, '--limit', '1', '--json', 'databaseId,status,createdAt'];
   if (workflowName) listArgs.push('--workflow', workflowName);
   const runs = await gh(listArgs, { parseJson: true });
@@ -271,8 +288,18 @@ export async function forceNewSha(execRun, { base = 'origin/main' } = {}) {
  * `deps` overrides the IO (`execRun`, `classify`, `journal`) for tests — no
  * real git/gh/network runs unless the outage path actually triggers.
  */
+// #408 review fix (LOW) — the MCP tool schema types outageAttempt/maxOutageAttempts
+// as `integer` but the shared RPC validator (`plugin/mcp/lib/rpc.mjs` validateInput)
+// has no min/max enforcement, so a schema `maximum` alone would be documentation
+// only. Clamp for real, here, the one place both the CLI and every host (MCP,
+// direct script) funnel through — a caller can shrink the bound but never grow it
+// past a sane ceiling, so "a small number of attempts" holds regardless of input.
+const MAX_OUTAGE_ATTEMPTS_CEILING = 10;
+
 export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null, outageAttempt = 0, maxOutageAttempts = 2 } = {}, log = console.log, deps = {}) {
   if (!Number.isInteger(issue) || !Number.isInteger(pr)) return { ok: false, error: '--issue and --pr are required' };
+  outageAttempt = Number.isInteger(outageAttempt) && outageAttempt >= 0 ? outageAttempt : 0;
+  maxOutageAttempts = Number.isInteger(maxOutageAttempts) ? Math.min(Math.max(maxOutageAttempts, 0), MAX_OUTAGE_ATTEMPTS_CEILING) : 2;
   if (mode === 'pr-only' || !autoMergeEnabled(ctx.config)) {
     const why = mode === 'pr-only' ? 'merge-auth preflight resolved pr-only (no in-session grant)' : 'features.autopilotAutoMerge=false';
     log(`autopilot: ${why} — parking #${issue} at PR #${pr} (awaiting-human)`);
@@ -288,7 +315,12 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
   const ci = await ciGreen(ctx.gh, pr, { freshState });
   if (!ci.ok) return { ok: false, error: ci.error };
-  if (!ci.green && ci.pending?.length) {
+  // #408 — `ci.classifiable` (fail-closed): only attempt outage classification
+  // when every bad check is attributable to the SAME single workflow. A bad
+  // set spanning multiple workflows (or any check with no resolvable
+  // workflow) skips classification entirely — never risk waving through a
+  // real failure in one workflow behind another's genuine outage.
+  if (!ci.green && ci.pending?.length && ci.classifiable) {
     const classify = deps.classifyCiFailure ?? classifyCiFailure;
     const cls = await classify(ctx.gh, { branch: ci.branch, workflowName: ci.workflowName });
     if (cls.outage) {

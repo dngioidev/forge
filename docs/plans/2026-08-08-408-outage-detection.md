@@ -111,12 +111,29 @@ was returning a bare `{ok:false, error}` with no outage context, and the
 `autopilot_merge` MCP tool's error path (`if (r.error) return teach(...)`)
 dropped `outage`/`outageAttempt`/`reason` entirely on that path — both now
 carry the context forward so the run report/trail stays honest about *why*
-a merge attempt failed. Remaining accepted residual risk (documented in
+a merge attempt failed.
+
+**Third security fix from a further adversarial pass:** `ciGreen` originally
+scoped `classifyCiFailure` to only the FIRST bad check's workflow — a bad
+set spanning MULTIPLE workflows (e.g. a genuinely-outaged `verify` workflow
+alongside a real failure in a separate `secret-scan` workflow) would classify
+based on the first workflow alone and could wave the whole CI-red through as
+"just an outage," never even looking at the second workflow's real failure.
+Fixed with `ci.classifiable` (fail-closed): outage classification is only
+ever attempted when EVERY bad check is attributable to the SAME single
+workflow; any ambiguity — multiple workflows, or any check with no resolvable
+workflow at all (e.g. an external StatusContext) — skips classification
+entirely and the result is treated as a real failure. Also fixed (LOW):
+`outageAttempt`/`maxOutageAttempts` are now clamped server-side in `runMerge`
+itself (ceiling of 10) rather than relying on unenforced JSON-schema
+`integer` typing at the MCP boundary, so "a small number of attempts" holds
+regardless of caller input. Remaining accepted residual risk (documented in
 code): `workflowName` scoping (`ciGreen`) uses the workflow's display name,
 not an ID cross-check — exploiting it needs repo push/workflow-modify
-access, a materially higher bar than the log-spoofing attack this fix
-closes, and a wrong-run lookup still degrades safely (no match, or a
-genuinely-outaged run that still has to pass the per-job structural check).
+access, a materially higher bar than the log-spoofing/decoy-job attacks the
+earlier fixes close, and a wrong-run lookup still degrades safely (no match,
+or a genuinely-outaged run that still has to pass the per-job structural
+check).
 
 `forceNewSha(execRun, {base})` performs the fetch/rebase/push recovery with
 an injected exec function (mirrors `exec.mjs`'s own DI convention — no real
