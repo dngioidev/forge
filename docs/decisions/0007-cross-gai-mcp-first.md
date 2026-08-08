@@ -97,7 +97,7 @@ Proposed `forge-core` tools (beyond the 6 graph tools):
 | `board_comment` | `{ issue, phase:enum, body, actor?, session? }` | `{ ok, action }` | Trail law; `phase` enum validated |
 | `board_create` | `{ title, body?, type?, priority?, size?, area?, parent? }` | `{ ok, number, url }` | Caller needs the new number |
 | `board_escalate` | `{ issue, reason, options[>=2], recommend?, context? }` | `{ ok, id, boardNote, pending }` | The halt-and-ask spine |
-| `board_status` | `{ issue? }` | `{ ok, items[] }` | Read-model to reason over |
+| `board_status` | `{ issue? }` | `{ ok, items[], owner, repo, projectNumber, situation, counts, blocked[], inProgress[], openPrs[], next }` | The CLI's catch-up card (via `runStatus`, #399) plus the items[] read-model |
 | `gate_run` | `{ gate:enum(ac|dep|docsync|ground|plandrift|situation|testintent), ...args }` | `{ ok, level:pass\|fail, findings[] }` | Gates ARE decision points |
 | `release_readiness` | `{}` | `{ ok, items:[{name,level,msg}] }` | Checklist evaluated item-by-item |
 | `autopilot_select` | `{ area?, shape? }` | `{ ok, next\|null, queue[] }` | Picks next ticket; structured return is the point |

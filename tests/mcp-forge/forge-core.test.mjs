@@ -2,15 +2,24 @@ import { describe, it, expect } from 'vitest';
 import { makeHandler, makeCtxResolver, TOOLS, GATE_NAMES, DEFAULT_DEPS } from '../../plugin/mcp/forge/server.mjs';
 import { validateInput, canonicalize } from '../../plugin/mcp/lib/rpc.mjs';
 import { validateInput as graphValidate, canonicalize as graphCanon } from '../../plugin/mcp/graph/server.mjs';
+import { runStatus } from '../../plugin/scripts/board/status.mjs';
+import { optionKey } from '../../plugin/scripts/lib/board.mjs';
 
 // ---- harness -------------------------------------------------------------
+// board_status now delegates to runStatus (#399), which needs cwd (journal/decisions
+// lookup — a nonexistent path reads as empty, i.e. no pending decisions) and
+// itemFieldKey (status bucketing); gh() branches so 'pr list' gets an array while every
+// other call keeps the pre-existing generic {body} stub other tests rely on.
 const okCtx = {
   ok: true,
   owner: 'dngioidev',
   repo: 'forge',
+  projectNumber: 8,
+  cwd: '/repo',
   config: {},
-  gh: async () => ({ ok: true, json: { body: '## Acceptance criteria\n- AC' } }),
+  gh: async (a) => (a[0] === 'pr' && a[1] === 'list' ? { ok: true, json: [] } : { ok: true, json: { body: '## Acceptance criteria\n- AC' } }),
   listItems: async () => ({ ok: true, items: [] }),
+  itemFieldKey: (item, fieldKey) => { const name = item?.[fieldKey]; return typeof name === 'string' ? optionKey(name) : null; },
 };
 
 function build({ deps = {}, getCtx = async () => okCtx, root = '/repo' } = {}) {
@@ -89,15 +98,18 @@ describe('AC-288.2: every tool is callable and returns its documented structured
     expect(seen.options).toEqual(['legit', 'a|b|c|d|e|f']); // still 2 options, not 7
   });
 
-  it('AC-288.2: board_status -> {ok,items[]} filtered by issue', async () => {
+  it('AC-288.2: board_status -> {ok,items[],...catch-up card} filtered by issue', async () => {
     const items = [
       { content: { number: 1 }, title: 'one' },
       { content: { number: 2 }, title: 'two' },
     ];
     const ctx = { ...okCtx, listItems: async () => ({ ok: true, items }) };
     const h = build({ getCtx: async () => ctx, deps: { normalize: (_c, i) => ({ number: i.content.number, title: i.title }) } });
-    expect(body(await call(h, 'board_status', {})).items).toHaveLength(2);
+    const out = body(await call(h, 'board_status', {}));
+    expect(out.items).toHaveLength(2);
     expect(body(await call(h, 'board_status', { issue: 2 })).items).toEqual([{ number: 2, title: 'two' }]);
+    // #399: the catch-up card (same fields runStatus/the CLI compute) rides along.
+    expect(out).toMatchObject({ ok: true, counts: { backlog: 0, ready: 0, inProgress: 0, inReview: 0, blocked: 0, done: 0 }, next: 'pick the next ready/backlog item' });
   });
 
   it('AC-288.2: gate_run situation -> {ok,level:pass,findings[]}', async () => {
@@ -373,6 +385,44 @@ describe('AC-296.3: release_readiness teaches on a missing/broken forge.json ins
       computeReadiness: async () => ({ ok: true, items: [{ name: 'branch', level: 'pass', msg: 'on main' }] }),
     } });
     expect(body(await call(h, 'release_readiness', {}))).toEqual({ ok: true, items: [{ name: 'branch', level: 'pass', msg: 'on main' }] });
+  });
+});
+
+// =========================================================================
+describe('AC-399.1: board_status (MCP) and board/status.mjs (CLI) return equivalent data', () => {
+  it('AC-399.1: the same mocked board yields the same catch-up card from both paths (via the shared runStatus)', async () => {
+    const items = [
+      { content: { number: 1 }, title: 'One', status: 'Done' },
+      { content: { number: 2 }, title: 'Two', status: 'In progress' },
+      { content: { number: 3 }, title: 'Three', status: 'Blocked / Needs decision' },
+    ];
+    const ctx = {
+      ...okCtx,
+      listItems: async () => ({ ok: true, items }),
+      gh: async (a) => (a[0] === 'pr' && a[1] === 'list'
+        ? { ok: true, json: [{ number: 17, title: 'feat: x', isDraft: false }] }
+        : { ok: true, json: { body: '' } }),
+    };
+
+    // CLI path: runStatus directly (what `forge board status` calls).
+    const cli = await runStatus(ctx, () => {});
+    expect(cli.ok).toBe(true);
+
+    // MCP path: the board_status tool, over the identical ctx/board state.
+    const h = build({ getCtx: async () => ctx, deps: { normalize: (_c, i) => ({ number: i.content.number, title: i.title }) } });
+    const mcp = body(await call(h, 'board_status', {}));
+    expect(mcp.ok).toBe(true);
+
+    // Both compute the catch-up card via the same runStatus — assert the data matches.
+    expect(mcp.situation).toEqual(cli.data.situation);
+    expect(mcp.counts).toEqual(cli.data.counts);
+    expect(mcp.blocked).toEqual(cli.data.blocked);
+    expect(mcp.inProgress).toEqual(cli.data.inProgress);
+    expect(mcp.openPrs).toEqual(cli.data.openPrs);
+    expect(mcp.next).toEqual(cli.data.next);
+    // Sanity: this is the actual "less useful answer" the ticket describes fixed.
+    expect(mcp.next).toBe('answer the blocked decision(s)');
+    expect(mcp.blocked).toEqual([{ number: 3, title: 'Three' }]);
   });
 });
 

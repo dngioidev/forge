@@ -30,6 +30,7 @@ import { runMove } from '../../scripts/board/move.mjs';
 import { runComment, PHASES } from '../../scripts/board/comment.mjs';
 import { runCreate, withDefaults } from '../../scripts/board/create.mjs';
 import { runEscalate } from '../../scripts/board/escalate.mjs';
+import { runStatus } from '../../scripts/board/status.mjs';
 import { selectNext, actionableQueue, normalize } from '../../scripts/autopilot/select.mjs';
 import { isShaped } from '../../scripts/autopilot/readiness.mjs';
 import { evaluateMergeBar, runMerge } from '../../scripts/autopilot/merge.mjs';
@@ -109,7 +110,7 @@ export const TOOLS = [
   },
   {
     name: 'board_status',
-    description: 'Board read-model: normalized items (number/title/status/priority/type/area), optionally filtered to one issue.',
+    description: 'The same catch-up card `forge board status` prints (situation, pending decisions, counts, blocked/in-progress, open PRs, next expected human action), plus normalized items[] (number/title/status/priority/type/area), optionally filtered to one issue.',
     inputSchema: { type: 'object', properties: { issue: { type: 'integer' } }, required: [] },
   },
   {
@@ -179,7 +180,7 @@ export const TOOLS = [
 
 /** Default engine bindings; injectable so each tool's contract is testable without live gh/git. */
 export const DEFAULT_DEPS = {
-  runMove, runComment, runCreate, runEscalate,
+  runMove, runComment, runCreate, runEscalate, runStatus,
   selectNext, actionableQueue, normalize, isShaped,
   evaluateMergeBar, runMerge, computeReadiness, loadConfig,
   execFn: run,
@@ -317,12 +318,20 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
           });
 
         case 'board_status':
+          // #399: delegate the catch-up card (situation/counts/blocked/next) to the
+          // SAME runStatus the CLI (`forge board status`) uses, instead of a separate
+          // inline reimplementation — the two paths now compute identical data for the
+          // same board state. items[] (optionally filtered to one issue) stays a
+          // separate, additive read-model on top, unaffected by that computation.
           return board(id, async (ctx) => {
             const list = await ctx.listItems();
             if (!list.ok) return teach(id, list.error);
             let items = list.items.filter((i) => i.content?.number != null).map((i) => deps.normalize(ctx, i));
             if (args.issue != null) items = items.filter((t) => t.number === args.issue);
-            return toolText(id, { ok: true, items });
+            const status = await deps.runStatus(ctx, noop);
+            if (!status.ok) return teach(id, status.error);
+            const { owner, repo, projectNumber, situation, counts, blocked, inProgress, openPrs, next } = status.data;
+            return toolText(id, { ok: true, items, owner, repo, projectNumber, situation, counts, blocked, inProgress, openPrs, next });
           });
 
         case 'gate_run': {
