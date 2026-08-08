@@ -108,6 +108,17 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   // this to scope its `gh run list` to the actual failing workflow instead of
   // "whichever workflow happened to run last" (a StatusContext entry has no
   // workflowName — falls back to unscoped, same as before).
+  //
+  // Accepted residual risk (review, #408): this is the workflow's *display
+  // name* (editable via the workflow file's own `name:` key), not an ID
+  // cross-checked back to this specific CheckRun. A same-branch decoy
+  // workflow with a colliding name could misdirect the `run list` lookup.
+  // Exploiting it requires push/workflow-modify access to the repo — a
+  // materially higher privilege bar than the PR-content-only spoofing this
+  // ticket's structural fix (`failedDuringSetup`) closes — and a wrong-run
+  // lookup still degrades safely: it either finds no matching run
+  // (outage:false) or a genuinely-outaged run that still has to pass the
+  // per-job structural corroboration below, never a raw name match alone.
   const workflowName = bad.map((c) => c.workflowName).find(Boolean) ?? null;
   return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName };
 }
@@ -172,28 +183,45 @@ export async function classifyCiFailure(gh, { branch, workflowName, stuckQueuedM
 }
 
 /**
- * Structural corroboration for `classifyCiFailure` above: did the failing
- * job never get past GitHub's own injected "Set up job" step? `gh run view
- * --json jobs` returns each job's `steps` array with GitHub-assigned
- * conclusions (`success`/`failure`/`skipped`/`cancelled`/null) — every job
- * has "Set up job" as `steps[0]` and "Complete job" as the last entry,
- * injected by the Actions service itself, not by the workflow file or any
- * step's own output. If `steps[0]` didn't succeed, or every step between the
- * bookends is unset/skipped/cancelled (none of the repo's own steps ever
- * ran), the failure happened during setup — matching where an
- * action-download-info resolution failure actually occurs. Degrades to
- * `false` (not an outage) on any malformed/empty response.
+ * Structural corroboration for `classifyCiFailure` above: did EVERY failing
+ * job in the run never get past GitHub's own injected "Set up job" step?
+ * `gh run view --json jobs` returns each job's `steps` array with
+ * GitHub-assigned conclusions (`success`/`failure`/`skipped`/`cancelled`/
+ * null) — every job has "Set up job" as `steps[0]` and "Complete job" as the
+ * last entry, injected by the Actions service itself, not by the workflow
+ * file or any step's own output. A job's failure counts as "during setup"
+ * when `steps[0]` didn't succeed, or every step between the bookends is
+ * unset/skipped/cancelled (none of the repo's own steps ever ran) — matching
+ * where an action-download-info resolution failure actually occurs.
+ *
+ * Security fix (2nd review pass, #408): this must require ALL failing jobs
+ * to pass that test, not just one. `classifyCiFailure`'s subsequent
+ * `--log-failed` fetch is RUN-WIDE (every failing job's log, concatenated),
+ * not scoped to a single job — so checking only the first failing job left a
+ * bypass: a workflow with a genuine decoy job that fails during setup (e.g.
+ * a bad `uses:` ref) would corroborate the check while a SECOND, real job's
+ * genuine failure (whose own message could echo the outage phrases,
+ * deliberately or by coincidence) rides along in the same aggregated log
+ * text and still gets classified as "outage." Requiring every failing job to
+ * be a setup-phase failure closes that: the moment ANY failing job ran a
+ * real step, the whole run is correctly treated as a real failure and the
+ * log text is never even fetched — a single real failure can no longer hide
+ * behind a co-occurring one that's structurally legitimate. Degrades to
+ * `false` (not an outage) on any malformed/empty response or when no job
+ * actually failed.
  */
 export function failedDuringSetup(jobsRes) {
   const jobs = jobsRes?.ok && Array.isArray(jobsRes.json?.jobs) ? jobsRes.json.jobs : [];
-  const failing = jobs.find((j) => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped');
-  if (!failing) return false;
-  const steps = Array.isArray(failing.steps) ? failing.steps : [];
-  if (steps.length === 0) return true; // no step breakdown at all — the job never even got that far
-  const setup = steps[0];
-  if (setup?.conclusion && setup.conclusion !== 'success') return true;
-  const middle = steps.slice(1, -1);
-  return middle.every((s) => !s.conclusion || s.conclusion === 'skipped' || s.conclusion === 'cancelled');
+  const failing = jobs.filter((j) => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped');
+  if (failing.length === 0) return false;
+  return failing.every((job) => {
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    if (steps.length === 0) return true; // no step breakdown at all — this job never even got that far
+    const setup = steps[0];
+    if (setup?.conclusion && setup.conclusion !== 'success') return true;
+    const middle = steps.slice(1, -1);
+    return middle.every((s) => !s.conclusion || s.conclusion === 'skipped' || s.conclusion === 'cancelled');
+  });
 }
 
 /**
@@ -282,7 +310,17 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
           reason: cls.reason, attempt: outageAttempt + 1,
         });
       }
-      if (!recovered.ok) return { ok: false, error: recovered.error };
+      // #408 review fix — a failed recovery attempt (rebase conflict, rejected
+      // push) still carries the outage context forward: without `outage`/
+      // `reason` here, a caller (incl. the MCP tool's error path) sees only a
+      // raw git error string and loses "this was outage-recovery attempt N,"
+      // making the run report/trail dishonestly silent about why it happened.
+      if (!recovered.ok) {
+        return {
+          ok: false, error: recovered.error, outage: true, outageAttempt: outageAttempt + 1,
+          reason: `platform-outage recovery attempt ${outageAttempt + 1}/${maxOutageAttempts} failed: ${recovered.error}`,
+        };
+      }
       return { ok: true, merged: false, retried: true, outage: true, outageAttempt: outageAttempt + 1, outcome: 'retry' };
     }
   }

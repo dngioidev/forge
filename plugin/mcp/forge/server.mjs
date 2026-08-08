@@ -500,7 +500,12 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
               issue: args.issue, pr: args.pr, signals: args.signals, critical: args.critical ?? false, mode: args.mode ?? null,
               outageAttempt: args.outageAttempt ?? 0, maxOutageAttempts: args.maxOutageAttempts ?? 2,
             }, noop);
-            if (r.error) return teach(id, r.error);
+            // #408 review fix — a failed outage-recovery attempt (rebase conflict,
+            // rejected push) still returns `r.error`, but it carries outage context
+            // (`outage`/`outageAttempt`/`reason`) that a bare `teach()` would drop,
+            // leaving the caller with only a raw git error and no idea this was a
+            // recovery attempt rather than an ordinary tool failure.
+            if (r.error) return r.outage ? toolText(id, { ok: false, error: r.error, outage: true, outageAttempt: r.outageAttempt ?? null, reason: r.reason ?? null }, true) : teach(id, r.error);
             return toolText(id, {
               ok: true, merged: r.merged ?? false, parked: r.parked ?? false, outcome: r.outcome ?? null, blockedOn: r.blockedOn ?? [], escalate: r.escalate ?? false,
               outage: r.outage ?? false, outageAttempt: r.outageAttempt ?? null, outageExhausted: r.outageExhausted ?? false, reason: r.reason ?? null,

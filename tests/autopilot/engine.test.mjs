@@ -973,6 +973,39 @@ describe('classifyCiFailure (AC-408.1/AC-408.2, #408) — is a red CI result Git
     expect(fetchedLog).toBe(false); // never even reads the spoofable log text once structure says "real step ran"
   });
 
+  it('SECURITY (2nd review pass, #408): a genuine setup-phase decoy job cannot launder a co-occurring REAL job failure into "outage" end-to-end', async () => {
+    // Two jobs failed in the same run: 'flaky-action' genuinely failed during
+    // setup (a real, non-malicious infra hiccup on ITS OWN job) while
+    // 'unit-tests' ran a real step and genuinely failed for a real reason.
+    // The run-wide --log-failed text (fetched only if failedDuringSetup allows
+    // it) would otherwise let the setup-phase job "vouch" for the whole run.
+    let fetchedLog = false;
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) {
+        return {
+          ok: true,
+          json: { jobs: [
+            { name: 'flaky-action', conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] },
+            { name: 'unit-tests', conclusion: 'failure', steps: [
+              { name: 'Set up job', conclusion: 'success' },
+              { name: 'Run tests', conclusion: 'failure' },
+              { name: 'Complete job', conclusion: 'failure' },
+            ] },
+          ] },
+        };
+      }
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('--log-failed')) {
+        fetchedLog = true;
+        return { ok: false, stdout: '', stderr: 'flaky-action: Failed to resolve action download info. Error: Service Unavailable\nunit-tests: AssertionError: expected 1 to equal 2' };
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x' });
+    expect(cls.outage).toBe(false); // the real unit-tests failure must win — never masked by the co-occurring decoy
+    expect(fetchedLog).toBe(false); // structure alone rules this out before the spoofable log text is ever read
+  });
+
   it('degrades to "not an outage" on a malformed run-list response, never throws', async () => {
     const gh = async () => ({ ok: true, json: null });
     await expect(classifyCiFailure(gh, { branch: 'feat/x' })).resolves.toEqual({ outage: false, reason: null });
@@ -1024,6 +1057,32 @@ describe('failedDuringSetup (#408 security follow-up) — structural corroborati
     expect(failedDuringSetup({ ok: false })).toBe(false);
     expect(failedDuringSetup({ ok: true, json: null })).toBe(false);
     expect(failedDuringSetup(null)).toBe(false);
+  });
+
+  // SECURITY (2nd review pass, #408): the decoy-job bypass. classifyCiFailure's
+  // --log-failed fetch is RUN-WIDE (every failing job's log), not scoped to one
+  // job — checking only the FIRST failing job here would let a genuine
+  // setup-phase decoy job "corroborate" an outage while a SECOND, real job's
+  // genuine failure (whose text could echo the outage phrases) rides along in
+  // the same aggregated log and still gets classified as an outage.
+  it('SECURITY: false when ANY failing job among several ran a real step, even if ANOTHER job genuinely failed during setup (no decoy bypass)', () => {
+    const setupFailure = { conclusion: 'failure', name: 'decoy', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] };
+    const realFailure = { conclusion: 'failure', name: 'unit-tests', steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Run tests', conclusion: 'failure' },
+      { name: 'Complete job', conclusion: 'failure' },
+    ] };
+    // Decoy listed FIRST — a `.find()`-based check would corroborate on it alone.
+    expect(failedDuringSetup(jobsRes([setupFailure, realFailure]))).toBe(false);
+    // Order must not matter either.
+    expect(failedDuringSetup(jobsRes([realFailure, setupFailure]))).toBe(false);
+  });
+
+  it('true only when EVERY failing job in a multi-job run failed during setup', () => {
+    const a = { conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }] };
+    const b = { conclusion: 'failure', steps: [] }; // no breakdown — also counts as setup-phase
+    const passing = { conclusion: 'success', steps: [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run tests', conclusion: 'success' }] };
+    expect(failedDuringSetup(jobsRes([a, b, passing]))).toBe(true); // the passing job is irrelevant — only failing jobs are evaluated
   });
 });
 
@@ -1095,6 +1154,23 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
     expect(cwd).toBe('/fake/cwd');
     expect(kind).toBe('gate-fail');
     expect(data).toMatchObject({ outage: true, phase: 'recovered', pr: 9 });
+  });
+
+  it('review fix (#408): a FAILED recovery attempt (rebase conflict / rejected push) still carries outage context, not just a raw git error', async () => {
+    const { gh } = outageGhDouble();
+    const journalCalls = [];
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 0 },
+      () => {},
+      { execRun: async () => ({ ok: false, code: 1, stdout: '', stderr: 'CONFLICT (content): Merge conflict in file.mjs' }), journalAppend: async (...a) => { journalCalls.push(a); } },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('CONFLICT');
+    expect(res.outage).toBe(true);
+    expect(res.outageAttempt).toBe(1);
+    expect(res.reason).toMatch(/platform-outage recovery attempt 1\/2 failed/);
+    expect(journalCalls[0][2]).toMatchObject({ outage: true, phase: 'recovery-failed' });
   });
 
   it('AC-408.2: bounded — exhausts after maxOutageAttempts and falls through to a real blocked-on-ci result', async () => {

@@ -355,6 +355,33 @@ describe('AC-315.1 / AC-315.2: autopilot_merge funnels the live merge through th
     expect(out).toMatchObject({ merged: false, outage: true, outageExhausted: true });
     expect(out.reason).toMatch(/GitHub Actions platform outage, not your change/);
   });
+
+  it('review fix (#408): a FAILED recovery attempt (runMerge returns ok:false + outage:true) still surfaces outage context, not a bare teach()', async () => {
+    const h = build({
+      deps: {
+        runMerge: async () => ({
+          ok: false, error: 'git rebase failed: CONFLICT', outage: true, outageAttempt: 1,
+          reason: 'platform-outage recovery attempt 1/2 failed: git rebase failed: CONFLICT',
+        }),
+      },
+    });
+    const raw = await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: heldVerdicts });
+    expect(raw.result?.isError).toBe(true); // still an error surface — the caller must not treat this as success
+    const out = body(raw);
+    expect(out.outage).toBe(true);
+    expect(out.outageAttempt).toBe(1);
+    expect(out.reason).toMatch(/recovery attempt 1\/2 failed/);
+    expect(out.error).toContain('CONFLICT'); // the underlying error is still visible, not swallowed
+  });
+
+  it('an ordinary (non-outage) runMerge error still gets the plain teach() surface — unchanged behavior', async () => {
+    const h = build({ deps: { runMerge: async () => ({ ok: false, error: 'pr view failed: not found' }) } });
+    const raw = await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: heldVerdicts });
+    expect(raw.result?.isError).toBe(true);
+    const out = body(raw);
+    expect(out.error).toBe('pr view failed: not found');
+    expect(out.outage).toBeUndefined();
+  });
 });
 
 // =========================================================================

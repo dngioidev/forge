@@ -97,6 +97,27 @@ that setup phase, before user code runs. The textual match in
 user-defined step failing is definitionally a real failure regardless of its
 log text, and the log is never even fetched in that case.
 
+**Second security fix from a follow-up adversarial pass:** `failedDuringSetup`
+originally corroborated on only the FIRST failing job in the run, while the
+subsequent `--log-failed` fetch is run-wide (every failing job's log,
+concatenated) — a decoy job that genuinely fails during setup could
+"vouch" for the whole run while a second, real job's genuine failure (whose
+own text could echo the outage phrases) rode along in the same aggregated
+log and still got classified as an outage. Fixed by requiring **every**
+failing job in the run to be a setup-phase failure, not just one — the
+moment any failing job ran a real step, the log text is never fetched at
+all. Also fixed: a failed recovery attempt (rebase conflict, rejected push)
+was returning a bare `{ok:false, error}` with no outage context, and the
+`autopilot_merge` MCP tool's error path (`if (r.error) return teach(...)`)
+dropped `outage`/`outageAttempt`/`reason` entirely on that path — both now
+carry the context forward so the run report/trail stays honest about *why*
+a merge attempt failed. Remaining accepted residual risk (documented in
+code): `workflowName` scoping (`ciGreen`) uses the workflow's display name,
+not an ID cross-check — exploiting it needs repo push/workflow-modify
+access, a materially higher bar than the log-spoofing attack this fix
+closes, and a wrong-run lookup still degrades safely (no match, or a
+genuinely-outaged run that still has to pass the per-job structural check).
+
 `forceNewSha(execRun, {base})` performs the fetch/rebase/push recovery with
 an injected exec function (mirrors `exec.mjs`'s own DI convention — no real
 git in tests). `runMerge` wires it in: outage + attempts remaining → recover,
