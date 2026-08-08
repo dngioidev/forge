@@ -4,11 +4,46 @@
  * current branch's PR checks and prints a line only when the rollup transitions,
  * so autopilot's auto-merge bar reacts to green/red instead of polling inline.
  * Each stdout line is delivered to Claude as a notification.
+ *
+ * #407 AC.2: this monitor and `autopilot/merge.mjs`'s pre-merge `ciGreen()`
+ * re-check are two of the three independent GraphQL pollers of the same PR's
+ * `statusCheckRollup` (the third is the delivery subagent's own mandated
+ * `gh pr checks <pr> --watch`). The monitor now persists its last observed
+ * rollup state to a small on-disk file (`writeCiWatchState`); `ciGreen()` reads
+ * it back (`loadCiWatchState`) and, when it's a VERY recent known-green
+ * transition for the SAME pr, satisfies the pre-merge check without firing a
+ * new GraphQL call — the two processes don't share memory, so this is a file
+ * hand-off, not a direct call.
  */
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
+import { writeJson, readJson } from '../lib/jsonfile.mjs';
 import { freshGuard, trackFailure } from './poll-guard.mjs';
+
+/** Relative path this monitor writes to and `merge.mjs`'s `ciGreen()` reads back (#407 AC.2). */
+export const CI_WATCH_RELPATH = join('.forge', 'autopilot', 'ci-watch.json');
+
+/** Best-effort persist of the last observed rollup state. A write failure must
+ * never crash the monitor loop — it only means the fresh-transition shortcut
+ * is unavailable next merge, not that anything is broken. */
+export async function writeCiWatchState(cwd, { pr, state, at = new Date().toISOString() }) {
+  try {
+    await writeJson(join(cwd, CI_WATCH_RELPATH), { pr, state, at });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Tolerant read: an absent or corrupt file both mean "no fresh data" (mirrors `sessionpause.mjs`'s `loadUsage`). */
+export async function loadCiWatchState(cwd) {
+  try {
+    return await readJson(join(cwd, CI_WATCH_RELPATH));
+  } catch {
+    return null;
+  }
+}
 
 const FAIL = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
 const DONE = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
@@ -40,13 +75,14 @@ export async function poll(gh, prev) {
   const res = await gh(['pr', 'view', '--json', 'number,headRefName,statusCheckRollup'], { parseJson: true });
   if (!res.ok) {
     // Distinguish "no PR yet" (benign, quiet) from a standing gh failure (#318).
-    if (isNoPr(res)) return { prev, line: null, ok: true };
-    return { prev, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed') };
+    if (isNoPr(res)) return { prev, pr: null, line: null, ok: true };
+    return { prev, pr: null, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed') };
   }
   const state = rollupState(res.json?.statusCheckRollup);
+  const pr = res.json?.number ?? null;
   const changed = transition(prev, state);
-  if (!changed) return { prev: state, line: null, ok: true };
-  return { prev: state, line: `CI ${state} on PR #${res.json.number} (${res.json.headRefName})`, ok: true };
+  if (!changed) return { prev: state, pr, line: null, ok: true };
+  return { prev: state, pr, line: `CI ${state} on PR #${res.json.number} (${res.json.headRefName})`, ok: true };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
@@ -63,6 +99,9 @@ if (isMain) {
     try {
       const r = await poll(gh, prev);
       prev = r.prev;
+      // #407 AC.2: persist every observed reading (not just transitions) so
+      // ciGreen()'s freshness window always has an accurate "at" timestamp.
+      if (r.ok && r.pr != null) await writeCiWatchState(process.cwd(), { pr: r.pr, state: r.prev });
       if (r.line) console.log(r.line);
       surface(r.ok, r.reason);
     } catch (err) {

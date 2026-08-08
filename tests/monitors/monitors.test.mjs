@@ -3,7 +3,7 @@ import { readFile, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rollupState, transition, poll as ciPoll, isNoPr } from '../../plugin/scripts/monitors/ci-watch.mjs';
+import { rollupState, transition, poll as ciPoll, isNoPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH } from '../../plugin/scripts/monitors/ci-watch.mjs';
 import { newlyResolved, poll as decisionsPoll } from '../../plugin/scripts/monitors/decisions-watch.mjs';
 import { trackFailure, freshGuard, FAILURE_THRESHOLD, REEMIT_EVERY } from '../../plugin/scripts/monitors/poll-guard.mjs';
 
@@ -30,8 +30,40 @@ describe('CI monitor (#151)', () => {
     const gh = async () => ({ ok: true, json: { number: 42, headRefName: 'feat/x', statusCheckRollup: [{ conclusion: 'SUCCESS' }] } });
     const first = await ciPoll(gh, null);
     expect(first.line).toMatch(/CI pass on PR #42 \(feat\/x\)/);
+    expect(first.pr).toBe(42); // #407 AC.2: poll() now surfaces the pr number so the caller can persist it
     const second = await ciPoll(gh, first.prev); // unchanged → silent
     expect(second.line).toBe(null);
+    expect(second.pr).toBe(42);
+  });
+
+  // #407 AC.2 — the monitor persists its last observed state so merge.mjs's
+  // ciGreen() can thread a very-recent known-green transition into the
+  // pre-merge check instead of firing a redundant GraphQL re-fetch.
+  describe('ci-watch state persistence (#407 AC.2)', () => {
+    it('writeCiWatchState -> loadCiWatchState round-trips {pr, state, at}', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
+      expect(await loadCiWatchState(cwd)).toBeNull(); // absent -> null, never throws
+      await writeCiWatchState(cwd, { pr: 9, state: 'pass' });
+      const loaded = await loadCiWatchState(cwd);
+      expect(loaded.pr).toBe(9);
+      expect(loaded.state).toBe('pass');
+      expect(typeof loaded.at).toBe('string'); // defaulted to "now" when the caller omits it
+      expect(Date.parse(loaded.at)).not.toBeNaN();
+    });
+
+    it('loadCiWatchState tolerates a corrupt file — never throws', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
+      await mkdir(dirname(join(cwd, CI_WATCH_RELPATH)), { recursive: true });
+      await writeFile(join(cwd, CI_WATCH_RELPATH), '{not json', 'utf8');
+      await expect(loadCiWatchState(cwd)).resolves.toBeNull();
+    });
+
+    it('a later writeCiWatchState overwrites the earlier reading (only the latest transition matters)', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-ciwatch-'));
+      await writeCiWatchState(cwd, { pr: 9, state: 'pending' });
+      await writeCiWatchState(cwd, { pr: 9, state: 'pass' });
+      expect((await loadCiWatchState(cwd)).state).toBe('pass');
+    });
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS, linkProject, optionKey } from '../../plugin/scripts/lib/board.mjs';
+import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS, linkProject, optionKey, getRepoInfo, getProjectFields } from '../../plugin/scripts/lib/board.mjs';
 
 describe('linkProject (AC-B64.1, #64)', () => {
   it('AC-B64.1: issues gh project link <n> --owner <o> --repo <slug>', async () => {
@@ -91,5 +91,100 @@ describe('createSingleSelectField mutation shape (AC-B11.1, #55)', () => {
     expect(res.ok).toBe(true);
     expect(seen.filter((a) => a === '-F')).toHaveLength(0);
     expect(seen.filter((a) => a === '-f')).toHaveLength(1);
+  });
+});
+
+// #407 AC.3 — board field/option ID lookups are cached per-process/per-run instead
+// of re-fetched on every op. A counting gh double stands in for the "same process,
+// many ops" case (the long-lived forge-core MCP server; a script calling the same
+// lookup more than once); a FRESH gh double (a new test) proves the cache never
+// leaks across a different `gh` instance — exactly the isolation a separate
+// process/run needs.
+describe('getRepoInfo / getProjectFields memoization (#407 AC.3)', () => {
+  const repoView = () => ({ ok: true, json: { owner: { login: 'dngioidev' }, name: 'forge', defaultBranchRef: { name: 'main' } } });
+  const fieldsOk = (itemsCount = 3) => ({
+    ok: true,
+    json: { data: { node: { items: { totalCount: itemsCount }, fields: { nodes: [{ __typename: 'ProjectV2SingleSelectField', id: 'f1', name: 'Status', options: [{ id: 'o1', name: 'Backlog' }] }] } } } },
+  });
+
+  it('getRepoInfo hits gh once per gh instance — a second call for the same gh is served from cache', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return repoView(); };
+    const first = await getRepoInfo(gh);
+    const second = await getRepoInfo(gh);
+    expect(first).toMatchObject({ ok: true, owner: 'dngioidev', name: 'forge', defaultBranch: 'main' });
+    expect(second).toEqual(first);
+    expect(calls).toBe(1); // only the FIRST call reached gh
+  });
+
+  it('getRepoInfo({refresh:true}) bypasses AND repopulates the cache', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return repoView(); };
+    await getRepoInfo(gh);
+    await getRepoInfo(gh, { refresh: true });
+    expect(calls).toBe(2);
+  });
+
+  it('a DIFFERENT gh instance never sees another instance\'s cached repo info (process/run isolation)', async () => {
+    let callsA = 0; let callsB = 0;
+    const ghA = async () => { callsA++; return repoView(); };
+    const ghB = async () => { callsB++; return { ok: true, json: { owner: { login: 'other-owner' }, name: 'other-repo', defaultBranchRef: { name: 'trunk' } } }; };
+    await getRepoInfo(ghA);
+    const b = await getRepoInfo(ghB);
+    expect(callsA).toBe(1);
+    expect(callsB).toBe(1); // ghB was NOT served from ghA's cache
+    expect(b.owner).toBe('other-owner');
+  });
+
+  it('a FAILED getRepoInfo lookup is never cached — the next call can recover', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return calls === 1 ? { ok: false, stderr: 'boom' } : repoView(); };
+    const first = await getRepoInfo(gh);
+    expect(first.ok).toBe(false);
+    const second = await getRepoInfo(gh);
+    expect(second.ok).toBe(true);
+    expect(calls).toBe(2); // both calls reached gh — the failure was not cached
+  });
+
+  it('getProjectFields hits gh once per (gh, projectId) — repeat calls for the same project are served from cache', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return fieldsOk(); };
+    const first = await getProjectFields(gh, 'PVT_1');
+    const second = await getProjectFields(gh, 'PVT_1');
+    expect(first).toMatchObject({ ok: true, itemsCount: 3 });
+    expect(second).toEqual(first);
+    expect(calls).toBe(1);
+  });
+
+  it('getProjectFields caches PER projectId — a different project on the SAME gh still fetches fresh', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return fieldsOk(calls); }; // itemsCount tracks the call number
+    const a = await getProjectFields(gh, 'PVT_1');
+    const b = await getProjectFields(gh, 'PVT_2');
+    const aAgain = await getProjectFields(gh, 'PVT_1');
+    expect(calls).toBe(2); // one fetch per distinct projectId
+    expect(a.itemsCount).toBe(1);
+    expect(b.itemsCount).toBe(2);
+    expect(aAgain).toEqual(a); // still cached
+  });
+
+  it('getProjectFields({refresh:true}) bypasses AND repopulates the cache (init.mjs post-mutation re-discovery)', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return fieldsOk(calls); };
+    const before = await getProjectFields(gh, 'PVT_1');
+    const after = await getProjectFields(gh, 'PVT_1', { refresh: true });
+    expect(calls).toBe(2);
+    expect(before.itemsCount).toBe(1);
+    expect(after.itemsCount).toBe(2);
+  });
+
+  it('a FAILED getProjectFields lookup is never cached', async () => {
+    let calls = 0;
+    const gh = async () => { calls++; return calls === 1 ? { ok: false, stderr: 'boom' } : fieldsOk(); };
+    const first = await getProjectFields(gh, 'PVT_1');
+    expect(first.ok).toBe(false);
+    const second = await getProjectFields(gh, 'PVT_1');
+    expect(second.ok).toBe(true);
+    expect(calls).toBe(2);
   });
 });
