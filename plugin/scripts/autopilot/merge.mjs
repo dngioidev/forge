@@ -120,7 +120,12 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   // can't attribute to one at all) means `runMerge` skips outage
   // classification entirely and treats the result as a real failure,
   // fail-closed. `workflowName` is only meaningful when `classifiable` is true.
-  const workflowNames = new Set(bad.map((c) => c.workflowName ?? null));
+  // `|| null` (not `??`) deliberately normalizes an empty-string workflowName
+  // to null too — `classifyCiFailure`'s own `--workflow` guard is a plain
+  // truthiness check, so an empty string there would silently skip scoping;
+  // treating it as unresolved here (never classifiable) keeps the two in
+  // lockstep (4th review pass, #408).
+  const workflowNames = new Set(bad.map((c) => c.workflowName || null));
   const classifiable = workflowNames.size === 1 && !workflowNames.has(null);
   const workflowName = classifiable ? [...workflowNames][0] : null;
   return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable };
@@ -320,7 +325,16 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   // set spanning multiple workflows (or any check with no resolvable
   // workflow) skips classification entirely — never risk waving through a
   // real failure in one workflow behind another's genuine outage.
-  if (!ci.green && ci.pending?.length && ci.classifiable) {
+  //
+  // Security fix (4th review pass, #408): `!critical` gates this whole branch.
+  // A critical finding (security/review) must force an escalation "regardless
+  // of the other signals" (see `evaluateMergeBar`'s own doc comment below) —
+  // that invariant would be silently violated if an autonomous force-push
+  // recovery attempt could still fire and `return` before `evaluateMergeBar`
+  // ever runs. `critical` is an orchestrator-held verdict, not attacker
+  // input, but the fix is cheap and the invariant is exactly what this
+  // ticket's own merge bar promises, so outage recovery never preempts it.
+  if (!ci.green && ci.pending?.length && ci.classifiable && !critical) {
     const classify = deps.classifyCiFailure ?? classifyCiFailure;
     const cls = await classify(ctx.gh, { branch: ci.branch, workflowName: ci.workflowName });
     if (cls.outage) {

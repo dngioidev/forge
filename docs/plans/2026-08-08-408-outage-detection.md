@@ -127,12 +127,26 @@ entirely and the result is treated as a real failure. Also fixed (LOW):
 `outageAttempt`/`maxOutageAttempts` are now clamped server-side in `runMerge`
 itself (ceiling of 10) rather than relying on unenforced JSON-schema
 `integer` typing at the MCP boundary, so "a small number of attempts" holds
-regardless of caller input. Remaining accepted residual risk (documented in
-code): `workflowName` scoping (`ciGreen`) uses the workflow's display name,
-not an ID cross-check — exploiting it needs repo push/workflow-modify
-access, a materially higher bar than the log-spoofing/decoy-job attacks the
-earlier fixes close, and a wrong-run lookup still degrades safely (no match,
-or a genuinely-outaged run that still has to pass the per-job structural
+regardless of caller input.
+
+**Fourth security fix, a confirmatory adversarial pass:** the outage-recovery
+branch in `runMerge` returned before `evaluateMergeBar` ever ran, so an
+autonomous force-push could fire even when `critical:true` — silently
+contradicting the merge bar's own documented invariant that a critical
+finding "forces an escalation regardless of the other signals." Fixed by
+adding `&& !critical` to the branch's guard, so a critical finding always
+routes straight to `evaluateMergeBar` (which forces the escalation) with no
+git action in between. Also fixed (LOW): `ciGreen`'s `classifiable` check
+used `??` (only catching `null`/`undefined`), while `classifyCiFailure`'s
+`--workflow` scoping guard is a plain truthiness check — an edge-case
+empty-string `workflowName` would satisfy `classifiable` yet silently skip
+scoping. Switched to `||` so both checks stay in lockstep. Remaining accepted
+residual risk (documented in code): `workflowName` scoping (`ciGreen`) uses
+the workflow's display name, not an ID cross-check — exploiting it needs
+repo push/workflow-modify access, a materially higher bar than the
+log-spoofing/decoy-job/decoy-workflow attacks the earlier fixes close, and a
+wrong-run lookup still degrades safely (no match, or a genuinely-outaged run
+that still has to pass the per-job structural
 check).
 
 `forceNewSha(execRun, {base})` performs the fetch/rebase/push recovery with

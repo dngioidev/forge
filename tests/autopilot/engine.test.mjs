@@ -1301,6 +1301,33 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
     expect(res.reason).toContain('recovery exhausted after 10 attempt(s)'); // clamped to MAX_OUTAGE_ATTEMPTS_CEILING
   });
 
+  it('SECURITY (4th review pass, #408): critical:true forces escalation regardless — never lets an outage-recovery force-push preempt it', async () => {
+    const { gh, calls } = outageGhDouble();
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, critical: true },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt any git action when critical:true'); }, journalAppend: async () => { throw new Error('must not even classify when critical:true'); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.escalate).toBe(true);
+    expect(res.blockedOn).toContain('security:critical');
+    expect(res.outage).toBeUndefined(); // outage classification never even ran
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('review fix (#408, LOW): an empty-string workflowName is treated as unresolved, not classifiable — stays in lockstep with classifyCiFailure\'s truthiness guard', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { ok: true, json: { headRefName: 'feat/x', statusCheckRollup: [{ conclusion: 'FAILURE', name: 'actionlint', workflowName: '' }] } };
+      }
+      return { ok: true };
+    };
+    const ci = await ciGreen(gh, 9);
+    expect(ci.classifiable).toBe(false);
+    expect(ci.workflowName).toBe(null);
+  });
+
   it('does not require ctx.cwd — recovery still runs (just skips journaling) when no cwd is present', async () => {
     const { gh } = outageGhDouble();
     const res = await runMerge(
