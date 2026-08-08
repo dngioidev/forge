@@ -1294,7 +1294,7 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
       { config: {}, gh, cwd: '/fake/cwd' },
       { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 999999, maxOutageAttempts: 999999 },
       () => {},
-      { execRun: async () => { throw new Error('must NOT attempt recovery — outageAttempt is already past the clamped ceiling'); } },
+      { execRun: async () => { throw new Error('must NOT attempt recovery — outageAttempt is already past the clamped ceiling'); }, journalAppend: async () => {} },
     );
     expect(res.merged).toBe(false);
     expect(res.outageExhausted).toBe(true);
