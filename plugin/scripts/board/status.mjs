@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { deriveSituation } from '../lib/situation.mjs';
+import { pendingCount } from '../lib/outbox.mjs';
 
 /**
  * The catch-up card's underlying data (#399): the same computation `runStatus`
@@ -41,6 +42,10 @@ export async function computeStatus(ctx) {
   const inProgress = byKey.get('inProgress') ?? [];
   const situation = await deriveSituation(ctx.cwd, { blocked: blocked.length, inProgress: inProgress.length });
   const next = blocked.length ? 'answer the blocked decision(s)' : openPrs.length ? 'review/merge the open PR(s)' : inProgress.length ? 'continue the in-progress work' : 'pick the next ready/backlog item';
+  // #414: read-only against outbox.json's pending count (spike §4) — never
+  // changes `next`/`situation`, an outbox backlog isn't a decision, it
+  // resolves itself the moment GitHub answers.
+  const outboxPending = ctx.cwd ? await pendingCount(ctx.cwd).catch(() => 0) : 0;
 
   return {
     ok: true,
@@ -52,6 +57,7 @@ export async function computeStatus(ctx) {
     blocked: blocked.map(summarize),
     inProgress: inProgress.map(summarize),
     openPrs,
+    outboxPending,
     next,
   };
 }
@@ -62,7 +68,7 @@ export async function runStatus(ctx, log = console.log) {
 
   const lines = [];
   lines.push(`forge status — ${data.owner}/${data.repo} · board #${data.projectNumber}`);
-  const { situation, counts, blocked, inProgress, openPrs, next } = data;
+  const { situation, counts, blocked, inProgress, openPrs, outboxPending, next } = data;
   const show = (i) => `#${i.number} ${i.title}`.trim(); // matches the original show(item) exactly
   lines.push(`situation: ${situation.glyph} ${situation.label}${situation.pendingCount ? ` (${situation.pendingCount} pending decision${situation.pendingCount > 1 ? 's' : ''})` : ''}`);
   for (const d of situation.pending) lines.push(`  🚩 decision pending: #${d.issue} — ${d.reason} (${d.id})`);
@@ -70,6 +76,7 @@ export async function runStatus(ctx, log = console.log) {
   for (const b of blocked) lines.push(`  🚩 blocked: ${show(b)}`);
   for (const w of inProgress) lines.push(`  ▶ in progress: ${show(w)}`);
   for (const p of openPrs) lines.push(`  ⇡ open PR: #${p.number} ${p.title}${p.isDraft ? ' (draft)' : ''}`);
+  if (outboxPending) lines.push(`  📮 outbox: ${outboxPending} write(s) queued (GitHub was unreachable — not a decision, drains on its own)`);
   lines.push(`next: ${next}`);
 
   const text = lines.join('\n');

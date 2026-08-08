@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { upsertMarkedComment } from '../lib/issues.mjs';
+import { attemptOrDefer } from '../lib/outbox.mjs';
 
 export function parseArgs(argv) {
   const a = { issue: null, pr: null, sha: null, title: '' };
@@ -23,8 +24,19 @@ export async function runReceipt(ctx, args, log = console.log) {
   }
   const sha = args.sha ? ` → \`${args.sha.slice(0, 7)}\`` : '';
   const content = `**forge receipt** — merged via #${args.pr}${sha}${args.title ? ` — ${args.title}` : ''}`;
-  const res = await upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, args.issue, `receipt:pr-${args.pr}`, content);
+  // #414: posted AFTER the merge already truly happened (the merge itself is
+  // never deferred) — a late receipt changes nothing about what's real, so
+  // it's safe to queue and replay when GitHub recovers.
+  const res = await attemptOrDefer(ctx, {
+    op: 'receipt',
+    args,
+    attempt: () => upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, args.issue, `receipt:pr-${args.pr}`, content),
+  });
   if (!res.ok) return res;
+  if (res.deferred) {
+    log(`#${args.issue} receipt:pr-${args.pr} deferred to outbox (GitHub unreachable) — ${res.id}`);
+    return res;
+  }
   log(`#${args.issue} receipt:pr-${args.pr} ${res.action}`);
   return res;
 }

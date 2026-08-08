@@ -695,6 +695,19 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     expect(run.iterations).toBe(6);
   });
 
+  it('AC-414.4: renderReport is silent about the outbox by default (no behavior change)', () => {
+    const run = applyOutcome(freshRun(), { issue: 1, outcome: 'merged', ref: 'PR#10' });
+    expect(renderReport(run)).not.toContain('outbox');
+    expect(renderReport(run, { outboxPending: 0 })).not.toContain('outbox');
+  });
+
+  it('AC-414.4: renderReport surfaces a pending outbox count as a trailing, additive line', () => {
+    const run = applyOutcome(freshRun(), { issue: 1, outcome: 'merged', ref: 'PR#10' });
+    const out = renderReport(run, { outboxPending: 3 });
+    expect(out).toMatch(/merged: #1/); // existing content untouched
+    expect(out).toMatch(/outbox: 3 item\(s\) still queued/);
+  });
+
   it('renderReport summarises merged/escalated/filed', () => {
     let run = freshRun();
     run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#10' });
@@ -780,6 +793,17 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     expect(stderr).not.toMatch(/UnhandledPromiseRejection/); // not a raw rejection
     expect(stderr).not.toMatch(/node:internal\/process\/promises/);
     expect(stderr).not.toMatch(/^\s+at .+:\d+:\d+/m);        // no stack frames
+  });
+
+  it('AC-414.4: `report` CLI reads outbox.json and appends the pending line', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    await startRun(cwd);
+    await recordOutcome(cwd, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    const { enqueue } = await import('../../plugin/scripts/lib/outbox.mjs');
+    await enqueue(cwd, { op: 'comment', args: { issue: 1, phase: 'note', body: 'x' } });
+    await enqueue(cwd, { op: 'comment', args: { issue: 2, phase: 'note', body: 'y' } });
+    const out = execFileSync(process.execPath, [LEDGER_CLI, 'report'], { cwd, encoding: 'utf8' });
+    expect(out).toMatch(/outbox: 2 item\(s\) still queued/);
   });
 
   it('AC-B164.3: startRun recovers from a truncated run.json and starts a clean run', async () => {

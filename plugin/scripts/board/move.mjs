@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
+import { attemptOrDefer } from '../lib/outbox.mjs';
 
 export function parseArgs(argv) {
   const a = { issue: null, status: null };
@@ -69,8 +70,19 @@ export async function runMove(ctx, args, log = console.log) {
     log(`#${args.issue}: already ${status}`);
     return { ok: true, changed: false };
   }
-  const set = await ctx.setSelect(found.item.id, 'status', status);
+  // #414: "board-status drift is already a routine, tolerated eventual-
+  // consistency gap" (spike §1) — safe to queue and replay when GitHub
+  // recovers rather than hard-fail the caller.
+  const set = await attemptOrDefer(ctx, {
+    op: 'move',
+    args: { issue: args.issue, status: args.status },
+    attempt: () => ctx.setSelect(found.item.id, 'status', status),
+  });
   if (!set.ok) return set;
+  if (set.deferred) {
+    log(`#${args.issue}: move to ${status} deferred to outbox (GitHub unreachable) — ${set.id}`);
+    return set;
+  }
   // AC1: confirm the mutation actually took before reporting success.
   const verified = await verifyStatusMoved(ctx, args.issue, found.item.id, status, log);
   if (!verified.ok) return verified;

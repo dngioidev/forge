@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { upsertMarkedComment } from '../lib/issues.mjs';
+import { attemptOrDefer } from '../lib/outbox.mjs';
 
 export function parseArgs(argv) {
   const a = { pr: null, sha: null, title: '', issues: '', date: null };
@@ -24,8 +25,18 @@ export async function runLog(ctx, args, log = console.log) {
   const date = args.date ?? new Date().toISOString().slice(0, 10);
   const refs = args.issues ? args.issues.split(',').map((s) => `#${s.trim().replace(/^#/, '')}`).join(' ') : '—';
   const content = `| ${date} | #${args.pr} | ${args.sha ? `\`${args.sha.slice(0, 7)}\`` : '—'} | ${refs} | ${args.title || '—'} |`;
-  const res = await upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, ctx.deliveryLogIssue, `log:pr-${args.pr}`, content);
+  // #414: same shape as receipt.mjs — a row describing a fact that already
+  // happened, safe to queue and replay when GitHub recovers.
+  const res = await attemptOrDefer(ctx, {
+    op: 'log',
+    args: { ...args, date }, // pin `date` so a replay renders the SAME row (not "today" at replay time)
+    attempt: () => upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, ctx.deliveryLogIssue, `log:pr-${args.pr}`, content),
+  });
   if (!res.ok) return res;
+  if (res.deferred) {
+    log(`delivery-log row for #${args.pr} deferred to outbox (GitHub unreachable) — ${res.id}`);
+    return res;
+  }
   log(`delivery-log row for #${args.pr} ${res.action}`);
   return res;
 }
