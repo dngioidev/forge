@@ -92,12 +92,22 @@ export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs =
  * never skipped, only its network cost is — the safety property spec §5 calls
  * out is untouched.
  *
- * #411: `headRefOid` is the caller's live-confirmed current head commit for
+ * #411: `headRefOid` is the caller's cheaply-confirmed current head commit for
  * this PR (see `runMerge` — a local `git rev-parse HEAD`, zero GraphQL cost,
  * so the call-reduction intent above is unaffected). `isFreshGreenTransition`
- * fails closed without it, so a caller that can't cheaply confirm the current
+ * fails closed without it, so a caller that can't cheaply confirm a candidate
  * head (e.g. a `ctx` with no `cwd`) always falls through to the real re-fetch
- * below rather than trusting a possibly-stale cached reading.
+ * below rather than trusting a possibly-stale cached reading. IMPORTANT: this
+ * local read is a CHEAP PRE-FILTER, not the authoritative check — it can only
+ * ever confirm "this process's own checkout hasn't moved," not "GitHub's PR
+ * head hasn't moved" (an out-of-band push from another actor/bot would leave
+ * both the local checkout AND the cached reading stale together, so this
+ * comparison alone can't catch it). The AUTHORITATIVE bind is downstream, at
+ * the live `gh pr merge --match-head-commit` call in `runMerge` — this
+ * function also returns the `headRefOid` it green-lit (from `freshState.sha`
+ * via the shortcut, or freshly fetched below) precisely so that call can pin
+ * to it and have GitHub itself reject a merge if the real remote head has
+ * since moved, atomically, with no TOCTOU between this check and the merge.
  */
 export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs, headRefOid } = {}) {
   // #407 review nit: destructuring defaults already fire on an explicit `undefined`
@@ -105,12 +115,13 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs, headRe
   // that), so passing `now`/`maxAgeMs` straight through is equivalent to — and
   // simpler than — conditionally spreading them in.
   if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs, headRefOid })) {
-    return { ok: true, green: true, viaFreshTransition: true };
+    return { ok: true, green: true, viaFreshTransition: true, headRefOid: freshState.sha };
   }
   // headRefName rides along (#408): a red result may need `classifyCiFailure`
   // below, which needs the branch — one field added to an existing call, not
-  // an extra round-trip.
-  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefName'], { parseJson: true });
+  // an extra round-trip. headRefOid (#411) is the commit this rollup reading
+  // belongs to — returned below so `runMerge` can pin the live merge to it.
+  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefName,headRefOid'], { parseJson: true });
   if (!res.ok) return { ok: false, green: false, error: res.stderr || 'pr view failed' };
   const rollup = res.json?.statusCheckRollup ?? [];
   if (rollup.length === 0) return { ok: true, green: false, reason: 'no checks reported yet' };
@@ -143,7 +154,9 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs, headRe
   const workflowNames = new Set(bad.map((c) => c.workflowName || null));
   const classifiable = workflowNames.size === 1 && !workflowNames.has(null);
   const workflowName = classifiable ? [...workflowNames][0] : null;
-  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable };
+  // headRefOid (#411): the commit this rollup reading belongs to, returned so
+  // `runMerge` can pin the live `gh pr merge` to it via `--match-head-commit`.
+  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName, classifiable, headRefOid: res.json?.headRefOid ?? null };
 }
 
 /**
@@ -408,7 +421,19 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
     log(`autopilot: merge bar RED for #${issue} — blocked on ${bar.blockedOn.join(', ')}${bar.escalate ? ' (escalate)' : ''}`);
     return { ok: false, merged: false, blockedOn: bar.blockedOn, escalate: bar.escalate };
   }
-  const merged = await ctx.gh(['pr', 'merge', String(pr), '--squash', '--delete-branch']);
+  // #411: pin the LIVE merge to the exact commit `ciGreen` just confirmed green
+  // — `--match-head-commit` is validated server-side by GitHub at the moment
+  // of merge, atomically. This is the AUTHORITATIVE bind (see the `ciGreen`
+  // doc comment): it closes the gap the local `headRefOid` pre-filter above
+  // can't — an out-of-band push that moved the PR's real remote head between
+  // the check and this call (or one this checkout was never even aware of)
+  // makes `gh pr merge` fail instead of squashing an uncorroborated commit.
+  // `ci.headRefOid` can be null in a degenerate case (a `gh` double/response
+  // that omits it) — degrade to the pre-#411 unpinned call rather than
+  // blocking a legitimately green merge on a missing hardening signal.
+  const mergeArgs = ['pr', 'merge', String(pr), '--squash', '--delete-branch'];
+  if (ci.headRefOid) mergeArgs.push('--match-head-commit', ci.headRefOid);
+  const merged = await ctx.gh(mergeArgs);
   if (!merged.ok) return { ok: false, error: merged.stderr || 'gh pr merge failed' };
   log(`autopilot: merged #${issue} via PR #${pr} (squash)`);
   return { ok: true, merged: true, outcome: 'merged' };
