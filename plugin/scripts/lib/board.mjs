@@ -47,15 +47,36 @@ export function optionKey(name) {
     .replace(/[^a-zA-Z0-9]/g, '');
 }
 
-export async function getRepoInfo(gh) {
+/**
+ * #407 AC.3 — per-process memoization for the two board identity/schema lookups
+ * that used to be re-fetched on every call site (init.mjs, doctor.mjs, and any
+ * future caller). Keyed by the injected `gh` function reference (a WeakMap, not
+ * a plain object) so caching is scoped to whoever owns that `gh` instance —
+ * exactly "per-process/per-run" for production (one process = one `makeGh(run)`
+ * instance, reused for the process's lifetime — notably the long-lived
+ * forge-core MCP server, § plugin/mcp/forge/server.mjs `makeCtxResolver`) while
+ * staying naturally test-isolated (each test constructs its own `gh` double, so
+ * two tests never share a cache entry even within the same file/process).
+ * `refresh:true` bypasses AND repopulates the cache — the escape hatch for a
+ * caller that just mutated what a fresh read must reflect (init.mjs's
+ * post-create re-discovery). A failed lookup is never cached, so a transient gh
+ * hiccup can still recover on the next call.
+ */
+const repoInfoCache = new WeakMap(); // gh -> value
+const projectFieldsCache = new WeakMap(); // gh -> Map(projectId -> value)
+
+export async function getRepoInfo(gh, { refresh = false } = {}) {
+  if (!refresh && repoInfoCache.has(gh)) return repoInfoCache.get(gh);
   const res = await gh(['repo', 'view', '--json', 'owner,name,defaultBranchRef'], { parseJson: true });
   if (!res.ok) return { ok: false, error: res.stderr || 'gh repo view failed' };
-  return {
+  const value = {
     ok: true,
     owner: res.json.owner.login,
     name: res.json.name,
     defaultBranch: res.json.defaultBranchRef?.name ?? 'main',
   };
+  repoInfoCache.set(gh, value);
+  return value;
 }
 
 export async function getProject(gh, owner, number) {
@@ -97,8 +118,11 @@ const FIELDS_QUERY = `query($id: ID!) {
   }
 }`;
 
-/** Returns { itemsCount, fields: { <lowercased name>: {id, name, options:[{id,name}]} } } */
-export async function getProjectFields(gh, projectId) {
+/** Returns { itemsCount, fields: { <lowercased name>: {id, name, options:[{id,name}]} } }
+ * Memoized per (gh, projectId) — #407 AC.3, see the cache docblock above `getRepoInfo`. */
+export async function getProjectFields(gh, projectId, { refresh = false } = {}) {
+  const byProject = projectFieldsCache.get(gh);
+  if (!refresh && byProject?.has(projectId)) return byProject.get(projectId);
   const res = await gh(['api', 'graphql', '-f', `query=${FIELDS_QUERY}`, '-f', `id=${projectId}`], { parseJson: true });
   if (!res.ok) return { ok: false, error: res.stderr || 'fields query failed' };
   const node = res.json.data?.node;
@@ -107,7 +131,11 @@ export async function getProjectFields(gh, projectId) {
   for (const f of node.fields.nodes) {
     if (f && f.name) fields[f.name.toLowerCase()] = f;
   }
-  return { ok: true, itemsCount: node.items.totalCount, fields };
+  const value = { ok: true, itemsCount: node.items.totalCount, fields };
+  const cache = byProject ?? new Map();
+  cache.set(projectId, value);
+  projectFieldsCache.set(gh, cache);
+  return value;
 }
 
 /** Same inline-literal law as buildStatusMutation (#35/#55): gh -F stringifies arrays. */

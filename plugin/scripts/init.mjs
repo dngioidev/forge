@@ -129,8 +129,11 @@ export async function runInit(ctx) {
     }
   }
 
-  // Re-discover so config reflects reality (also covers resume-after-partial-failure)
-  pf = await getProjectFields(gh, project.id);
+  // Re-discover so config reflects reality (also covers resume-after-partial-failure).
+  // #407 AC.3: getProjectFields is now memoized per (gh, projectId) — refresh:true
+  // bypasses that cache since the fields WERE just mutated above; a stale cached
+  // read here would write the pre-mutation field ids into forge.json.
+  pf = await getProjectFields(gh, project.id, { refresh: true });
   if (!pf.ok) return { ok: false, error: pf.error, actions };
 
   // 5. Delivery log issue

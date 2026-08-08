@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
+import { loadCiWatchState } from '../monitors/ci-watch.mjs';
 
 /**
  * The five MECHANICAL signals of the merge bar (spec §4 items 1–5). All must be
@@ -43,8 +44,53 @@ export function evaluateMergeBar(signals = {}, { critical = false } = {}) {
   return { merge, blockedOn, escalate: critical };
 }
 
-/** Is the PR's CI fully green? Empty rollup counts as NOT green (fail-closed). */
-export async function ciGreen(gh, pr) {
+/** Default freshness window for a monitor-observed transition (#407 AC.2) — one
+ * `forge-ci` monitor poll interval's worth of slack (its default is 20s;
+ * `FORGE_CI_INTERVAL_MS` overrides it, but this stays a fixed, conservative
+ * default rather than reading that env var, so a caller with a slower monitor
+ * doesn't silently widen the window). */
+export const DEFAULT_FRESH_TRANSITION_MAX_AGE_MS = 20000;
+
+/**
+ * #407 AC.2 — is a monitor-observed transition (`{pr, state, at}`, written by
+ * `monitors/ci-watch.mjs`) fresh enough to satisfy `ciGreen` WITHOUT firing a
+ * redundant GraphQL re-fetch? Pure: no IO, so the boundary is unit-tested
+ * directly. Deliberately narrow — same PR, state exactly `'pass'`, and within
+ * `maxAgeMs` of `now` — anything else (wrong PR, stale, pending/fail, missing/
+ * unparsable timestamp) returns false and the caller falls through to the real
+ * re-check. This is what keeps "nothing merges on red" intact (spec §3.1/§5):
+ * the shortcut can only ever confirm an ALREADY-fresh green, never skip past a
+ * red or stale one.
+ */
+export function isFreshGreenTransition(state, pr, { now = Date.now(), maxAgeMs = DEFAULT_FRESH_TRANSITION_MAX_AGE_MS } = {}) {
+  if (!state || state.pr !== pr || state.state !== 'pass') return false;
+  const at = Date.parse(state.at ?? '');
+  if (Number.isNaN(at)) return false;
+  const age = now - at;
+  return age >= 0 && age <= maxAgeMs;
+}
+
+/**
+ * Is the PR's CI fully green? Empty rollup counts as NOT green (fail-closed).
+ *
+ * #407 AC.2: when `freshState` (the `forge-ci` monitor's last observed
+ * transition, read from disk by the caller — see `runMerge`) is a very recent
+ * known-green reading for THIS pr, that satisfies the check without a new
+ * GraphQL call — one of the 3 independent CI-status pollers becomes free for
+ * that ticket lifecycle instead of firing its own redundant `pr view`. Any
+ * other case (no freshState, wrong pr, stale, or non-pass) is unchanged: the
+ * real re-fetch always runs, so the mandatory pre-merge green confirmation is
+ * never skipped, only its network cost is — the safety property spec §5 calls
+ * out is untouched.
+ */
+export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {}) {
+  // #407 review nit: destructuring defaults already fire on an explicit `undefined`
+  // (isFreshGreenTransition's own `now = Date.now()`/`maxAgeMs = ...` params handle
+  // that), so passing `now`/`maxAgeMs` straight through is equivalent to — and
+  // simpler than — conditionally spreading them in.
+  if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs })) {
+    return { ok: true, green: true, viaFreshTransition: true };
+  }
   const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup'], { parseJson: true });
   if (!res.ok) return { ok: false, green: false, error: res.stderr || 'pr view failed' };
   const rollup = res.json?.statusCheckRollup ?? [];
@@ -73,7 +119,15 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
     log(`autopilot: ${why} — parking #${issue} at PR #${pr} (awaiting-human)`);
     return { ok: true, merged: false, parked: true, outcome: 'awaiting-human' };
   }
-  const ci = await ciGreen(ctx.gh, pr);
+  // #407 AC.2: a `ctx` resolved via `makeBoardCtx` carries `cwd` — read the
+  // forge-ci monitor's last observed state (if any) so a very recent known-
+  // green transition skips the redundant GraphQL re-fetch. A ctx without
+  // `cwd` (e.g. a test double) or a missing/stale/wrong-pr file both degrade
+  // to today's unconditional re-fetch — never a behavior change on their own.
+  // loadCiWatchState already never throws (internal try/catch in ci-watch.mjs) —
+  // no .catch() needed here (#407 review nit).
+  const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
+  const ci = await ciGreen(ctx.gh, pr, { freshState });
   if (!ci.ok) return { ok: false, error: ci.error };
   const bar = evaluateMergeBar({ ...signals, ci: ci.green }, { critical });
   if (!bar.merge) {

@@ -16,8 +16,15 @@ import {
   shouldPause, isFresh, configuredThresholdPct, loadUsage, evaluateSessionPause,
   DEFAULT_THRESHOLD_PCT, USAGE_RELPATH,
 } from '../../plugin/scripts/autopilot/sessionpause.mjs';
+import {
+  shouldPauseForBudget, budgetCheckDue, evaluateRateBudget,
+  DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N,
+} from '../../plugin/scripts/autopilot/ratebudget.mjs';
 import { writeJson } from '../../plugin/scripts/lib/jsonfile.mjs';
 import { CONFIG_RELPATH } from '../../plugin/scripts/lib/config.mjs';
+import { makeGh } from '../../plugin/scripts/lib/exec.mjs';
+import { writeCiWatchState, CI_WATCH_RELPATH } from '../../plugin/scripts/monitors/ci-watch.mjs';
+import { isFreshGreenTransition } from '../../plugin/scripts/autopilot/merge.mjs';
 
 const t = (number, status, priority = 'p1') => ({ number, status, priority, title: `#${number}` });
 
@@ -186,6 +193,43 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
     expect((await ciGreen(gh({ statusCheckRollup: [{ conclusion: 'SUCCESS' }, { conclusion: 'SKIPPED' }] }))).green).toBe(true);
   });
 
+  describe('ciGreen fresh-transition shortcut (AC-407.2) — reduces the 3 idle CI pollers to 2', () => {
+    const now = Date.parse('2026-08-08T12:00:00Z');
+
+    it('isFreshGreenTransition: same pr + pass + within the window -> true', () => {
+      const state = { pr: 9, state: 'pass', at: new Date(now - 5000).toISOString() };
+      expect(isFreshGreenTransition(state, 9, { now, maxAgeMs: 20000 })).toBe(true);
+    });
+
+    it('isFreshGreenTransition: wrong pr, non-pass, stale, or unparsable timestamp all fall through', () => {
+      const at = new Date(now - 5000).toISOString();
+      expect(isFreshGreenTransition({ pr: 10, state: 'pass', at }, 9, { now, maxAgeMs: 20000 })).toBe(false); // wrong pr
+      expect(isFreshGreenTransition({ pr: 9, state: 'pending', at }, 9, { now, maxAgeMs: 20000 })).toBe(false); // not pass
+      expect(isFreshGreenTransition({ pr: 9, state: 'fail', at }, 9, { now, maxAgeMs: 20000 })).toBe(false); // not pass
+      expect(isFreshGreenTransition({ pr: 9, state: 'pass', at: new Date(now - 999999).toISOString() }, 9, { now, maxAgeMs: 20000 })).toBe(false); // stale
+      expect(isFreshGreenTransition({ pr: 9, state: 'pass', at: 'not-a-date' }, 9, { now })).toBe(false); // unparsable
+      expect(isFreshGreenTransition(null, 9, { now })).toBe(false); // no state at all
+    });
+
+    it('ciGreen: a fresh known-green transition satisfies the check WITHOUT calling gh', async () => {
+      let calls = 0;
+      const gh = async () => { calls++; return { ok: true, json: { statusCheckRollup: [] } }; }; // would be NOT green if actually called
+      const freshState = { pr: 9, state: 'pass', at: new Date(now - 3000).toISOString() };
+      const res = await ciGreen(gh, 9, { freshState, now, maxAgeMs: 20000 });
+      expect(res).toMatchObject({ ok: true, green: true, viaFreshTransition: true });
+      expect(calls).toBe(0); // the redundant GraphQL re-fetch never fired
+    });
+
+    it('ciGreen: a stale/wrong-pr/missing freshState always falls through to the real re-fetch — the safety property stays intact', async () => {
+      let calls = 0;
+      const gh = async () => { calls++; return { ok: true, json: { statusCheckRollup: [{ conclusion: 'SUCCESS' }] } }; };
+      await ciGreen(gh, 9, { freshState: null });
+      await ciGreen(gh, 9, { freshState: { pr: 10, state: 'pass', at: new Date(now - 1000).toISOString() }, now });
+      await ciGreen(gh, 9, { freshState: { pr: 9, state: 'pass', at: new Date(now - 999999).toISOString() }, now });
+      expect(calls).toBe(3); // every one of these re-fetched — never skipped a red/stale/wrong-pr case
+    });
+  });
+
   it('runMerge: disabled → park; bar red → no merge call; all green → squash-merge', async () => {
     const calls = [];
     const gh = async (args) => {
@@ -259,6 +303,29 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     expect(res.blockedOn).toContain('security:critical');
     expect(res.escalate).toBe(true);
     expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('AC-407.2: a fresh forge-ci monitor transition on disk lets runMerge skip its own "pr view" re-fetch', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-merge-'));
+    await writeCiWatchState(cwd, { pr: 9, state: 'pass' }); // "at" defaults to now
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') throw new Error('should not re-fetch — a fresh transition was already on disk');
+      return { ok: true };
+    };
+    const res = await runMerge({ config: {}, gh, cwd }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res).toMatchObject({ ok: true, merged: true, outcome: 'merged' });
+    expect(calls.some((c) => c.startsWith('pr view'))).toBe(false);
+    expect(calls).toContain('pr merge 9 --squash --delete-branch');
+  });
+
+  it('AC-407.2: a stale/absent ci-watch.json still runs the real pre-merge re-check (no ctx.cwd or no file = today\'s behavior)', async () => {
+    const { calls, gh } = ghDouble(green);
+    // no cwd on ctx at all — must behave exactly as before this ticket
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res.merged).toBe(true);
+    expect(calls).toContain('pr view 9 --json statusCheckRollup');
   });
 });
 
@@ -734,5 +801,63 @@ describe('autopilot session-window self-pause (#378, AC.6) — statusline-poll m
       expect(dec.pause).toBe(false);
       expect(dec.reason).toMatch(/stale/);
     });
+  });
+});
+
+// #407 AC.1/AC.4 — rateBudget() (#360 AC.4) was fully implemented and exported
+// but had zero callers. This wires it into the run-start preflight + a periodic
+// per-N-iterations recheck. Mirrors #360's own exec.test.mjs style: hermetic,
+// injected gh, no real API, no real sleep.
+describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateBudget() finally wired in', () => {
+  it('shouldPauseForBudget pauses ONLY on a COMPLETED low reading', () => {
+    expect(shouldPauseForBudget({ ok: true, low: true, remaining: 50, limit: 5000 })).toBe(true);
+    expect(shouldPauseForBudget({ ok: true, low: false, remaining: 4000, limit: 5000 })).toBe(false);
+    expect(shouldPauseForBudget({ ok: false, error: 'boom' })).toBe(false); // a failed check never pauses
+    expect(shouldPauseForBudget(null)).toBe(false);
+    expect(shouldPauseForBudget(undefined)).toBe(false);
+  });
+
+  it('budgetCheckDue: fires only every Nth iteration — never on iteration 0 (the run-start check owns that)', () => {
+    expect(DEFAULT_CHECK_EVERY_N).toBe(10);
+    expect(budgetCheckDue(0)).toBe(false);
+    expect(budgetCheckDue(1)).toBe(false);
+    expect(budgetCheckDue(9)).toBe(false);
+    expect(budgetCheckDue(10)).toBe(true);
+    expect(budgetCheckDue(20)).toBe(true);
+    expect(budgetCheckDue(11)).toBe(false);
+    expect(budgetCheckDue(5, 5)).toBe(true); // a custom cadence
+  });
+
+  it('AC-407.4: evaluateRateBudget PAUSES the run on a mocked low-budget rate_limit response — no real API, no real sleep', async () => {
+    let calls = 0;
+    const gh = makeGh(async (cmd, args) => {
+      calls++;
+      expect(args).toEqual(['api', 'rate_limit']);
+      return { ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 120, reset: 100 } } }), stderr: '' };
+    });
+    const decision = await evaluateRateBudget(gh, { lowWater: 200 });
+    expect(decision).toMatchObject({ pause: true, ok: true });
+    expect(decision.budget).toMatchObject({ remaining: 120, limit: 5000, low: true });
+    expect(decision.reason).toMatch(/GraphQL budget low/);
+    expect(decision.reason).toContain('remaining 120/5000');
+    expect(calls).toBe(1); // one check, synchronous — no polling/sleeping involved
+  });
+
+  it('AC-407.1: a comfortable budget does not pause the run', async () => {
+    const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 4000, reset: 0 } } }), stderr: '' }));
+    const decision = await evaluateRateBudget(gh, { lowWater: DEFAULT_LOW_WATER });
+    expect(decision).toMatchObject({ pause: false, ok: true });
+    expect(decision.reason).toMatch(/budget OK/);
+  });
+
+  it('spec §3.1: a FAILED budget check degrades to reactive per-call retry — it never hard-blocks the run', async () => {
+    const gh = makeGh(async () => ({ ok: false, code: 1, stdout: '', stderr: 'network down' }));
+    const decision = await evaluateRateBudget(gh);
+    expect(decision).toMatchObject({ pause: false, ok: false });
+    expect(decision.reason).toMatch(/degrading to reactive per-call retry, not pausing/);
+  });
+
+  it('DEFAULT_LOW_WATER matches rateBudget\'s own default (200)', () => {
+    expect(DEFAULT_LOW_WATER).toBe(200);
   });
 });

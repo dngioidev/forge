@@ -40,6 +40,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [#307 — agy emit relocatable](plans/2026-08-04-307-agy-emit-relocatable.md) — tasks for #307 (epic #174): emit plugin-root-relative paths in `mcp_config.json` + `hooks.json` so the package survives `agy plugin install` (copy) and deletion of the `--out` dir.
 - [#386 — graph availability notice](plans/2026-08-06-386-graph-availability-notice.md) — tasks for #386 (parent #182): `forge:doctor` advises when `tsconfig.json` is present and `features.graph` isn't on, with the 3-step enable sequence.
 - [#389 — scaffold docs structure](plans/2026-08-06-389-scaffold-docs-structure.md) — tasks for #389 (parent #182): `forge:init` seeds `docs/{specs,plans,spikes,design,decisions,guides}/` + a route-index template on a fresh scaffold only, never on adopt; the convention documented as a named rule in `docs/guides/install.md`.
+- [#407 — GraphQL call reduction](plans/2026-08-08-407-graphql-call-reduction.md) — tasks for #407 (parent #183): wires the dead `rateBudget()` preflight into autopilot's run-start + periodic checks, threads the `forge-ci` monitor's fresh transition into `merge.mjs`'s `ciGreen()` to cut a redundant CI-status poll, and memoizes `lib/board.mjs`'s repo/field lookups per `gh` instance.
 
 ## Spikes
 
