@@ -10,5 +10,11 @@
     "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitors/decisions-watch.mjs\"",
     "description": "Answered escalation decisions (.forge/decisions)",
     "when": "on-skill-invoke:autopilot"
+  },
+  {
+    "name": "forge-outbox",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitors/outbox-watch.mjs\"",
+    "description": "Local GitHub outbox drain status (.forge/autopilot/outbox.json)",
+    "when": "on-skill-invoke:autopilot"
   }
 ]

@@ -954,4 +954,140 @@ describe('status (AC-2.6)', () => {
     expect(res.text).toContain('🚩 blocked: #3  Foo'); // two spaces, same as the pre-split behavior
     expect(res.data.blocked).toEqual([{ number: 3, title: ' Foo' }]); // raw title in the data
   });
+
+  it('AC-414.4: computeStatus/runStatus surface outboxPending, silent when 0', async () => {
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      ['pr list', { stdout: '[]' }],
+    ]);
+    const clean = await runStatus(ctx, noop);
+    expect(clean.data.outboxPending).toBe(0);
+    expect(clean.text).not.toContain('outbox');
+
+    const { enqueue } = await import('../plugin/scripts/lib/outbox.mjs');
+    await enqueue(ctx.cwd, { op: 'comment', args: { issue: 1, phase: 'note', body: 'x' } });
+    const withPending = await runStatus(ctx, noop);
+    expect(withPending.data.outboxPending).toBe(1);
+    expect(withPending.text).toContain('outbox: 1 write(s) queued');
+  });
+});
+
+// #414 — local GitHub outbox: the five queue-eligible board writes defer
+// instead of hard-failing when GitHub looks unreachable, and replay cleanly
+// once it's up again. Uses a fast gh (maxRetries:0, no sleep) so a
+// rate-limit-shaped fixture response returns immediately instead of paying
+// `makeGh`'s real multi-second backoff (the default `ctxWith`/`fakeGh` above
+// always use the live default sleep, which is fine for the success-path
+// suites elsewhere in this file but would make these tests slow/flaky).
+describe('outbox deferral (#414) — safe-to-defer writes queue instead of hard-failing', () => {
+  const RATE_LIMITED = 'API rate limit exceeded for installation ID 123.';
+
+  async function fastCtxWith(routes) {
+    const { makeGh } = await import('../plugin/scripts/lib/exec.mjs');
+    const calls = [];
+    const execFn = async (cmd, args) => {
+      const joined = args.join(' ');
+      calls.push(joined);
+      for (const [pred, res] of [['repo view', REPO_VIEW], ...routes]) {
+        const hit = typeof pred === 'string' ? joined.startsWith(pred) : pred(joined, args);
+        if (hit) {
+          const r = typeof res === 'function' ? res(joined, args) : res;
+          return { ok: r.ok ?? true, code: r.code ?? (r.ok === false ? 1 : 0), stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+        }
+      }
+      return { ok: false, code: 1, stdout: '', stderr: `fastCtxWith: unrouted call: gh ${joined}` };
+    };
+    const gh = makeGh(execFn, { sleep: async () => {}, maxRetries: 0 });
+    const ctx = await makeBoardCtx({ gh, cwd: await cwdWithConfig() });
+    expect(ctx.ok).toBe(true);
+    return { ctx, calls };
+  }
+
+  it('AC-414.1: comment defers on a rate-limited failure instead of hard-failing, and replays once reachable', async () => {
+    const { ctx } = await fastCtxWith([
+      [(j) => j.includes('/comments?'), { ok: false, stderr: RATE_LIMITED }],
+    ]);
+    const deferred = await runComment(ctx, commentArgs(['--issue', '9', '--phase', 'note', '--body', 'hi']), noop);
+    expect(deferred).toMatchObject({ ok: true, deferred: true });
+    const { pendingCount, drain } = await import('../plugin/scripts/lib/outbox.mjs');
+    expect(await pendingCount(ctx.cwd)).toBe(1);
+
+    // GitHub recovers — a drain now succeeds and the queue empties.
+    const { ctx: liveCtx } = await fastCtxWith([
+      [(j) => j.includes('/comments?'), { stdout: '[]' }],
+      [(j) => j.includes('/comments') && !j.includes('?') && j.includes('-f'), { stdout: JSON.stringify({ id: 1 }) }],
+    ]);
+    liveCtx.cwd = ctx.cwd; // same queue, now-reachable gh
+    const drained = await drain(ctx.cwd, liveCtx, noop);
+    expect(drained).toMatchObject({ ok: true, drained: 1, remaining: 0 });
+    expect(await pendingCount(ctx.cwd)).toBe(0);
+  });
+
+  it('comment does NOT defer a real (non-reachability) failure — e.g. an unknown phase never even reaches gh', async () => {
+    const { ctx } = await fastCtxWith([]);
+    const res = await runComment(ctx, commentArgs(['--issue', '9', '--phase', 'bogus', '--body', 'hi']), noop);
+    expect(res).toMatchObject({ ok: false });
+    expect(res.deferred).toBeUndefined();
+  });
+
+  it('AC-414.1: move defers on a rate-limited failure and is a real ok:true, changed board-status drift', async () => {
+    const { ctx } = await fastCtxWith([
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_2', content: { number: 5 }, status: 'In progress' }])],
+      [(j) => j.startsWith('project item-edit'), { ok: false, stderr: RATE_LIMITED }],
+    ]);
+    const res = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
+    expect(res).toMatchObject({ ok: true, deferred: true });
+    const { pendingCount } = await import('../plugin/scripts/lib/outbox.mjs');
+    expect(await pendingCount(ctx.cwd)).toBe(1);
+  });
+
+  it('AC-414.1: receipt defers on a rate-limited failure', async () => {
+    const { ctx } = await fastCtxWith([
+      [(j) => j.includes('/comments?'), { ok: false, stderr: RATE_LIMITED }],
+    ]);
+    const res = await runReceipt(ctx, { issue: 1, pr: 16, sha: 'abc1234', title: 'x' }, noop);
+    expect(res).toMatchObject({ ok: true, deferred: true });
+  });
+
+  it('AC-414.1: log defers on a rate-limited failure, pinning the resolved date for replay', async () => {
+    const { ctx } = await fastCtxWith([
+      [(j) => j.includes('/comments?'), { ok: false, stderr: RATE_LIMITED }],
+    ]);
+    const res = await runLog(ctx, { pr: 16, sha: 'abc1234', title: 'x', issues: '1' }, noop);
+    expect(res).toMatchObject({ ok: true, deferred: true });
+    const { pendingCount } = await import('../plugin/scripts/lib/outbox.mjs');
+    expect(await pendingCount(ctx.cwd)).toBe(1);
+    const { readJson } = await import('../plugin/scripts/lib/jsonfile.mjs');
+    const { OUTBOX_RELPATH } = await import('../plugin/scripts/lib/outbox.mjs');
+    const box = await readJson(join(ctx.cwd, OUTBOX_RELPATH));
+    expect(box.items[0].args.date).toMatch(/^\d{4}-\d{2}-\d{2}$/); // resolved, not left to be re-derived at replay time
+  });
+
+  it('AC-414.1: digest defers on a rate-limited setIssueBody failure', async () => {
+    const { ctx } = await fastCtxWith([
+      [(j) => j.includes('subIssues'), { stdout: JSON.stringify({ data: { repository: { issue: { subIssues: { nodes: [] } } } } }) }],
+      [(j) => j.startsWith('project item-list'), itemList([])],
+      ['issue view 2', { stdout: JSON.stringify({ body: 'intro', title: 'Epic', state: 'OPEN' }) }],
+      [(j) => j.startsWith('issue edit'), { ok: false, stderr: RATE_LIMITED }],
+    ]);
+    const res = await runDigest(ctx, { epic: 2 }, noop);
+    expect(res).toMatchObject({ ok: true, deferred: true, rows: 0 });
+  });
+
+  it('AC-414.2: never-defer call sites are untouched by outbox behavior — escalate.mjs\'s decision comment still hard-fails on the same error', async () => {
+    const { runEscalate } = await import('../plugin/scripts/board/escalate.mjs');
+    const { ctx } = await fastCtxWith([
+      [(j) => j.includes('/comments?'), { ok: false, stderr: RATE_LIMITED }],
+      // already 'blocked' so runEscalate's own board-move sub-step (which DOES
+      // go through move.mjs's outbox-aware path) is a no-op with no gh calls —
+      // isolating this test to the ONE thing it's pinning: the decision
+      // comment itself never defers.
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_2', content: { number: 5 }, status: 'Blocked / Needs decision' }])],
+    ]);
+    const res = await runEscalate(ctx, { issue: 5, reason: 'need a call', options: 'a|b', recommend: null, context: '' }, noop);
+    expect(res.ok).toBe(false); // NOT deferred — the decision comment must never silently queue
+    expect(res.deferred).toBeUndefined();
+    const { pendingCount } = await import('../plugin/scripts/lib/outbox.mjs');
+    expect(await pendingCount(ctx.cwd)).toBe(0);
+  });
 });

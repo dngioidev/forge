@@ -12,6 +12,7 @@ import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { getSubIssues, getIssueBody, setIssueBody } from '../lib/issues.mjs';
 import { upsertBlock } from '../lib/markers.mjs';
 import { read as readJournal } from '../lib/journal.mjs';
+import { attemptOrDefer } from '../lib/outbox.mjs';
 
 const METRIC_KINDS = ['gate-fail', 'cmd-fail', 'blocked-edit', 'backend-fallback', 'escalation', 'incident'];
 
@@ -114,8 +115,22 @@ export async function runDigest(ctx, args, log = console.log) {
     log(`digest: #${args.epic} unchanged`);
     return { ok: true, changed: false, rows: rows.length };
   }
-  const set = await setIssueBody(ctx.gh, args.epic, updated);
+  // #414: a fully idempotent recompute-and-overwrite from a fresh read each
+  // call — not latency-sensitive, nothing downstream keys off it landing at a
+  // specific time — safe to queue and replay when GitHub recovers. On replay
+  // `runDigest` recomputes `updated` from a fresh read rather than trusting
+  // this stale rendering, so a replay after other changes landed still writes
+  // the CURRENT truth, not a stale snapshot.
+  const set = await attemptOrDefer(ctx, {
+    op: 'digest',
+    args,
+    attempt: () => setIssueBody(ctx.gh, args.epic, updated),
+  });
   if (!set.ok) return set;
+  if (set.deferred) {
+    log(`digest: #${args.epic} deferred to outbox (GitHub unreachable) — ${set.id}`);
+    return { ...set, rows: rows.length };
+  }
   log(`digest: #${args.epic} refreshed (${rows.length} children)`);
   return { ok: true, changed: true, rows: rows.length };
 }

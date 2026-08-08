@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readJson, writeJson } from '../lib/jsonfile.mjs';
 import { mergeAuthPreflight } from './preflight.mjs';
+import { pendingCount as outboxPendingCount } from '../lib/outbox.mjs';
 
 export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human'];
@@ -93,7 +94,14 @@ export function nextIteration(run, boardSize, factor = 2) {
   };
 }
 
-export function renderReport(run) {
+/**
+ * `outboxPending` (#414, spike §4) is an optional, purely additive line: how
+ * many deferred board writes (`.forge/autopilot/outbox.json`) are still
+ * queued at report time. Read-only — never changes the outcome tallies above,
+ * never manufactures a `blocked` ticket. Defaults to 0 so an omitted arg is
+ * silent (no behavior change for a caller that hasn't wired the outbox read).
+ */
+export function renderReport(run, { outboxPending = 0 } = {}) {
   const by = (o) => run.outcomes.filter((x) => x.outcome === o);
   const line = (o) => {
     const items = by(o);
@@ -105,6 +113,7 @@ export function renderReport(run) {
     run.filed.length ? `  filed: ${run.filed.map((f) => `#${f.issue} (${f.kind})`).join(', ')}` : null,
   ].filter(Boolean);
   if (parts.length === 1) parts.push('  (nothing actionable — board was already clear)');
+  if (outboxPending > 0) parts.push(`  outbox: ${outboxPending} item(s) still queued (GitHub unreachable for part of this run)`);
   return parts.join('\n');
 }
 
@@ -151,8 +160,8 @@ if (isMain) {
     // A genuine read failure on an existing run.json (EACCES/EBUSY/AV-lock) now
     // propagates (#185) — catch it so it exits cleanly instead of surfacing as a
     // raw unhandled-rejection trace (#204).
-    loadRun(process.cwd())
-      .then((run) => console.log(renderReport(run)))
+    Promise.all([loadRun(process.cwd()), outboxPendingCount(process.cwd()).catch(() => 0)])
+      .then(([run, outboxPending]) => console.log(renderReport(run, { outboxPending })))
       .catch((err) => { console.error(`ledger report failed: ${err.message}`); process.exit(1); });
   } else {
     console.error('usage: ledger.mjs report');

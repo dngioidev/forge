@@ -5,7 +5,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rollupState, transition, poll as ciPoll, isNoPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH, allQueued } from '../../plugin/scripts/monitors/ci-watch.mjs';
 import { newlyResolved, poll as decisionsPoll } from '../../plugin/scripts/monitors/decisions-watch.mjs';
+import { probeReachable, poll as outboxPoll } from '../../plugin/scripts/monitors/outbox-watch.mjs';
 import { trackFailure, freshGuard, FAILURE_THRESHOLD, REEMIT_EVERY } from '../../plugin/scripts/monitors/poll-guard.mjs';
+import { makeBoardCtx } from '../../plugin/scripts/lib/boardctx.mjs';
+import { makeGh } from '../../plugin/scripts/lib/exec.mjs';
+import { enqueue, pendingCount } from '../../plugin/scripts/lib/outbox.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -178,6 +182,116 @@ describe('decisions monitor (#151)', () => {
   });
 });
 
+// #414 — outbox monitor: mirrors forge-ci/forge-decisions' poll-transition
+// idiom, but for `.forge/autopilot/outbox.json`'s pending count. Reuses
+// #407/#408's isRateLimited/isPlatformOutage detectors for reachability
+// rather than inventing a new signal (spike §3).
+describe('outbox monitor (#414)', () => {
+  const RATE_LIMITED = { ok: false, code: 1, stdout: '', stderr: 'API rate limit exceeded for installation ID 123.' };
+  const REPO_VIEW = { ok: true, stdout: JSON.stringify({ owner: { login: 'dngioidev' }, name: 'forge', defaultBranchRef: { name: 'main' } }) };
+  const CFG = {
+    board: {
+      projectNumber: 8,
+      projectId: 'PVT_test',
+      fields: {
+        status: { id: 'PVTSSF_s', options: { backlog: 'sb', ready: 'sr', inProgress: 'sp', inReview: 'sv', blocked: 'sk', done: 'sd', wontDo: 'sw' } },
+        priority: { id: 'PVTSSF_p', options: { p0: 'a', p1: 'b', p2: 'c' } },
+        size: { id: 'PVTSSF_z', options: { xs: '1', s: '2', m: '3', l: '4', xl: '5' } },
+        type: { id: 'PVTSSF_t', options: { epic: 'e', item: 'i', bug: 'g', test: 't' } },
+      },
+      deliveryLogIssue: 15,
+    },
+    team: { members: [{ github: 'dngioidev', roles: ['maintainer'] }] },
+  };
+
+  async function ctxWithRoutes(routes) {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-outbox-watch-'));
+    await mkdir(join(dir, '.claude'), { recursive: true });
+    await writeFile(join(dir, '.claude', 'forge.json'), JSON.stringify(CFG), 'utf8');
+    const execFn = async (cmd, args) => {
+      const joined = args.join(' ');
+      for (const [pred, res] of [['repo view', REPO_VIEW], ...routes]) {
+        const hit = typeof pred === 'string' ? joined.startsWith(pred) : pred(joined, args);
+        if (hit) return typeof res === 'function' ? res(joined, args) : res;
+      }
+      return { ok: false, code: 1, stdout: '', stderr: `unrouted: gh ${joined}` };
+    };
+    const gh = makeGh(execFn, { sleep: async () => {}, maxRetries: 0 });
+    const ctx = await makeBoardCtx({ gh, cwd: dir });
+    expect(ctx.ok).toBe(true);
+    return ctx;
+  }
+
+  describe('probeReachable', () => {
+    it('a successful rate_limit probe means reachable', async () => {
+      const ctx = await ctxWithRoutes([['api rate_limit', { ok: true, stdout: '{}' }]]);
+      expect(await probeReachable(ctx.gh)).toEqual({ ok: true, reachable: true });
+    });
+    it('a rate-limited probe response means NOT reachable, but is not itself an error', async () => {
+      const ctx = await ctxWithRoutes([['api rate_limit', RATE_LIMITED]]);
+      expect(await probeReachable(ctx.gh)).toEqual({ ok: true, reachable: false });
+    });
+    it('a platform-outage-shaped probe failure also means NOT reachable', async () => {
+      const ctx = await ctxWithRoutes([['api rate_limit', { ok: false, stderr: 'Service Unavailable resolving action-download-info' }]]);
+      expect(await probeReachable(ctx.gh)).toEqual({ ok: true, reachable: false });
+    });
+    it('any other probe failure is a real error, not a reachability signal', async () => {
+      const ctx = await ctxWithRoutes([['api rate_limit', { ok: false, stderr: 'authentication required' }]]);
+      const r = await probeReachable(ctx.gh);
+      expect(r).toMatchObject({ ok: false, reachable: false });
+      expect(r.reason).toMatch(/authentication required/);
+    });
+  });
+
+  describe('poll', () => {
+    it('an empty queue is cheap and silent — no gh call at all', async () => {
+      const ctx = await ctxWithRoutes([]); // no rate_limit route registered — a call here would 404 the test
+      const r = await outboxPoll(ctx, 0);
+      expect(r).toMatchObject({ ok: true, line: null, prevPending: 0 });
+    });
+
+    it('draining to empty from a nonzero prevPending emits exactly one "drained" line', async () => {
+      const ctx = await ctxWithRoutes([]);
+      const r = await outboxPoll(ctx, 3);
+      expect(r).toMatchObject({ ok: true, line: 'forge-outbox: drained — 0 item(s) queued', prevPending: 0 });
+    });
+
+    it('pending + unreachable emits a line only on a transition, silent when unchanged', async () => {
+      const ctx = await ctxWithRoutes([['api rate_limit', RATE_LIMITED]]);
+      await enqueue(ctx.cwd, { op: 'comment', args: { issue: 1, phase: 'note', body: 'x' } });
+      const first = await outboxPoll(ctx, 0);
+      expect(first).toMatchObject({ ok: true, prevPending: 1, line: 'forge-outbox: 1 item(s) queued (GitHub unreachable)' });
+      const second = await outboxPoll(ctx, first.prevPending);
+      expect(second).toMatchObject({ ok: true, prevPending: 1, line: null }); // unchanged — silent
+    });
+
+    it('pending + reachable drains and reports the new remaining count', async () => {
+      const ctx = await ctxWithRoutes([
+        ['api rate_limit', { ok: true, stdout: '{}' }],
+        [(j) => j.includes('/comments?'), { ok: true, stdout: '[]' }],
+        [(j) => j.includes('/comments') && !j.includes('?') && j.includes('-f'), { ok: true, stdout: JSON.stringify({ id: 1 }) }],
+      ]);
+      await enqueue(ctx.cwd, { op: 'comment', args: { issue: 1, phase: 'note', body: 'x' } });
+      const r = await outboxPoll(ctx, 1);
+      expect(r).toMatchObject({ ok: true, prevPending: 0, line: 'forge-outbox: drained — 0 item(s) queued' });
+      expect(await pendingCount(ctx.cwd)).toBe(0);
+    });
+
+    it('a non-outage drain failure is surfaced immediately as an escalation-worthy line', async () => {
+      const ctx = await ctxWithRoutes([
+        ['api rate_limit', { ok: true, stdout: '{}' }],
+        [(j) => j.includes('/comments?'), { ok: false, stderr: 'HTTP 404: Not Found' }],
+      ]);
+      await enqueue(ctx.cwd, { op: 'comment', args: { issue: 999999, phase: 'note', body: 'x' } });
+      const r = await outboxPoll(ctx, 1);
+      expect(r.ok).toBe(true); // the POLL itself didn't crash — it reports the failure as a line
+      expect(r.drainFailed).toBe(true);
+      expect(r.line).toMatch(/drain failed/);
+      expect(r.line).toMatch(/escalation warranted/);
+    });
+  });
+});
+
 describe('monitor persistent-error surfacing (#318)', () => {
   // Drive the pure guard over a poll sequence, collecting every surfaced line.
   const drive = (results, name = 'forge-ci') => {
@@ -248,14 +362,14 @@ describe('monitor persistent-error surfacing (#318)', () => {
 });
 
 describe('monitors manifest', () => {
-  it('declares the two autopilot watchers with when: on-skill-invoke:autopilot', async () => {
+  it('declares the three autopilot watchers with when: on-skill-invoke:autopilot', async () => {
     const arr = JSON.parse(await readFile(join(root, 'plugin', 'monitors', 'monitors.json'), 'utf8'));
-    expect(arr).toHaveLength(2);
+    expect(arr).toHaveLength(3);
     for (const m of arr) {
       expect(m.name && m.command && m.description).toBeTruthy();
       expect(m.command).toContain('${CLAUDE_PLUGIN_ROOT}');
       expect(m.when).toBe('on-skill-invoke:autopilot');
     }
-    expect(arr.map((m) => m.name).sort()).toEqual(['forge-ci', 'forge-decisions']);
+    expect(arr.map((m) => m.name).sort()).toEqual(['forge-ci', 'forge-decisions', 'forge-outbox']);
   });
 });

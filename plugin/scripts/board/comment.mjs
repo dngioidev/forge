@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { upsertMarkedComment } from '../lib/issues.mjs';
+import { attemptOrDefer } from '../lib/outbox.mjs';
 
 export const PHASES = ['started', 'spec', 'plan', 'pr', 'gate-fail', 'escalation', 'ci-green', 'merged', 'note'];
 
@@ -31,8 +32,18 @@ export async function runComment(ctx, args, log = console.log) {
   // #108: optional actor + session so a picked ticket records who + which session.
   const meta = [args.actor && `by @${args.actor}`, args.session && `session \`${args.session}\``].filter(Boolean).join(' · ');
   const content = `**forge trail** — ${args.body}${meta ? `\n\n<sub>${meta}</sub>` : ''}`;
-  const res = await upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, args.issue, `trail:${args.phase}`, content);
+  // #414: a pure narration write (nothing waits on it landing immediately) —
+  // safe to queue and replay when GitHub recovers rather than hard-fail.
+  const res = await attemptOrDefer(ctx, {
+    op: 'comment',
+    args,
+    attempt: () => upsertMarkedComment(ctx.gh, ctx.owner, ctx.repo, args.issue, `trail:${args.phase}`, content),
+  });
   if (!res.ok) return res;
+  if (res.deferred) {
+    log(`#${args.issue} trail:${args.phase} deferred to outbox (GitHub unreachable) — ${res.id}`);
+    return res;
+  }
   log(`#${args.issue} trail:${args.phase} ${res.action}`);
   return res;
 }
