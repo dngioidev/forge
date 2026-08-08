@@ -7,9 +7,10 @@
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { run, makeGh } from '../lib/exec.mjs';
+import { run, makeGh, isPlatformOutage, platformOutageNotice } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { loadCiWatchState } from '../monitors/ci-watch.mjs';
+import { append as journalAppend } from '../lib/journal.mjs';
 
 /**
  * The five MECHANICAL signals of the merge bar (spec §4 items 1–5). All must be
@@ -91,7 +92,10 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
   if (isFreshGreenTransition(freshState, pr, { now, maxAgeMs })) {
     return { ok: true, green: true, viaFreshTransition: true };
   }
-  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup'], { parseJson: true });
+  // headRefName rides along (#408): a red result may need `classifyCiFailure`
+  // below, which needs the branch — one field added to an existing call, not
+  // an extra round-trip.
+  const res = await gh(['pr', 'view', String(pr), '--json', 'statusCheckRollup,headRefName'], { parseJson: true });
   if (!res.ok) return { ok: false, green: false, error: res.stderr || 'pr view failed' };
   const rollup = res.json?.statusCheckRollup ?? [];
   if (rollup.length === 0) return { ok: true, green: false, reason: 'no checks reported yet' };
@@ -99,7 +103,58 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
     const state = c.conclusion ?? c.state; // CheckRun uses conclusion; StatusContext uses state
     return state !== 'SUCCESS' && state !== 'NEUTRAL' && state !== 'SKIPPED';
   });
-  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context) };
+  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null };
+}
+
+/**
+ * #408 AC.1/AC.2 — before treating a red/pending CI result as a real gate
+ * failure, rule out a GitHub Actions platform outage. Only fires when
+ * `ciGreen` already found actual bad checks (`pending.length > 0`) — an
+ * empty rollup ("no checks reported yet") is just "too early," not a
+ * signature to investigate, so it costs nothing extra in that (common)
+ * case. Bounded to one extra `gh` round-trip: `run list` for the branch's
+ * latest run, and only when that run is still non-terminal or failed,
+ * `run view --log-failed` for the outage text. Never throws on a
+ * missing/malformed response — degrades to "not an outage" so a genuine
+ * regression is never masked as GitHub's fault.
+ */
+export async function classifyCiFailure(gh, { branch, stuckQueuedMs } = {}) {
+  if (!branch) return { outage: false, reason: null };
+  const runs = await gh(['run', 'list', '--branch', branch, '--limit', '1', '--json', 'databaseId,status,createdAt'], { parseJson: true });
+  const latest = runs.ok && Array.isArray(runs.json) ? runs.json[0] : null;
+  if (!latest) return { outage: false, reason: null };
+  if (latest.status && latest.status !== 'completed') {
+    const queuedForMs = Date.now() - new Date(latest.createdAt).getTime();
+    const outageOpts = stuckQueuedMs != null ? { stuckQueuedMs } : {};
+    if (isPlatformOutage({ status: 'QUEUED', queuedForMs }, outageOpts)) {
+      return { outage: true, reason: `job stuck ${latest.status} for ${Math.round(queuedForMs / 60000)}m with no progress` };
+    }
+    return { outage: false, reason: null };
+  }
+  const log = await gh(['run', 'view', String(latest.databaseId), '--log-failed']);
+  if (isPlatformOutage(log)) {
+    return { outage: true, reason: 'GitHub Actions returned Service Unavailable resolving action-download-info' };
+  }
+  return { outage: false, reason: null };
+}
+
+/**
+ * #408 AC.2 — the empirically-proven recovery: force a fresh commit SHA via a
+ * trivial rebase + `--force-with-lease` repush. Re-running the SAME SHA
+ * (`gh run rerun --failed`) did not reliably help this session (spec §2.2) —
+ * only a new SHA broke the stuck-queue pattern. `execRun` is injected
+ * (mirrors exec.mjs's own DI convention for `run`), so no real git/network
+ * runs in tests.
+ */
+export async function forceNewSha(execRun, { base = 'origin/main' } = {}) {
+  const [, remote, ref] = /^(\w+)\/(.+)$/.exec(base) ?? [null, 'origin', base];
+  const fetch = await execRun('git', ['fetch', remote, ref]);
+  if (!fetch.ok) return { ok: false, error: fetch.stderr || 'git fetch failed' };
+  const rebase = await execRun('git', ['rebase', base]);
+  if (!rebase.ok) return { ok: false, error: rebase.stderr || 'git rebase failed — resolve conflicts before retrying' };
+  const push = await execRun('git', ['push', '--force-with-lease']);
+  if (!push.ok) return { ok: false, error: push.stderr || 'git push --force-with-lease failed' };
+  return { ok: true };
 }
 
 /**
@@ -111,8 +166,26 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
  * the effective merge mode from the preflight, recorded in run.json; pr-only
  * carries autoMergeEnabled:false semantics so a run with no live grant never
  * attempts a merge that would stall.
+ *
+ * #408 AC.2/AC.3 — before a real (non-empty) bad-checks result routes to the
+ * ordinary "blocked on ci" fix-wave/escalation path, it is classified: is
+ * this GitHub's Actions infra being down, or an actual failure? An outage
+ * gets the empirically-proven recovery (a fresh commit SHA via rebase +
+ * repush), bounded by `maxOutageAttempts` (default 2, "a small number" per
+ * the ticket) and threaded across separate invocations via `outageAttempt` —
+ * the same pattern the orchestrator already uses for `signals` (it holds the
+ * count, this stays a thin per-call gate). A successful recovery returns
+ * `outcome:'retry'` (a fresh SHA was just pushed — CI must be re-watched, not
+ * re-checked instantly) rather than either merging or escalating. Exhausted
+ * attempts fall through to a real "blocked on ci" result, but with an honest,
+ * distinguishing reason (AC.3) instead of silently treating GitHub's outage
+ * as if the change itself were broken. Every outage event is journaled
+ * (AC.4) — `gate-fail` with `outage:true` — so the run report and
+ * `board digest` can tell a real fix wave from GitHub being down twice.
+ * `deps` overrides the IO (`execRun`, `classify`, `journal`) for tests — no
+ * real git/gh/network runs unless the outage path actually triggers.
  */
-export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null }, log = console.log) {
+export async function runMerge(ctx, { issue, pr, signals = {}, critical = false, mode = null, outageAttempt = 0, maxOutageAttempts = 2 } = {}, log = console.log, deps = {}) {
   if (!Number.isInteger(issue) || !Number.isInteger(pr)) return { ok: false, error: '--issue and --pr are required' };
   if (mode === 'pr-only' || !autoMergeEnabled(ctx.config)) {
     const why = mode === 'pr-only' ? 'merge-auth preflight resolved pr-only (no in-session grant)' : 'features.autopilotAutoMerge=false';
@@ -129,6 +202,32 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   const freshState = ctx.cwd ? await loadCiWatchState(ctx.cwd) : null;
   const ci = await ciGreen(ctx.gh, pr, { freshState });
   if (!ci.ok) return { ok: false, error: ci.error };
+  if (!ci.green && ci.pending?.length) {
+    const classify = deps.classifyCiFailure ?? classifyCiFailure;
+    const cls = await classify(ctx.gh, { branch: ci.branch });
+    if (cls.outage) {
+      const journal = deps.journalAppend ?? journalAppend;
+      if (outageAttempt >= maxOutageAttempts) {
+        const reason = `GitHub Actions platform outage, not your change (${cls.reason}) — recovery exhausted after ${maxOutageAttempts} attempt(s)`;
+        log(`autopilot: ${reason}`);
+        if (ctx.cwd) await journal(ctx.cwd, 'gate-fail', { gate: 'ci', ticket: `#${issue}`, pr, outage: true, phase: 'exhausted', reason: cls.reason, attempts: outageAttempt });
+        return { ok: false, merged: false, blockedOn: ['ci'], outage: true, outageExhausted: true, reason };
+      }
+      log(platformOutageNotice(cls.reason, outageAttempt + 1, maxOutageAttempts));
+      const force = deps.forceNewSha ?? forceNewSha;
+      const execRun = deps.execRun ?? run;
+      const recovered = await force(execRun);
+      if (ctx.cwd) {
+        await journal(ctx.cwd, 'gate-fail', {
+          gate: 'ci', ticket: `#${issue}`, pr, outage: true,
+          phase: recovered.ok ? 'recovered' : 'recovery-failed',
+          reason: cls.reason, attempt: outageAttempt + 1,
+        });
+      }
+      if (!recovered.ok) return { ok: false, error: recovered.error };
+      return { ok: true, merged: false, retried: true, outage: true, outageAttempt: outageAttempt + 1, outcome: 'retry' };
+    }
+  }
   const bar = evaluateMergeBar({ ...signals, ci: ci.green }, { critical });
   if (!bar.merge) {
     log(`autopilot: merge bar RED for #${issue} — blocked on ${bar.blockedOn.join(', ')}${bar.escalate ? ' (escalate)' : ''}`);
@@ -141,11 +240,14 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
 }
 
 function parseArgs(argv) {
-  const a = { issue: null, pr: null, signals: {}, critical: false };
+  const a = { issue: null, pr: null, signals: {}, critical: false, outageAttempt: 0 };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--issue') a.issue = Number(argv[++i]);
     else if (argv[i] === '--pr') a.pr = Number(argv[++i]);
     else if (argv[i] === '--critical') a.critical = true;
+    // #408 — the orchestrator threads the attempt count across separate
+    // invocations (a fresh SHA needs a fresh CI run to watch in between).
+    else if (argv[i] === '--outage-attempt') a.outageAttempt = Number(argv[++i]);
     else if (argv[i].startsWith('--') && BAR_SIGNALS.includes(argv[i].slice(2))) a.signals[argv[i].slice(2)] = true;
   }
   return a;

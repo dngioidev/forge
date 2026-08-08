@@ -98,6 +98,49 @@ export function rateLimitNotice(res, delayMs, attempt, max) {
   return `forge: GitHub API rate limit hit (remaining ${remaining}, reset in ~${secs}s) — backing off, retrying (attempt ${attempt}/${max})`;
 }
 
+/**
+ * #408 — GitHub Actions platform-outage detector.
+ *
+ * Distinct from #360's isRateLimited above: a rate limit means "you're being
+ * throttled"; a platform outage means "GitHub's Actions infra is down and
+ * this has nothing to do with your change" (spec `2026-08-08-github-
+ * resilience.md` §2.2). Conflating the two would misdirect the fix — a rate
+ * limit backs off and retries the SAME call; an outage needs a fresh commit
+ * SHA (§ forceNewSha in autopilot/merge.mjs), and retrying the same SHA does
+ * not reliably help (empirically observed).
+ *
+ * Two independent triggers, either sufficient, mirroring isRateLimited's pure
+ * shape (no live API, fixture-tested):
+ *  - textual: the job log (e.g. `gh run view --log-failed` output) contains
+ *    the action-catalog resolution failure — "Service Unavailable" while
+ *    GitHub resolves an action's download info. Both phrases must co-occur;
+ *    a bare "Service Unavailable" alone is too broad (lots of things 503).
+ *  - stuck-queued: a job has sat in QUEUED status past a generous threshold
+ *    with zero progress. This function stays pure/API-free — the caller
+ *    (the `forge-ci` monitor, which already tracks state across its own
+ *    polls) computes `queuedForMs` from its own clock and passes it in via
+ *    `res.status`/`res.queuedForMs`; no GitHub per-job timestamp is trusted
+ *    here.
+ */
+export function isPlatformOutage(res, { stuckQueuedMs = 15 * 60 * 1000 } = {}) {
+  if (!res) return false;
+  const text = `${res.stderr || ''}\n${res.stdout || ''}`;
+  if (/Service Unavailable/i.test(text) && /action[- ]?download[- ]?info/i.test(text)) return true;
+  if (String(res.status || '').toUpperCase() === 'QUEUED' && typeof res.queuedForMs === 'number' && res.queuedForMs >= stuckQueuedMs) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The honest line forge surfaces for an outage instead of treating it as a
+ * real gate failure (AC.3) — distinguishes "GitHub is down" from "your
+ * change is broken" at the point of detection, not just at final escalation.
+ */
+export function platformOutageNotice(reason, attempt, max) {
+  return `forge: GitHub Actions platform outage detected (${reason}) — not your change; attempting recovery (attempt ${attempt}/${max})`;
+}
+
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
-import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS } from '../../plugin/scripts/autopilot/merge.mjs';
+import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
@@ -859,5 +859,191 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
 
   it('DEFAULT_LOW_WATER matches rateBudget\'s own default (200)', () => {
     expect(DEFAULT_LOW_WATER).toBe(200);
+  });
+});
+
+// #408 — detect + auto-recover from GitHub Actions platform outages (distinct from #360's rate limiting).
+describe('classifyCiFailure (AC-408.1/AC-408.2, #408) — is a red CI result GitHub, or the change?', () => {
+  it('no branch known -> not an outage, no gh calls', async () => {
+    const calls = [];
+    const gh = async (args) => { calls.push(args); return { ok: true, json: [] }; };
+    expect(await classifyCiFailure(gh, { branch: null })).toEqual({ outage: false, reason: null });
+    expect(calls).toEqual([]);
+  });
+
+  it('no runs found for the branch -> not an outage', async () => {
+    const gh = async () => ({ ok: true, json: [] });
+    expect(await classifyCiFailure(gh, { branch: 'feat/x' })).toEqual({ outage: false, reason: null });
+  });
+
+  it('a run stuck queued past the threshold -> outage', async () => {
+    const createdAt = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20m ago
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 1, status: 'queued', createdAt }] };
+      throw new Error('should not fetch logs for a queued run');
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x', stuckQueuedMs: 10 * 60 * 1000 });
+    expect(cls.outage).toBe(true);
+    expect(cls.reason).toMatch(/stuck queued for \d+m/);
+  });
+
+  it('a run still queued but under the threshold -> not (yet) an outage', async () => {
+    const createdAt = new Date(Date.now() - 1000).toISOString();
+    const gh = async () => ({ ok: true, json: [{ databaseId: 1, status: 'queued', createdAt }] });
+    expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
+  });
+
+  it('a completed run whose failed-log text carries the outage signature -> outage', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view') {
+        expect(args).toContain('42');
+        expect(args).toContain('--log-failed');
+        return { ok: false, stdout: '', stderr: 'Failed to resolve action download info. Error: Service Unavailable' };
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x' });
+    expect(cls.outage).toBe(true);
+    expect(cls.reason).toMatch(/Service Unavailable/);
+  });
+
+  it('a completed run with an ordinary test-failure log -> NOT an outage (never masks a real regression)', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      return { ok: false, stdout: '', stderr: 'AssertionError: expected 1 to equal 2\n  at test.mjs:10' };
+    };
+    expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
+  });
+
+  it('degrades to "not an outage" on a malformed run-list response, never throws', async () => {
+    const gh = async () => ({ ok: true, json: null });
+    await expect(classifyCiFailure(gh, { branch: 'feat/x' })).resolves.toEqual({ outage: false, reason: null });
+  });
+});
+
+describe('forceNewSha (AC-408.2, #408) — the empirically-proven recovery: fresh SHA via rebase + repush', () => {
+  it('fetches, rebases onto the base, and force-with-lease pushes, in order', async () => {
+    const calls = [];
+    const execRun = async (cmd, args) => { calls.push([cmd, ...args].join(' ')); return { ok: true, code: 0, stdout: '', stderr: '' }; };
+    const res = await forceNewSha(execRun);
+    expect(res).toEqual({ ok: true });
+    expect(calls).toEqual(['git fetch origin main', 'git rebase origin/main', 'git push --force-with-lease']);
+  });
+
+  it('stops and surfaces the error at the first failing step (fetch/rebase/push)', async () => {
+    const failFetch = await forceNewSha(async () => ({ ok: false, stderr: 'network down' }));
+    expect(failFetch).toMatchObject({ ok: false, error: 'network down' });
+
+    let step = 0;
+    const failRebase = await forceNewSha(async () => (++step === 1 ? { ok: true } : { ok: false, stderr: 'CONFLICT' }));
+    expect(failRebase).toMatchObject({ ok: false, error: 'CONFLICT' });
+    expect(failRebase.error).toMatch(/CONFLICT/);
+
+    step = 0;
+    const failPush = await forceNewSha(async () => (++step <= 2 ? { ok: true } : { ok: false, stderr: 'stale ref' }));
+    expect(failPush).toMatchObject({ ok: false, error: 'stale ref' });
+  });
+});
+
+describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/AC-408.3/AC-408.4, #408)', () => {
+  const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
+  const outageLog = { ok: false, stdout: '', stderr: 'Failed to resolve action download info. Error: Service Unavailable' };
+
+  // A gh double where the PR's rollup shows one real bad check (not empty — the
+  // classification path only triggers on genuine bad checks, not "too early").
+  const outageGhDouble = () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE' }] } };
+      }
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 9, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view') return outageLog;
+      return { ok: true };
+    };
+    return { calls, gh };
+  };
+
+  it('AC-408.2: an outage attempts recovery (fresh SHA) instead of routing straight to the fix-wave/escalation path', async () => {
+    const { gh, calls } = outageGhDouble();
+    const execCalls = [];
+    const execRun = async (cmd, args) => { execCalls.push([cmd, ...args].join(' ')); return { ok: true, code: 0, stdout: '', stderr: '' }; };
+    const journalCalls = [];
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 0 },
+      () => {},
+      { execRun, journalAppend: async (...a) => { journalCalls.push(a); } },
+    );
+    expect(res).toMatchObject({ ok: true, merged: false, retried: true, outage: true, outageAttempt: 1, outcome: 'retry' });
+    expect(execCalls).toEqual(['git fetch origin main', 'git rebase origin/main', 'git push --force-with-lease']);
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false); // never merges mid-recovery
+    // AC-408.4: the outage is journaled, distinguishable from a real gate failure.
+    expect(journalCalls).toHaveLength(1);
+    const [cwd, kind, data] = journalCalls[0];
+    expect(cwd).toBe('/fake/cwd');
+    expect(kind).toBe('gate-fail');
+    expect(data).toMatchObject({ outage: true, phase: 'recovered', pr: 9 });
+  });
+
+  it('AC-408.2: bounded — exhausts after maxOutageAttempts and falls through to a real blocked-on-ci result', async () => {
+    const { gh, calls } = outageGhDouble();
+    const journalCalls = [];
+    const res = await runMerge(
+      { config: {}, gh, cwd: '/fake/cwd' },
+      { issue: 408, pr: 9, signals: heldVerdicts, outageAttempt: 2, maxOutageAttempts: 2 },
+      () => {},
+      { execRun: async () => { throw new Error('must NOT attempt recovery once exhausted'); }, journalAppend: async (...a) => { journalCalls.push(a); } },
+    );
+    expect(res.merged).toBe(false);
+    expect(res.outageExhausted).toBe(true);
+    expect(res.blockedOn).toContain('ci');
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+    // AC-408.3: the honest reason distinguishes GitHub's outage from the change itself.
+    expect(res.reason).toMatch(/GitHub Actions platform outage, not your change/);
+    expect(journalCalls[0][2]).toMatchObject({ outage: true, phase: 'exhausted' });
+  });
+
+  it('AC-408.3: a real gate failure (not an outage signature) is never masked — routes to the ordinary bar-red path', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'unit-tests', conclusion: 'FAILURE' }] } };
+      }
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 9, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view') return { ok: false, stdout: '', stderr: 'AssertionError: 1 !== 2' };
+      return { ok: true };
+    };
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {}, { execRun: async () => { throw new Error('must not run recovery on a real failure'); } });
+    expect(res.merged).toBe(false);
+    expect(res.outage).toBeUndefined();
+    expect(res.blockedOn).toContain('ci');
+    expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  it('never attempts outage classification on an empty rollup ("no checks reported yet") — cheap, common case stays untouched', async () => {
+    const calls = [];
+    const gh = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'pr' && args[1] === 'view') return { ok: true, json: { headRefName: 'feat/x', statusCheckRollup: [] } };
+      return { ok: true };
+    };
+    const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
+    expect(res.blockedOn).toContain('ci');
+    expect(calls).toEqual(['pr view 9 --json statusCheckRollup,headRefName']); // no run list / run view calls fired
+  });
+
+  it('does not require ctx.cwd — recovery still runs (just skips journaling) when no cwd is present', async () => {
+    const { gh } = outageGhDouble();
+    const res = await runMerge(
+      { config: {}, gh /* no cwd */ },
+      { issue: 408, pr: 9, signals: heldVerdicts },
+      () => {},
+      { execRun: async () => ({ ok: true, code: 0, stdout: '', stderr: '' }) },
+    );
+    expect(res).toMatchObject({ ok: true, retried: true, outage: true });
   });
 });

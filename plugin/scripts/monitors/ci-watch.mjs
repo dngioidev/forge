@@ -17,7 +17,7 @@
  */
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { run, makeGh } from '../lib/exec.mjs';
+import { run, makeGh, isPlatformOutage } from '../lib/exec.mjs';
 import { writeJson, readJson } from '../lib/jsonfile.mjs';
 import { freshGuard, trackFailure } from './poll-guard.mjs';
 
@@ -58,6 +58,19 @@ export function rollupState(checks) {
   return 'pending';
 }
 
+/**
+ * #408 — is every reported check sitting in QUEUED status (not yet started,
+ * not failed, not done)? A non-empty rollup where every entry is QUEUED is
+ * the shape of a stuck-queue platform outage (spec §2.2) as opposed to
+ * ordinary in-flight CI (which shows IN_PROGRESS once a job actually runs).
+ */
+export function allQueued(checks) {
+  const arr = checks ?? [];
+  if (arr.length === 0) return false;
+  const st = (c) => c.status ?? c.state ?? null;
+  return arr.every((c) => String(st(c)).toUpperCase() === 'QUEUED');
+}
+
 /** Emit the new state only when it changed from the previous observation. */
 export function transition(prev, cur) {
   return prev === cur ? null : cur;
@@ -71,18 +84,45 @@ export function isNoPr(res) {
   return s === '' || s.includes('no pull request') || s.includes('no open pull request') || s.includes('no commits');
 }
 
-export async function poll(gh, prev) {
+/**
+ * `queuedSince` (#408) tracks — using the watcher's OWN clock, not any GitHub
+ * per-job timestamp — how long the rollup has been continuously "every check
+ * QUEUED, nothing has progressed." Threaded across polls by the caller (like
+ * `prev`); resets to null the moment the rollup stops being all-queued (a job
+ * started, finished, or the PR changed shape), so a state change never counts
+ * as "stuck." `now`/`stuckQueuedMs` are injected so this is clock-free in tests.
+ */
+export async function poll(gh, prev, { queuedSince = null, outageReported = false, now = Date.now, stuckQueuedMs } = {}) {
   const res = await gh(['pr', 'view', '--json', 'number,headRefName,statusCheckRollup'], { parseJson: true });
   if (!res.ok) {
     // Distinguish "no PR yet" (benign, quiet) from a standing gh failure (#318).
-    if (isNoPr(res)) return { prev, pr: null, line: null, ok: true };
-    return { prev, pr: null, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed') };
+    if (isNoPr(res)) return { prev, pr: null, line: null, ok: true, queuedSince: null, outageReported: false };
+    return { prev, pr: null, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed'), queuedSince, outageReported };
   }
-  const state = rollupState(res.json?.statusCheckRollup);
+  const checks = res.json?.statusCheckRollup;
+  const state = rollupState(checks);
   const pr = res.json?.number ?? null;
+  const nowTs = now();
+  const stuck = allQueued(checks);
+  const nextQueuedSince = stuck ? (queuedSince ?? nowTs) : null;
+  // Reported at most once per stuck episode — a 15-minute+ outage must not
+  // spam one line per poll interval; it resets the moment the rollup recovers.
+  let nextOutageReported = stuck ? outageReported : false;
+
+  let outageLine = null;
+  if (stuck && !outageReported) {
+    const queuedForMs = nowTs - nextQueuedSince;
+    const outageOpts = stuckQueuedMs != null ? { stuckQueuedMs } : {};
+    if (isPlatformOutage({ status: 'QUEUED', queuedForMs }, outageOpts)) {
+      const mins = Math.round(queuedForMs / 60000);
+      outageLine = `CI outage-suspected on PR #${res.json.number} (${res.json.headRefName}) — stuck queued ${mins}m with no progress (not a real failure; recovery: rebase + repush)`;
+      nextOutageReported = true;
+    }
+  }
+
   const changed = transition(prev, state);
-  if (!changed) return { prev: state, pr, line: null, ok: true };
-  return { prev: state, pr, line: `CI ${state} on PR #${res.json.number} (${res.json.headRefName})`, ok: true };
+  const line = outageLine ?? (changed ? `CI ${state} on PR #${res.json.number} (${res.json.headRefName})` : null);
+  return { prev: state, pr, line, ok: true, queuedSince: nextQueuedSince, outageReported: nextOutageReported, outage: !!outageLine };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
@@ -90,6 +130,8 @@ if (isMain) {
   const gh = makeGh(run);
   const intervalMs = Number(process.env.FORGE_CI_INTERVAL_MS ?? 20000);
   let prev = null;
+  let queuedSince = null;
+  let outageReported = false;
   let guard = freshGuard();
   const surface = (ok, reason) => {
     guard = trackFailure(guard, ok, { name: 'forge-ci', reason });
@@ -97,8 +139,10 @@ if (isMain) {
   };
   const tick = async () => {
     try {
-      const r = await poll(gh, prev);
+      const r = await poll(gh, prev, { queuedSince, outageReported });
       prev = r.prev;
+      queuedSince = r.queuedSince;
+      outageReported = r.outageReported;
       // #407 AC.2: persist every observed reading (not just transitions) so
       // ciGreen()'s freshness window always has an accurate "at" timestamp.
       if (r.ok && r.pr != null) await writeCiWatchState(process.cwd(), { pr: r.pr, state: r.prev });

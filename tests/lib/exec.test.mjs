@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { run, makeGh, isRateLimited, retryDelayFrom, rateLimitNotice, rateBudget } from '../../plugin/scripts/lib/exec.mjs';
+import { run, makeGh, isRateLimited, retryDelayFrom, rateLimitNotice, rateBudget, isPlatformOutage, platformOutageNotice } from '../../plugin/scripts/lib/exec.mjs';
 
 describe('run', () => {
   it('runs a real process and captures stdout', async () => {
@@ -162,5 +162,53 @@ describe('rateBudget (AC-360.4)', () => {
   it('surfaces an error when the query fails', async () => {
     const gh = makeGh(async () => ({ ok: false, code: 1, stdout: '', stderr: 'boom' }));
     expect(await rateBudget(gh)).toMatchObject({ ok: false });
+  });
+});
+
+// #408 — GitHub Actions platform-outage detector (distinct from #360's rate limiting).
+describe('isPlatformOutage (AC-408.1)', () => {
+  it('detects the "Service Unavailable" + action-download-info resolution failure', () => {
+    const res = { ok: false, code: 1, stdout: '', stderr: 'Failed to resolve action download info. Error: Service Unavailable' };
+    expect(isPlatformOutage(res)).toBe(true);
+  });
+
+  it('is order-independent and case-insensitive on the textual signature', () => {
+    expect(isPlatformOutage({ stderr: 'SERVICE UNAVAILABLE while resolving action-download-info for actions/checkout' })).toBe(true);
+    expect(isPlatformOutage({ stdout: 'error resolving action download info: service unavailable', stderr: '' })).toBe(true);
+  });
+
+  it('does NOT flag a bare "Service Unavailable" with no action-download-info context', () => {
+    expect(isPlatformOutage({ ok: false, stderr: 'HTTP 503: Service Unavailable' })).toBe(false);
+  });
+
+  it('does NOT flag an unrelated failure, a success, or null', () => {
+    expect(isPlatformOutage({ ok: false, stderr: 'Error: tests failed, 3 assertions' })).toBe(false);
+    expect(isPlatformOutage({ ok: true, stdout: 'all good', stderr: '' })).toBe(false);
+    expect(isPlatformOutage(null)).toBe(false);
+  });
+
+  it('detects a job stuck QUEUED past the threshold — pure, no GitHub timestamp trusted', () => {
+    expect(isPlatformOutage({ status: 'QUEUED', queuedForMs: 16 * 60 * 1000 })).toBe(true); // past default 15m
+    expect(isPlatformOutage({ status: 'queued', queuedForMs: 16 * 60 * 1000 })).toBe(true); // case-insensitive status
+    expect(isPlatformOutage({ status: 'QUEUED', queuedForMs: 5 * 60 * 1000 })).toBe(false); // not yet past threshold
+  });
+
+  it('honors a custom stuckQueuedMs threshold', () => {
+    expect(isPlatformOutage({ status: 'QUEUED', queuedForMs: 2000 }, { stuckQueuedMs: 1000 })).toBe(true);
+    expect(isPlatformOutage({ status: 'QUEUED', queuedForMs: 500 }, { stuckQueuedMs: 1000 })).toBe(false);
+  });
+
+  it('does NOT flag QUEUED with no queuedForMs (unknown duration), or IN_PROGRESS regardless of duration', () => {
+    expect(isPlatformOutage({ status: 'QUEUED' })).toBe(false);
+    expect(isPlatformOutage({ status: 'IN_PROGRESS', queuedForMs: 99 * 60 * 1000 })).toBe(false);
+  });
+});
+
+describe('platformOutageNotice (AC-408.3)', () => {
+  it('is honest: names it as GitHub, not the change, and shows the bounded attempt count', () => {
+    const line = platformOutageNotice('Service Unavailable resolving action-download-info', 1, 2);
+    expect(line).toMatch(/platform outage/i);
+    expect(line).toMatch(/not your change/i);
+    expect(line).toContain('attempt 1/2');
   });
 });
