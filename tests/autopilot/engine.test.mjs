@@ -367,7 +367,7 @@ describe('autopilot enforced merge path (#315, AC-315.1/AC-315.2) — runMerge i
     // no cwd on ctx at all — must behave exactly as before this ticket
     const res = await runMerge({ config: {}, gh }, { issue: 1, pr: 9, signals: heldVerdicts }, () => {});
     expect(res.merged).toBe(true);
-    expect(calls).toContain('pr view 9 --json statusCheckRollup');
+    expect(calls).toContain('pr view 9 --json statusCheckRollup,headRefName');
   });
 });
 
