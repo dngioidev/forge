@@ -295,8 +295,9 @@ describe('AC-315.1 / AC-315.2: autopilot_merge funnels the live merge through th
     let seen = null;
     const h = build({ deps: { runMerge: async (_ctx, a) => { seen = a; return { ok: true, merged: true, outcome: 'merged' }; } } });
     body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts, critical: false }));
-    // mode defaults to null (the preflight decision, #316) when the caller omits it.
-    expect(seen).toEqual({ issue: 7, pr: 3, signals: heldVerdicts, critical: false, mode: null });
+    // mode defaults to null (the preflight decision, #316); outageAttempt/maxOutageAttempts
+    // default to 0/2 (#408) when the caller omits them.
+    expect(seen).toEqual({ issue: 7, pr: 3, signals: heldVerdicts, critical: false, mode: null, outageAttempt: 0, maxOutageAttempts: 2 });
     // an explicit pr-only mode threads through so the tool can park by construction.
     body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts, critical: false, mode: 'pr-only' }));
     expect(seen.mode).toBe('pr-only');
@@ -327,6 +328,32 @@ describe('AC-315.1 / AC-315.2: autopilot_merge funnels the live merge through th
     expect(out.merged).toBe(false);
     expect(out.blockedOn).toContain('security:critical');
     expect(calls.some((c) => c.startsWith('pr merge'))).toBe(false);
+  });
+
+  // #408 review fix — the tool is the ONLY Claude-callable merge path (ADR-0007),
+  // so the bounded outage-recovery attempt count and the honest exhausted reason
+  // must actually reach it, not just direct runMerge callers/tests.
+  it('#408: outageAttempt/maxOutageAttempts thread through to runMerge (default 0/2 when the caller omits them)', async () => {
+    let seen = null;
+    const h = build({ deps: { runMerge: async (_ctx, a) => { seen = a; return { ok: true, merged: true, outcome: 'merged' }; } } });
+    body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts }));
+    expect(seen).toMatchObject({ outageAttempt: 0, maxOutageAttempts: 2 });
+    body(await call(h, 'autopilot_merge', { issue: 7, pr: 3, signals: heldVerdicts, outageAttempt: 1, maxOutageAttempts: 3 }));
+    expect(seen).toMatchObject({ outageAttempt: 1, maxOutageAttempts: 3 });
+  });
+
+  it('#408: the tool response surfaces outage/outageAttempt/outageExhausted/reason from runMerge instead of stripping them', async () => {
+    const h = build({
+      deps: {
+        runMerge: async () => ({
+          ok: false, merged: false, blockedOn: ['ci'], outage: true, outageExhausted: true,
+          reason: 'GitHub Actions platform outage, not your change (Service Unavailable) — recovery exhausted after 2 attempt(s)',
+        }),
+      },
+    });
+    const out = body(await call(h, 'autopilot_merge', { issue: 1, pr: 9, signals: heldVerdicts }));
+    expect(out).toMatchObject({ merged: false, outage: true, outageExhausted: true });
+    expect(out.reason).toMatch(/GitHub Actions platform outage, not your change/);
   });
 });
 

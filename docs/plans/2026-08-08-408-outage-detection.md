@@ -69,24 +69,52 @@ interval. A real fail transition still emits the ordinary `CI fail` line.
 
 ## Task 3 (item): outage classification + bounded recovery in the merge bar (AC-408.2, AC-408.3, AC-408.4)
 
-`ciGreen` now also returns the PR's branch (`headRefName`, riding along on
-the existing `pr view` call — no extra round-trip). `classifyCiFailure(gh,
-{branch})` fetches the branch's latest run (`gh run list`) and, only when it
-has genuinely completed or is stuck, the failed-job log
+`ciGreen` now also returns the PR's branch (`headRefName`) and the failing
+CheckRun's `workflowName` (both riding along on the existing `pr view` call —
+no extra round-trip; `workflowName` is `null` for a StatusContext, which
+carries no workflow identity). `classifyCiFailure(gh, {branch, workflowName})`
+fetches the branch's latest run — scoped to `workflowName` via `--workflow`
+when known, since a repo can run several workflows on one push and an
+unscoped `run list` can silently inspect an unrelated (possibly green) run —
+and, only when it has genuinely completed or is stuck, the failed-job log
 (`gh run view --log-failed`) to decide outage vs real failure via
-`isPlatformOutage` — bounded to at most one extra round-trip, and only when
-`ciGreen` already found real bad checks (not on an empty "no checks reported
-yet" rollup, which stays a zero-extra-call path). `forceNewSha(execRun,
-{base})` performs the fetch/rebase/push recovery with an injected exec
-function (mirrors `exec.mjs`'s own DI convention — no real git in tests).
-`runMerge` wires it in: outage + attempts remaining → recover, journal, return
-`outcome:'retry'`; outage + exhausted → real "blocked on ci" with the honest
-distinguishing `reason` + journal; not an outage → unchanged behavior
-(`evaluateMergeBar` as before). All additive — every existing `ciGreen`/
-`runMerge` test path (green CI, empty rollup, missing signals, critical) is
-untouched because none of their fixtures hit "real bad checks."
+`isPlatformOutage`, using the run's *actual* status (not a hardcoded value) so
+a merely slow `in_progress` run is never misread as stuck-queued. Bounded to
+at most two extra round-trips, and only when `ciGreen` already found real bad
+checks (not on an empty "no checks reported yet" rollup, which stays a
+zero-extra-call path).
 
-**Files:** plugin/scripts/autopilot/merge.mjs
+**Security fix from review (#408):** job-log TEXT alone is not trustworthy —
+it is whatever a workflow step printed, which a hostile PR (or a coincidental
+real assertion message) can shape to spoof the outage phrases and get a real
+regression waved off as "GitHub is down." `failedDuringSetup(jobsRes)` adds a
+structural corroboration GitHub's own job orchestration assigns, not
+something a step's stdout can forge: did the failing job get past its
+injected "Set up job" step to run any of the repo's own defined steps? The
+action-download-info resolution failure this ticket targets happens *during*
+that setup phase, before user code runs. The textual match in
+`classifyCiFailure` only runs when `failedDuringSetup` is true — a real
+user-defined step failing is definitionally a real failure regardless of its
+log text, and the log is never even fetched in that case.
+
+`forceNewSha(execRun, {base})` performs the fetch/rebase/push recovery with
+an injected exec function (mirrors `exec.mjs`'s own DI convention — no real
+git in tests). `runMerge` wires it in: outage + attempts remaining → recover,
+journal, return `outcome:'retry'`; outage + exhausted → real "blocked on ci"
+with the honest distinguishing `reason` + journal; not an outage → unchanged
+behavior (`evaluateMergeBar` as before). All additive — every existing
+`ciGreen`/`runMerge` test path (green CI, empty rollup, missing signals,
+critical) is untouched because none of their fixtures hit "real bad checks."
+
+`plugin/mcp/forge/server.mjs`'s `autopilot_merge` tool — the only
+Claude-callable merge path per ADR-0007 — threads `outageAttempt`/
+`maxOutageAttempts` through to `runMerge` and surfaces
+`outage`/`outageAttempt`/`outageExhausted`/`reason` in its response (found
+missing in review: without this the bounded-retry and honest-reason
+guarantees didn't hold at the actual sanctioned entry point, only at the
+direct `runMerge` call site).
+
+**Files:** plugin/scripts/autopilot/merge.mjs, plugin/mcp/forge/server.mjs
 
 ## Task 4 (docs): teach the distinction in the autopilot skill (AC-408.3, AC-408.4)
 
@@ -107,11 +135,18 @@ stuck-queued threshold math, custom threshold). `tests/monitors/monitors.test.mj
 — `allQueued`, stuck-episode-once-only reporting, reset-on-recovery, a real
 fail transition unaffected. `tests/autopilot/engine.test.mjs` —
 `classifyCiFailure` (queued/completed/log-text branches, malformed-response
-degrade), `forceNewSha` (order, first-failing-step surfaced), `runMerge`
-(recovery attempted, bounded exhaustion with the honest reason, a real
-failure never masked, empty-rollup path untouched, works without `ctx.cwd`).
+degrade, workflow-scoping, real-status passthrough), `failedDuringSetup`
+(structural corroboration, including the security-regression case: a real
+failing user step whose message echoes the outage phrases is never
+classified as an outage and its log is never even fetched), `forceNewSha`
+(order, first-failing-step surfaced), `runMerge` (recovery attempted, bounded
+exhaustion with the honest reason, a real failure never masked, empty-rollup
+path untouched, works without `ctx.cwd`), `ciGreen` (surfaces
+`workflowName`). `tests/mcp-forge/forge-core.test.mjs` — `autopilot_merge`
+threads `outageAttempt`/`maxOutageAttempts` to `runMerge` and surfaces
+`outage`/`outageExhausted`/`reason` in its response.
 
-**Files:** tests/lib/exec.test.mjs, tests/monitors/monitors.test.mjs, tests/autopilot/engine.test.mjs
+**Files:** tests/lib/exec.test.mjs, tests/monitors/monitors.test.mjs, tests/autopilot/engine.test.mjs, tests/mcp-forge/forge-core.test.mjs
 
 ## Verification
 

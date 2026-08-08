@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
-import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha } from '../../plugin/scripts/autopilot/merge.mjs';
+import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
@@ -228,6 +228,14 @@ describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
       await ciGreen(gh, 9, { freshState: { pr: 9, state: 'pass', at: new Date(now - 999999).toISOString() }, now });
       expect(calls).toBe(3); // every one of these re-fetched — never skipped a red/stale/wrong-pr case
     });
+  });
+
+  it('#408: ciGreen surfaces the failing CheckRun\'s workflowName for classifyCiFailure to scope on (null when unknown, e.g. a StatusContext)', async () => {
+    const gh = (json) => async () => ({ ok: true, json });
+    const withWorkflow = await ciGreen(gh({ statusCheckRollup: [{ conclusion: 'FAILURE', name: 'actionlint', workflowName: 'verify' }] }));
+    expect(withWorkflow.workflowName).toBe('verify');
+    const withoutWorkflow = await ciGreen(gh({ statusCheckRollup: [{ state: 'ERROR', context: 'legacy-status' }] })); // StatusContext has no workflowName
+    expect(withoutWorkflow.workflowName).toBe(null);
   });
 
   it('runMerge: disabled → park; bar red → no merge call; all green → squash-merge', async () => {
@@ -876,6 +884,22 @@ describe('classifyCiFailure (AC-408.1/AC-408.2, #408) — is a red CI result Git
     expect(await classifyCiFailure(gh, { branch: 'feat/x' })).toEqual({ outage: false, reason: null });
   });
 
+  it('review fix (#408): scopes `gh run list` to the failing check\'s own workflow when known — a repo can run several workflows on one push', async () => {
+    const seenArgs = [];
+    const gh = async (args) => { seenArgs.push(args); return { ok: true, json: [] }; };
+    await classifyCiFailure(gh, { branch: 'feat/x', workflowName: 'verify' });
+    expect(seenArgs[0]).toEqual(['run', 'list', '--branch', 'feat/x', '--limit', '1', '--json', 'databaseId,status,createdAt', '--workflow', 'verify']);
+    seenArgs.length = 0;
+    await classifyCiFailure(gh, { branch: 'feat/x' }); // no workflowName known (e.g. a StatusContext, not a CheckRun) -> unscoped, unchanged
+    expect(seenArgs[0]).toEqual(['run', 'list', '--branch', 'feat/x', '--limit', '1', '--json', 'databaseId,status,createdAt']);
+  });
+
+  it('review fix (#408): a merely slow but healthy in_progress run past the threshold is NOT misclassified as stuck-queued', async () => {
+    const createdAt = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20m ago, well past a 10m threshold
+    const gh = async () => ({ ok: true, json: [{ databaseId: 1, status: 'in_progress', createdAt }] });
+    expect((await classifyCiFailure(gh, { branch: 'feat/x', stuckQueuedMs: 10 * 60 * 1000 })).outage).toBe(false);
+  });
+
   it('a run stuck queued past the threshold -> outage', async () => {
     const createdAt = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20m ago
     const gh = async (args) => {
@@ -893,9 +917,12 @@ describe('classifyCiFailure (AC-408.1/AC-408.2, #408) — is a red CI result Git
     expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
   });
 
-  it('a completed run whose failed-log text carries the outage signature -> outage', async () => {
+  it('a completed run whose failed-log text carries the outage signature, corroborated by a setup-phase job failure -> outage', async () => {
     const gh = async (args) => {
       if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) {
+        return { ok: true, json: { jobs: [{ name: 'actionlint', conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] }] } };
+      }
       if (args[0] === 'run' && args[1] === 'view') {
         expect(args).toContain('42');
         expect(args).toContain('--log-failed');
@@ -916,9 +943,87 @@ describe('classifyCiFailure (AC-408.1/AC-408.2, #408) — is a red CI result Git
     expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
   });
 
+  it('SECURITY (#408 review): a REAL failing user step whose message happens to echo the outage phrases is NOT classified as an outage', async () => {
+    // The job ran a repo-defined step ("Run tests") that genuinely failed — its
+    // assertion text happens to contain the exact outage phrases (a hostile PR
+    // could craft this deliberately). Job-structure corroboration must win: the
+    // job got PAST setup and a real step ran, so this must never be "outage".
+    let fetchedLog = false;
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) {
+        return {
+          ok: true,
+          json: { jobs: [{ name: 'unit-tests', conclusion: 'failure', steps: [
+            { name: 'Set up job', conclusion: 'success' },
+            { name: 'Checkout', conclusion: 'success' },
+            { name: 'Run tests', conclusion: 'failure' },
+            { name: 'Complete job', conclusion: 'failure' },
+          ] } ] },
+        };
+      }
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('--log-failed')) {
+        fetchedLog = true;
+        return { ok: false, stdout: '', stderr: 'AssertionError: Failed to resolve action download info. Error: Service Unavailable (planted by a hostile test)' };
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    const cls = await classifyCiFailure(gh, { branch: 'feat/x' });
+    expect(cls.outage).toBe(false);
+    expect(fetchedLog).toBe(false); // never even reads the spoofable log text once structure says "real step ran"
+  });
+
   it('degrades to "not an outage" on a malformed run-list response, never throws', async () => {
     const gh = async () => ({ ok: true, json: null });
     await expect(classifyCiFailure(gh, { branch: 'feat/x' })).resolves.toEqual({ outage: false, reason: null });
+  });
+
+  it('degrades to "not an outage" when the jobs lookup itself fails', async () => {
+    const gh = async (args) => {
+      if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 42, status: 'completed', createdAt: new Date().toISOString() }] };
+      return { ok: false, stderr: 'boom' };
+    };
+    expect((await classifyCiFailure(gh, { branch: 'feat/x' })).outage).toBe(false);
+  });
+});
+
+describe('failedDuringSetup (#408 security follow-up) — structural corroboration, not spoofable via step log text', () => {
+  const jobsRes = (jobs) => ({ ok: true, json: { jobs } });
+
+  it('true when the injected "Set up job" step itself failed', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] }]))).toBe(true);
+  });
+
+  it('true when no repo-defined step between the bookends ever ran (all skipped/cancelled/unset)', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Checkout', conclusion: 'skipped' },
+      { name: 'Build', conclusion: null },
+      { name: 'Complete job', conclusion: 'failure' },
+    ] }]))).toBe(true);
+  });
+
+  it('false once ANY repo-defined step actually ran and failed — a real failure, never masked', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Run tests', conclusion: 'failure' },
+      { name: 'Complete job', conclusion: 'failure' },
+    ] }]))).toBe(false);
+  });
+
+  it('false when no job actually failed (conclusion success/skipped)', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'success', steps: [] }]))).toBe(false);
+    expect(failedDuringSetup(jobsRes([]))).toBe(false);
+  });
+
+  it('true when there is no step breakdown at all (the job never even got that far)', () => {
+    expect(failedDuringSetup(jobsRes([{ conclusion: 'failure', steps: [] }]))).toBe(true);
+  });
+
+  it('degrades to false on a malformed/failed jobs response, never throws', () => {
+    expect(failedDuringSetup({ ok: false })).toBe(false);
+    expect(failedDuringSetup({ ok: true, json: null })).toBe(false);
+    expect(failedDuringSetup(null)).toBe(false);
   });
 });
 
@@ -949,9 +1054,12 @@ describe('forceNewSha (AC-408.2, #408) — the empirically-proven recovery: fres
 describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/AC-408.3/AC-408.4, #408)', () => {
   const heldVerdicts = { ship: true, gates: true, reviewer: true, security: true };
   const outageLog = { ok: false, stdout: '', stderr: 'Failed to resolve action download info. Error: Service Unavailable' };
+  const setupFailureJobs = { ok: true, json: { jobs: [{ conclusion: 'failure', steps: [{ name: 'Set up job', conclusion: 'failure' }, { name: 'Complete job', conclusion: 'failure' }] }] } };
 
   // A gh double where the PR's rollup shows one real bad check (not empty — the
-  // classification path only triggers on genuine bad checks, not "too early").
+  // classification path only triggers on genuine bad checks, not "too early"),
+  // and the job-structure lookup shows the failure happened during setup (the
+  // structural corroboration `classifyCiFailure` requires — #408 security fix).
   const outageGhDouble = () => {
     const calls = [];
     const gh = async (args) => {
@@ -960,6 +1068,7 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
         return { ok: true, json: { headRefName: 'feat/408-x', statusCheckRollup: [{ name: 'ci', conclusion: 'FAILURE' }] } };
       }
       if (args[0] === 'run' && args[1] === 'list') return { ok: true, json: [{ databaseId: 9, status: 'completed', createdAt: new Date().toISOString() }] };
+      if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) return setupFailureJobs;
       if (args[0] === 'run' && args[1] === 'view') return outageLog;
       return { ok: true };
     };

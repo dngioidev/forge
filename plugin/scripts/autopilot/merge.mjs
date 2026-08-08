@@ -103,7 +103,13 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
     const state = c.conclusion ?? c.state; // CheckRun uses conclusion; StatusContext uses state
     return state !== 'SUCCESS' && state !== 'NEUTRAL' && state !== 'SKIPPED';
   });
-  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null };
+  // #408 — a bad CheckRun carries the workflow that produced it; a repo can run
+  // several workflows on the same branch/push, so `classifyCiFailure` needs
+  // this to scope its `gh run list` to the actual failing workflow instead of
+  // "whichever workflow happened to run last" (a StatusContext entry has no
+  // workflowName — falls back to unscoped, same as before).
+  const workflowName = bad.map((c) => c.workflowName).find(Boolean) ?? null;
+  return { ok: true, green: bad.length === 0, pending: bad.map((c) => c.name ?? c.context), branch: res.json?.headRefName ?? null, workflowName };
 }
 
 /**
@@ -112,30 +118,82 @@ export async function ciGreen(gh, pr, { freshState = null, now, maxAgeMs } = {})
  * `ciGreen` already found actual bad checks (`pending.length > 0`) — an
  * empty rollup ("no checks reported yet") is just "too early," not a
  * signature to investigate, so it costs nothing extra in that (common)
- * case. Bounded to one extra `gh` round-trip: `run list` for the branch's
- * latest run, and only when that run is still non-terminal or failed,
- * `run view --log-failed` for the outage text. Never throws on a
- * missing/malformed response — degrades to "not an outage" so a genuine
- * regression is never masked as GitHub's fault.
+ * case. Never throws on a missing/malformed response — degrades to "not an
+ * outage" so a genuine regression is never masked as GitHub's fault.
+ *
+ * Security note (found in review, #408): a job's failed-step LOG TEXT is not
+ * a trustworthy signal on its own — it is whatever the repo's own workflow
+ * steps printed, which an attacker (a malicious PR, or any genuinely failing
+ * test/lint whose assertion message happens to echo the right words) can
+ * shape. Trusting text alone would let a crafted failure message spoof the
+ * outage signature and get a REAL regression (including a security-relevant
+ * one) waved off as "GitHub is down," plus trigger the automatic force-push
+ * recovery on attacker-influenced input. So the textual match is only
+ * evidence of LAST resort, gated behind a structural corroboration GitHub's
+ * own job orchestration assigns — not something a workflow step's stdout can
+ * forge: whether the failing job ever got past its injected "Set up job"
+ * step to run any of the repo's own defined steps. The action-download-info
+ * resolution failure this ticket targets happens DURING that setup phase,
+ * before user code runs — so "failed during setup" is the honest structural
+ * fingerprint of an infra outage, and "a user-defined step ran and failed"
+ * is definitionally a real failure regardless of what its log text says.
  */
-export async function classifyCiFailure(gh, { branch, stuckQueuedMs } = {}) {
+export async function classifyCiFailure(gh, { branch, workflowName, stuckQueuedMs } = {}) {
   if (!branch) return { outage: false, reason: null };
-  const runs = await gh(['run', 'list', '--branch', branch, '--limit', '1', '--json', 'databaseId,status,createdAt'], { parseJson: true });
+  // #408 review fix — scope to the workflow that actually produced the bad
+  // check when known; an unscoped `run list` returns the branch's single
+  // latest run across EVERY workflow, which can be a different (unrelated,
+  // possibly green) workflow than the one `ciGreen` found bad checks on.
+  const listArgs = ['run', 'list', '--branch', branch, '--limit', '1', '--json', 'databaseId,status,createdAt'];
+  if (workflowName) listArgs.push('--workflow', workflowName);
+  const runs = await gh(listArgs, { parseJson: true });
   const latest = runs.ok && Array.isArray(runs.json) ? runs.json[0] : null;
   if (!latest) return { outage: false, reason: null };
   if (latest.status && latest.status !== 'completed') {
     const queuedForMs = Date.now() - new Date(latest.createdAt).getTime();
     const outageOpts = stuckQueuedMs != null ? { stuckQueuedMs } : {};
-    if (isPlatformOutage({ status: 'QUEUED', queuedForMs }, outageOpts)) {
+    // #408 review fix — pass the run's ACTUAL status through instead of
+    // hardcoding 'QUEUED': isPlatformOutage only trips its stuck-queued
+    // trigger for a genuinely QUEUED run, so a merely slow but healthy
+    // `in_progress`/`waiting` run past stuckQueuedMs is correctly left alone.
+    if (isPlatformOutage({ status: latest.status, queuedForMs }, outageOpts)) {
       return { outage: true, reason: `job stuck ${latest.status} for ${Math.round(queuedForMs / 60000)}m with no progress` };
     }
     return { outage: false, reason: null };
+  }
+  if (!failedDuringSetup(await gh(['run', 'view', String(latest.databaseId), '--json', 'jobs'], { parseJson: true }))) {
+    return { outage: false, reason: null }; // a real job/step ran and failed — never masked by log text alone
   }
   const log = await gh(['run', 'view', String(latest.databaseId), '--log-failed']);
   if (isPlatformOutage(log)) {
     return { outage: true, reason: 'GitHub Actions returned Service Unavailable resolving action-download-info' };
   }
   return { outage: false, reason: null };
+}
+
+/**
+ * Structural corroboration for `classifyCiFailure` above: did the failing
+ * job never get past GitHub's own injected "Set up job" step? `gh run view
+ * --json jobs` returns each job's `steps` array with GitHub-assigned
+ * conclusions (`success`/`failure`/`skipped`/`cancelled`/null) — every job
+ * has "Set up job" as `steps[0]` and "Complete job" as the last entry,
+ * injected by the Actions service itself, not by the workflow file or any
+ * step's own output. If `steps[0]` didn't succeed, or every step between the
+ * bookends is unset/skipped/cancelled (none of the repo's own steps ever
+ * ran), the failure happened during setup — matching where an
+ * action-download-info resolution failure actually occurs. Degrades to
+ * `false` (not an outage) on any malformed/empty response.
+ */
+export function failedDuringSetup(jobsRes) {
+  const jobs = jobsRes?.ok && Array.isArray(jobsRes.json?.jobs) ? jobsRes.json.jobs : [];
+  const failing = jobs.find((j) => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped');
+  if (!failing) return false;
+  const steps = Array.isArray(failing.steps) ? failing.steps : [];
+  if (steps.length === 0) return true; // no step breakdown at all — the job never even got that far
+  const setup = steps[0];
+  if (setup?.conclusion && setup.conclusion !== 'success') return true;
+  const middle = steps.slice(1, -1);
+  return middle.every((s) => !s.conclusion || s.conclusion === 'skipped' || s.conclusion === 'cancelled');
 }
 
 /**
@@ -204,7 +262,7 @@ export async function runMerge(ctx, { issue, pr, signals = {}, critical = false,
   if (!ci.ok) return { ok: false, error: ci.error };
   if (!ci.green && ci.pending?.length) {
     const classify = deps.classifyCiFailure ?? classifyCiFailure;
-    const cls = await classify(ctx.gh, { branch: ci.branch });
+    const cls = await classify(ctx.gh, { branch: ci.branch, workflowName: ci.workflowName });
     if (cls.outage) {
       const journal = deps.journalAppend ?? journalAppend;
       if (outageAttempt >= maxOutageAttempts) {
