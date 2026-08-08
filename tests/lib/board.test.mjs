@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { tmpdir } from 'node:os';
 import { buildStatusMutation, replaceStatusOptions, STANDARD_STATUS, linkProject, optionKey, getRepoInfo, getProjectFields } from '../../plugin/scripts/lib/board.mjs';
 
 describe('linkProject (AC-B64.1, #64)', () => {
@@ -186,5 +187,65 @@ describe('getRepoInfo / getProjectFields memoization (AC-407.3)', () => {
     const second = await getProjectFields(gh, 'PVT_1');
     expect(second.ok).toBe(true);
     expect(calls).toBe(2);
+  });
+});
+
+// #415 — the cache key must incorporate the working directory, not just the `gh`
+// instance. Today every caller constructs a fresh `gh`/ctx per repo (never
+// `chdir()`s a long-lived `gh` into a different repo), so this was a latent
+// footgun rather than a live bug — but a `process.chdir()` reuse of the SAME
+// `gh` instance must still fetch fresh instead of silently serving the
+// previous cwd's cached owner/name/field IDs.
+// AC-415.3 (the regression test requirement) is satisfied by both `it`s below —
+// each IS the chdir regression test for its respective function.
+describe('cache key includes cwd, not just the gh instance (AC-415.1, AC-415.2, AC-415.3)', () => {
+  const repoViewFor = (owner, name, branch) => ({
+    ok: true,
+    json: { owner: { login: owner }, name, defaultBranchRef: { name: branch } },
+  });
+  const fieldsFor = (itemsCount) => ({
+    ok: true,
+    json: { data: { node: { items: { totalCount: itemsCount }, fields: { nodes: [{ __typename: 'ProjectV2SingleSelectField', id: 'f1', name: 'Status', options: [] }] } } } },
+  });
+
+  it('AC-415.1: getRepoInfo does not leak across a process.chdir() reuse of the same gh instance', async () => {
+    const originalCwd = process.cwd();
+    try {
+      let calls = 0;
+      const gh = async () => {
+        calls++;
+        return calls === 1 ? repoViewFor('repoA-owner', 'repoA', 'main') : repoViewFor('repoB-owner', 'repoB', 'trunk');
+      };
+      const a = await getRepoInfo(gh);
+      process.chdir(tmpdir());
+      const b = await getRepoInfo(gh);
+      expect(a).toMatchObject({ owner: 'repoA-owner', name: 'repoA' });
+      expect(b).toMatchObject({ owner: 'repoB-owner', name: 'repoB' }); // NOT repoA's cached value
+      expect(calls).toBe(2); // the chdir forced a fresh fetch, not a cache hit
+
+      // and returning to the original cwd is still served from ITS own cache entry
+      process.chdir(originalCwd);
+      const aAgain = await getRepoInfo(gh);
+      expect(aAgain).toEqual(a);
+      expect(calls).toBe(2);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it('AC-415.2: getProjectFields does not leak across a process.chdir() reuse for the SAME projectId', async () => {
+    const originalCwd = process.cwd();
+    try {
+      let calls = 0;
+      const gh = async () => { calls++; return fieldsFor(calls); };
+      const a = await getProjectFields(gh, 'PVT_1');
+      process.chdir(tmpdir());
+      const b = await getProjectFields(gh, 'PVT_1'); // same projectId, different cwd
+      expect(a.itemsCount).toBe(1);
+      expect(b.itemsCount).toBe(2); // NOT served from the original cwd's cache entry
+      expect(calls).toBe(2);
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 });
