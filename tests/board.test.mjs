@@ -916,4 +916,42 @@ describe('status (AC-2.6)', () => {
     expect(res.text).toContain('⇡ open PR: #17');
     expect(res.text).toContain('next: answer the blocked decision(s)');
   });
+
+  it('AC-399.1: also returns the same catch-up card as structured data (for MCP callers)', async () => {
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([
+        { id: 'a', content: { number: 1 }, title: 'One', status: 'Done' },
+        { id: 'b', content: { number: 2 }, title: 'Two', status: 'In progress' },
+        { id: 'c', content: { number: 3 }, title: 'Three', status: 'Blocked / Needs decision' },
+      ])],
+      ['pr list', { stdout: JSON.stringify([{ number: 17, title: 'feat: x', isDraft: false }]) }],
+    ]);
+    const res = await runStatus(ctx, noop);
+    expect(res.ok).toBe(true);
+    expect(res.data).toMatchObject({
+      situation: { key: 'awaiting-decision', glyph: '🚩', label: 'awaiting-decision', pendingCount: 1 },
+      counts: { backlog: 0, ready: 0, inProgress: 1, inReview: 0, blocked: 1, done: 1 },
+      blocked: [{ number: 3, title: 'Three' }],
+      inProgress: [{ number: 2, title: 'Two' }],
+      openPrs: [{ number: 17, title: 'feat: x', isDraft: false }],
+      next: 'answer the blocked decision(s)',
+    });
+  });
+
+  it('AC-399.1: a title with leading whitespace renders identically to before the computeStatus split (#399 review)', async () => {
+    // Regression pin: the CLI's old `show(item)` trimmed the WHOLE "#N title" string as
+    // one unit, so a title with its own leading space keeps the resulting double space
+    // (`#3  Foo`) rather than collapsing to a single space. The data/text split must not
+    // change this — data.blocked[].title stays untrimmed so the CLI text line is unchanged.
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('project item-list'), itemList([
+        { id: 'c', content: { number: 3 }, title: ' Foo', status: 'Blocked / Needs decision' },
+      ])],
+      ['pr list', { stdout: JSON.stringify([]) }],
+    ]);
+    const res = await runStatus(ctx, noop);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('🚩 blocked: #3  Foo'); // two spaces, same as the pre-split behavior
+    expect(res.data.blocked).toEqual([{ number: 3, title: ' Foo' }]); // raw title in the data
+  });
 });
