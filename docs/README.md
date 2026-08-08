@@ -8,6 +8,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [forge-control spec](specs/2026-07-18-forge-control.md) — *(removed, see ADR-0003)* local agent management & control plane (SP9b local-first): orchestration mechanics, guardrails, epics C1–C5 on board #12.
 - [forge:autopilot spec](specs/2026-07-21-forge-autopilot.md) — continuous autonomous board-clearing engine (epic #125, v0.9.0): the loop, selection order, the auto-merge bar that replaces the human PR gate, the only-pauses escalation model, run ledger + safety rails.
 - [autopilot crazy mode spec](specs/2026-07-21-forge-autopilot-crazy-mode.md) — autonomous backlog shaping (epic #139): the `--shape` front door, `forge:shape`, the grounded-only boundary + ground gate, front-of-pipeline routing (ideate/brainstorm/spike/design).
+- [GitHub resilience spec](specs/2026-08-08-github-resilience.md) — rate-limit demand reduction (#407), Actions platform-outage detection+recovery (#408), and a spiked-first local outbox for deferrable writes (#409, "the async box") — separates two conflated failure modes and rejects a full GitHub replacement as disproportionate.
 
 ## Plans
 
