@@ -12,9 +12,16 @@ import { makeBoardCtx } from '../lib/boardctx.mjs';
 
 /**
  * The five MECHANICAL signals of the merge bar (spec §4 items 1–5). All must be
- * true to merge. Item 0 — the in-session merge authorization — is a one-time
- * run-start preflight (§4 preflight, not a per-merge signal): the orchestrator
- * confirms it up front, so it is not evaluated here.
+ * true to merge. Item 0 — the in-session merge authorization — is confirmed by
+ * the orchestrator at the run-start preflight (§4 preflight) and is not
+ * evaluated here. That preflight grant is NOT a one-time, session-wide
+ * guarantee: the harness auto-mode classifier evaluates authorization per
+ * merge attempt, so a later attempt in the same, uncompacted session can still
+ * be denied even after an earlier merge succeeded (observed directly,
+ * repeatedly, in production runs; #397). There is no code-level way to detect
+ * this in advance today (tracked separately, #398) — when it happens, the
+ * orchestrator's only recourse is to stop, surface the denial to the user, and
+ * ask for a fresh explicit grant before retrying.
  */
 export const BAR_SIGNALS = ['ship', 'gates', 'reviewer', 'security', 'ci'];
 
