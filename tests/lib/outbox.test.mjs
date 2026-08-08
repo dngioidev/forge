@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { makeBoardCtx } from '../../plugin/scripts/lib/boardctx.mjs';
 import {
   enqueue, pendingCount, drain, attemptOrDefer, isGithubUnreachable,
@@ -105,6 +105,28 @@ describe('lib/outbox — enqueue / pendingCount', () => {
     await expect(enqueue(dir, { op: 'merge', args: {} })).rejects.toThrow(/unknown op/);
   });
 
+  // #414 review — symlink-safety on the READ side, mirroring
+  // `monitors/ci-watch.mjs`'s `loadCiWatchState` guard: `writeJson`'s atomic
+  // rename already makes the WRITE side symlink-safe for free, but a plain
+  // read would follow a symlink planted at the outbox.json path by a local
+  // attacker with pre-existing write access to `.forge/autopilot/`.
+  it('a symlink planted at the outbox.json path is never dereferenced — reads as empty, not the forged content', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-outbox-'));
+    const targetDir = await mkdtemp(join(tmpdir(), 'forge-outbox-target-'));
+    const target = join(targetDir, 'forged.json');
+    const { writeJson } = await import('../../plugin/scripts/lib/jsonfile.mjs');
+    await writeJson(target, { version: 1, items: [{ id: 'forged', op: 'comment', args: {}, queuedAt: new Date().toISOString() }] });
+    const linkPath = join(dir, OUTBOX_RELPATH);
+    await mkdir(dirname(linkPath), { recursive: true });
+    try {
+      await symlink(target, linkPath, 'file');
+    } catch (err) {
+      if (err?.code === 'EPERM' || err?.code === 'EACCES') return; // needs elevated privilege on some platforms
+      throw err;
+    }
+    expect(await pendingCount(dir)).toBe(0); // never dereferenced — treated as absent, not the forged 1-item queue
+  });
+
   it('pendingCount tolerates a missing outbox.json (fresh repo, nothing ever queued)', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'forge-outbox-'));
     expect(await pendingCount(dir)).toBe(0);
@@ -162,6 +184,20 @@ describe('lib/outbox — drain', () => {
     const res = await drain(ctx.cwd, ctx, noop);
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/unknown queued op/);
+  });
+
+  it('found in review: a replay that THROWS (a hand-corrupted queue entry with a wrong-typed field) is caught as a clean failure, not an unhandled rejection', async () => {
+    const { ctx } = await ctxWith([]);
+    const { writeJson } = await import('../../plugin/scripts/lib/jsonfile.mjs');
+    // receipt.mjs does `args.sha.slice(0,7)` when `args.sha` is truthy — a
+    // numeric sha (only `item.op` is validated at the outbox layer, not each
+    // op's arg shape) throws a TypeError instead of returning {ok:false}.
+    await writeJson(join(ctx.cwd, OUTBOX_RELPATH), { version: 1, items: [{ id: 'ob-x', op: 'receipt', args: { issue: 1, pr: 9, sha: 12345 }, queuedAt: new Date().toISOString() }] });
+    const res = await drain(ctx.cwd, ctx, noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/replay of 'receipt'.*threw/);
+    expect(res.remaining).toBe(1);
+    expect(await pendingCount(ctx.cwd)).toBe(1); // never silently dropped
   });
 
   it('empty queue drains as a clean no-op', async () => {

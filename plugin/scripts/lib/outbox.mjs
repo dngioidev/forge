@@ -22,6 +22,7 @@
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { lstat } from 'node:fs/promises';
 import { readJson, writeJson } from './jsonfile.mjs';
 import { acquireLock } from './lock.mjs';
 import { run, makeGh, isRateLimited, isPlatformOutage } from './exec.mjs';
@@ -70,13 +71,31 @@ function freshOutbox() {
   return { version: 1, items: [] };
 }
 
-/** Tolerant read: an absent OR corrupt outbox.json both read as empty — same
+/**
+ * Tolerant read: an absent OR corrupt outbox.json both read as empty — same
  * tolerance `ledger.mjs` applies to `run.json` (#164/#185's idiom): a
  * genuine I/O error (EACCES/EBUSY/…) still propagates, only ENOENT/SyntaxError
- * degrade to "fresh". */
+ * degrade to "fresh". Symlink-safe (found in review, mirrors
+ * `monitors/ci-watch.mjs`'s `loadCiWatchState`): the WRITE path is already
+ * symlink-safe for free (`writeJson`'s atomic rename replaces whatever
+ * directory entry sits at the path, symlink or not, never dereferencing it),
+ * but a plain `readJson`/`readFile` on the READ side follows a symlink — a
+ * local attacker with pre-existing write access to `.forge/autopilot/` could
+ * otherwise plant one to make reads (and writes, once resolved to the
+ * symlink's target on the NEXT process that opens the real path fresh)
+ * reflect an arbitrary file. `lstat` (no-follow) gates the read so a
+ * symlinked path reads as absent/empty, same as a missing file.
+ */
 async function readOutbox(cwd) {
+  const path = join(cwd, OUTBOX_RELPATH);
   try {
-    return (await readJson(join(cwd, OUTBOX_RELPATH))) ?? freshOutbox();
+    const st = await lstat(path);
+    if (st.isSymbolicLink()) return freshOutbox();
+  } catch {
+    return freshOutbox(); // absent (or unstattable) — readJson would treat it the same way
+  }
+  try {
+    return (await readJson(path)) ?? freshOutbox();
   } catch (err) {
     if (err instanceof SyntaxError) return freshOutbox();
     throw err;
@@ -142,8 +161,18 @@ export async function drain(cwd, ctx, log = () => {}) {
       }
       // `isOutboxReplay` (set by the REPLAYERS wrapper) makes this a plain
       // ok/error result — never `{deferred:true}` — so there's exactly two
-      // outcomes to reason about here: it landed, or it didn't.
-      const res = await replay(ctx, item.args, log);
+      // outcomes to reason about here: it landed, or it didn't. A replayed
+      // run* function is only shape-checked on its OWN primary key
+      // (`args.issue` etc.) — a hand-corrupted queue entry with a wrong-typed
+      // secondary field (e.g. a non-string `sha`) can still throw instead of
+      // returning `{ok:false}` (found in review). Caught here so that's a
+      // reported failure like any other, never an unhandled rejection.
+      let res;
+      try {
+        res = await replay(ctx, item.args, log);
+      } catch (err) {
+        return { ok: false, error: `outbox: replay of '${item.op}' (${item.id}) threw: ${err?.message || err}`, drained, remaining: box.items.length, failedItem: item };
+      }
       if (res.ok) {
         box.items.shift();
         drained++;

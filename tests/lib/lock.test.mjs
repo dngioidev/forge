@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { acquireLock, isStale, readLock, DEFAULT_STALE_MS } from '../../plugin/scripts/lib/lock.mjs';
 
 async function tmp() {
@@ -109,5 +109,54 @@ describe('lib/lock (#414, per #387 design) — shared exclusive-lockfile helper'
     const third = await acquireLock(path);
     expect(third.ok).toBe(true);
     await third.release();
+  });
+
+  // Found in review (major, empirically reproduced): the original blind
+  // unlink()+recreate reclaim let two concurrent callers BOTH judge the same
+  // stale lock reclaimable and BOTH end up believing they hold it — the exact
+  // #387 lost-update race this lockfile exists to prevent. The fix reclaims
+  // via an atomic rename (only one racer's rename can ever succeed); this
+  // pins that AT MOST ONE concurrent acquirer ever wins a race over one
+  // stale lock, run repeatedly since a race is inherently non-deterministic.
+  it('AC — concurrent acquireLock calls racing to reclaim the SAME stale lock: exactly one wins, never both', async () => {
+    for (let iter = 0; iter < 25; iter++) {
+      const dir = await tmp();
+      const path = join(dir, 'x.lock');
+      const now = Date.now();
+      await writeFile(path, JSON.stringify({ pid: 999999, startedAt: new Date(now).toISOString(), hostname: 'crashed-host' }), 'utf8');
+      const isAlive = (pid) => pid !== 999999; // the seeded holder is dead — reclaimable by everyone racing it
+      const attempts = await Promise.all(
+        Array.from({ length: 5 }, (_, i) => acquireLock(path, { pid: 1000 + i, now: () => now, isAlive })),
+      );
+      const winners = attempts.filter((a) => a.ok);
+      expect(winners).toHaveLength(1); // never zero (a live dead-pid lock must be reclaimable), never more than one
+      // the on-disk lock reflects exactly the winner's own pid — not a torn/mixed write
+      const raw = JSON.parse(await readFile(path, 'utf8'));
+      expect(winners[0].ok).toBe(true);
+      await winners[0].release();
+    }
+  });
+
+  // #414 review — symlink-safety on the READ side, mirroring
+  // `monitors/ci-watch.mjs`'s `loadCiWatchState` guard: `acquireLock`'s
+  // `open(path,'wx')`/`unlink(path)` can't be tricked by a symlink (O_EXCL
+  // create fails EEXIST on an existing link; unlink removes the link itself),
+  // but a plain `readFile` in `readLock` WOULD follow one — a local attacker
+  // with pre-existing write access to the lock's directory could plant a
+  // symlink to make the staleness verdict reflect an arbitrary file.
+  it('readLock never follows a symlink planted at the lock path', async () => {
+    const dir = await tmp();
+    const targetDir = await mkdtemp(join(tmpdir(), 'forge-lock-target-'));
+    const target = join(targetDir, 'forged.json');
+    await writeFile(target, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), hostname: 'forged' }));
+    const linkPath = join(dir, 'x.lock');
+    await mkdir(dirname(linkPath), { recursive: true });
+    try {
+      await symlink(target, linkPath, 'file');
+    } catch (err) {
+      if (err?.code === 'EPERM' || err?.code === 'EACCES') return; // needs elevated privilege on some platforms
+      throw err;
+    }
+    await expect(readLock(linkPath)).resolves.toBeNull(); // never dereferenced — treated as absent/unreadable
   });
 });
