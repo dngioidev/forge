@@ -11,7 +11,13 @@ The full path from any repo — fresh or existing (cms included) — to a workin
 | gh CLI, authed, `project` scope | `gh auth status` | `gh auth login -s project` (existing auth: `gh auth refresh -s project`) |
 | a git repo on GitHub | `git remote -v` | push it first — the board, tickets, and trail all live there |
 
+> Running Antigravity instead of Claude Code? Same Node/git/gh prerequisites, plus the `agy` CLI on PATH (`agy --version`) — skip to [Antigravity (agy)](#antigravity-agy) below.
+
 ## 1. Install the plugin
+
+Pick your host. From step 2 on this guide is host-agnostic — `/forge:init`, doctor, the gates, and everything after work the same way regardless of which one installed the plugin.
+
+### Claude Code
 
 In a Claude Code session inside the target repo:
 
@@ -23,6 +29,16 @@ In a Claude Code session inside the target repo:
 (or from the terminal: `claude plugin marketplace add dngioidev/forge` then `claude plugin install forge@forge`.)
 
 This brings the 20 skills, the `/forge:*` commands, the safety + learning hooks, and the graph MCP server. Nothing runs against your repo yet.
+
+### Antigravity (agy)
+
+forge's engine is host-agnostic ([ADR-0007](../decisions/0007-cross-gai-mcp-first.md)); Antigravity, via its `agy` CLI, is the one adapter **proven end-to-end today** (Codex is deferred, see [#292](https://github.com/dngioidev/forge/issues/292)). From a forge checkout:
+
+```
+node plugin/scripts/init.mjs --host agy
+```
+
+No `--out` is the recommended path: the package emits in place to `.agents/plugins/forge/` and agy discovers it there — nothing to copy or relocate. agy ingests the Claude plugin format natively (skills, agents, and commands copied byte-for-byte, slash commands auto-converted to skills), so you get the same 20 skills and `/forge:*` commands as Claude Code. For a custom `--out` staging path, the MCP/hook wiring detail, Windows gotchas (MAX_PATH), and the full capability/parity matrix, see the [Cross-GAI guide](cross-gai.md).
 
 ## 2. Bootstrap: `/forge:init`
 
