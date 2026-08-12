@@ -15,7 +15,33 @@
  * for a few known-catastrophic commands, not a security boundary.
  */
 
-const SAFE_RM_TARGETS = /(node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)/i;
+// Component-anchored (#446): each alternative must occupy a WHOLE path
+// component, not merely appear as a substring. `dist` and `dist/` are safe;
+// `distribution-of-secrets` is not, because "dist" there abuts "r", not a
+// component boundary. The boundary class is path separators (`/` — the only
+// one bash itself treats specially — and a bare `\`, which can only reach
+// this regex as a SURVIVING literal separator: normalizeShellText() consumes
+// a lone backslash as an escape, so a literal one only comes through when the
+// source doubled it, `dist\\build`, exactly how bash's own argv expansion
+// keeps a literal backslash, verified against this platform's bash), plus
+// whitespace/start/end for a bare argument. Deliberately NOT `\b`/word-
+// boundary: a hyphen is a non-word character, so a plain `\b` would still
+// treat "coverage" inside `coverage-notes-prod-db` as a whole word and let
+// the exact bypass this ticket closes back in.
+//
+// `$TMP`/`$TEMP` get no special-casing (AC.4): they are matched by the same
+// component-anchored rule as every literal directory name, which already
+// produces the right outcome for the one case that matters — bash itself
+// resolves `$TMPDIR` to a DIFFERENT (and here, unset) variable than `$TMP`
+// followed by literal `DIR`, because env-var-name expansion consumes maximal
+// `[A-Za-z0-9_]*` after the `$`. The component boundary here (`/`, whitespace,
+// `\`, start/end) is a STRICTER right-edge than bash's own variable-name
+// boundary would be (it also rejects a same-token `-` suffix bash would
+// resolve as literal data, e.g. `$TMP-backup`), which only ever narrows the
+// safe set — the one case AC.2 requires, `"$TMP/forge-test"`, has a `/`
+// immediately after `$TMP` and keeps matching.
+const SAFE_RM_TARGETS =
+  /(?:^|[\s/\\])(?:node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)(?=$|[\s/\\])/i;
 const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 
 /**

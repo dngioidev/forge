@@ -285,6 +285,71 @@ describe('recursive-delete long flags (#312, AC-312.*)', () => {
   });
 });
 
+describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)', () => {
+  // AC-446.1 — a safe word only exempts a delete when it occupies a WHOLE path
+  // component (bounded by `/`, whitespace, `\`, or start/end of the argument),
+  // not merely appears as a substring. `dist` and `dist/` are safe; a longer
+  // name that merely CONTAINS `dist` is not.
+  it('AC-446.1: dist and dist/ (trailing slash) are safe; distribution-of-secrets is not', () => {
+    expect(check('rm -rf dist').blocked).toBe(false);
+    expect(check('rm -rf dist/').blocked).toBe(false);
+    expect(check('rm -rf dist/sub').blocked).toBe(false);
+    expect(check('rm -rf distribution-of-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-446.1 — a nested safe-named directory is still safe regardless of its
+  // parent's name: anchoring is per-COMPONENT, not top-level-only, matching
+  // how `packages/app/dist` was already treated as safe pre-fix.
+  it('AC-446.1: a safe word nested under an unrelated parent directory is still safe', () => {
+    expect(check('rm -rf packages/app/dist').blocked).toBe(false);
+    expect(check('rm -rf ~/project/node_modules').blocked).toBe(false);
+  });
+
+  // AC-446.2 — non-negotiable per the ticket: every existing safe-target case
+  // (AC-312.2, plus the ticket's own quoted-$TMP example) must keep passing
+  // completely unchanged after anchoring. Re-asserted here, by name, so a
+  // regression in this exact set is never mistaken for an unrelated failure.
+  it('AC-446.2: pre-existing safe-target cases are UNCHANGED by anchoring', () => {
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    expect(check('rm -rf "$TMP/forge-test"').blocked).toBe(false);
+    expect(check('rm --recursive --force node_modules').blocked).toBe(false);
+    expect(check('rm --force --recursive dist build coverage').blocked).toBe(false);
+  });
+
+  // AC-446.3 — the substring-lookalike paths from the ticket (and the widest
+  // alternative, `te?mp`, against every word it used to leak through) are
+  // pinned as BLOCKED, in the style of AC-429.3 / AC-437.3.
+  it('AC-446.3: substring-lookalike dangerous paths are blocked, not exempted', () => {
+    for (const cmd of [
+      'rm -rf /important-template-configs',            // "temp" inside "template"
+      'rm -rf ~/my-distribution-of-prod-secrets',       // "dist" inside "distribution"
+      'rm -rf ./coverage-notes-prod-db',                // "coverage" abutting "-notes"
+      'rm -rf /srv/scratchpad-lookalike-prod',          // "scratchpad" abutting "-lookalike"
+      'rm -rf /srv/temporary-prod-data',                // "temp" inside "temporary"
+      'rm -rf /srv/attempt-to-delete-prod',             // "temp" inside "attempt"
+      'rm -rf /srv/contemplate-prod-migration',         // "temp" inside "contemplate"
+      'rm -rf buildings-and-infra',                     // "build" inside "buildings"
+      'rm -rf node_modules_backup_of_prod',             // "node_modules" abutting "_backup"
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-446.4 — decision: `$TMP`/`$TEMP` get NO special-casing beyond the same
+  // component anchor every other alternative uses. That already produces the
+  // bash-correct outcome: `$TMPDIR` is a DIFFERENT (here, unset) variable to
+  // real bash, not `$TMP` + literal `DIR` — env-var-name expansion consumes
+  // maximal `[A-Za-z0-9_]*` after the `$` — so treating `$TMPDIR` as exempt
+  // would itself have been a bypass, not just an inconsistency.
+  it('AC-446.4: $TMP/$TEMP are exempt only as a whole component, not as a prefix of a longer name', () => {
+    expect(check('rm -rf $TMP/forge-test').blocked).toBe(false);
+    expect(check('rm -rf $TEMP/forge-test').blocked).toBe(false);
+    expect(check('rm -rf $TMPDIR/prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('rm -rf $TEMPORARY_CREDENTIALS_DIR')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
   // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
   // and `--hard`, in either order, and regardless of a global git flag before
