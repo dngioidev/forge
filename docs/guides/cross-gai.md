@@ -40,11 +40,14 @@ forge inside an agy session (board moves, gates, release readiness).
 ## Step 1 — emit the agy plugin package
 
 Run the host-emit mode of `init` **from the directory of the project you're
-adding forge to** — not from inside the forge checkout. `init.mjs` resolves
-its output relative to the **current working directory**, always, whether or
-not `--out` is passed; if you're a first-time adopter with no forge checkout
-yet, get one first (`git clone https://github.com/dngioidev/forge C:\tools\forge`
-— see [install.md's Antigravity section](install.md#antigravity-agy) for the
+adding forge to** — not from inside the forge checkout. With no `--out` (the
+recommended path) `init.mjs` resolves its output relative to the **current
+working directory**, so your cwd is what decides where the package lands; a
+*relative* `--out` is resolved against the cwd too, and only an *absolute*
+`--out` (like the one below) is cwd-independent. If you're a first-time
+adopter with no forge checkout yet, get one first
+(`git clone https://github.com/dngioidev/forge C:\tools\forge` — see
+[install.md's Antigravity section](install.md#antigravity-agy) for the
 full first-time walkthrough), then point at its emitter by absolute path:
 
 ```
