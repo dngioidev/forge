@@ -8,7 +8,7 @@ Bootstrap forge for this repository (adopt-or-create, idempotent — safe to re-
 1. Ask the user which mode applies, unless the arguments already say:
    - Adopt an existing GitHub Project: needs the project number.
    - Create a fresh project: needs a title (default: the repo name).
-2. Ask whether to wire the forge status line into `.claude/settings.local.json` (recommended; it only merges the `statusLine` key, never touches other settings — local because the command embeds a machine-specific path).
+2. **Claude Code only** — ask whether to wire the forge status line into Claude's local settings (recommended; it only merges the `statusLine` key, never touches other settings — kept in the local file because the command embeds a machine-specific path). Skip this step on other hosts: the statusline is a Claude-only feature with no equivalent elsewhere (see `docs/guides/cross-gai.md`'s parity matrix).
 3. Run the script from the repo root:
 
 ```

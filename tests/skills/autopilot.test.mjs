@@ -60,12 +60,21 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/\{issue, outcome/);
   });
 
-  it('#156: documents the permission allowlist required for a continuous run', async () => {
+  it('#156/#430: documents per-host permission pre-authorization required for a continuous run', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     expect(s).toMatch(/Permissions/);
     expect(s).toMatch(/perms\.mjs/);
-    expect(s).toMatch(/settings\.local\.json/);
+    expect(s).toMatch(/Claude Code/);
+    expect(s).toMatch(/local settings file|local Claude settings/i);
+    expect(s).toMatch(/Antigravity \(agy\)/);
+    expect(s).toMatch(/hook-mediated/);
     expect(s).toMatch(/permission prompt|pre-authoriz/i);
+    // #430: the source skill is copied byte-for-byte into the emitted agy package
+    // (plugin/scripts/agy/emit.mjs COMPONENT_DIRS), so it must never spell out the
+    // Claude-only filename literally — an agy-hosted agent reading its own bundled
+    // copy would be told to write a file agy never reads. tests/agy/emit.test.mjs
+    // (AC-430) pins the same property against the emitted tree.
+    expect(s).not.toMatch(/settings\.local\.json/);
   });
 
   it('#137: documents context/cost bounding — spawned per-ticket delivery + O(1) outer loop', async () => {

@@ -479,3 +479,77 @@ describe('AC-307: the emitted package is relocatable — survives `agy plugin in
     expect(cmd).toBe('node "hooks/agy-deny.mjs"');
   });
 });
+
+describe('AC-430: emitted agy skills/commands never point the agent at a Claude-only settings file', () => {
+  // Same regression class as AC-294 above (${CLAUDE_PLUGIN_ROOT} surviving into emitted
+  // skills): #430 found `skills/autopilot/SKILL.md`'s Permissions block shipping verbatim
+  // into the agy package, telling an agy-hosted agent to merge output into
+  // `.claude/settings.local.json` — a file agy never reads. Asserted against the EMITTED
+  // tree (not the source), because the bug is in what actually ships, not in the source
+  // skill's intent.
+  const SETTINGS_LOCAL_RE = /settings\.local\.json/i;
+
+  it("AC-430.1: no emitted skill or command references Claude's settings.local.json", async () => {
+    const { dest } = await emitTo();
+    const files = [
+      ...await collectMd(join(dest, 'skills')),
+      ...await collectMd(join(dest, 'commands')),
+    ];
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const body = await readFile(f, 'utf8');
+      expect(body, `${f} still references a Claude-only settings file`).not.toMatch(SETTINGS_LOCAL_RE);
+    }
+  });
+
+  it('AC-430.2: the emitted autopilot skill tells an agy-hosted agent to use the hook-mediated allowlist, not a settings file', async () => {
+    const { dest } = await emitTo();
+    const body = await readFile(join(dest, 'skills', 'autopilot', 'SKILL.md'), 'utf8');
+    // positive coverage: the agy-specific pre-authorization path is actually documented,
+    // not merely silent (AC.1 — the fix is a correct redirection, not a deletion).
+    expect(body).toMatch(/Antigravity \(agy\)/);
+    expect(body).toMatch(/hook-mediated/);
+    expect(body).toMatch(/cross-gai\.md/);
+    // the misdirection instruction itself (run perms.mjs, merge into a settings file, as
+    // something an agy host would follow) must not appear unqualified.
+    expect(body).not.toMatch(SETTINGS_LOCAL_RE);
+  });
+
+  it("AC-430.3: Claude's harness auto-mode classifier caveat is scoped to Claude, not presented as universal", async () => {
+    const { dest } = await emitTo();
+    const body = await readFile(join(dest, 'skills', 'autopilot', 'SKILL.md'), 'utf8');
+    // every remaining mention of the classifier / "necessary but not sufficient" caveat
+    // is explicitly Claude-scoped in the surrounding prose (agy has no such classifier).
+    const idx = [...body.matchAll(/auto-mode classifier/g)].map((m) => m.index);
+    expect(idx.length).toBeGreaterThan(0);
+    for (const i of idx) {
+      const windowText = body.slice(Math.max(0, i - 400), i);
+      expect(windowText, `classifier mention at ${i} is not visibly Claude-scoped`).toMatch(/Claude/);
+    }
+  });
+
+  it('AC-430.4: perms.mjs (a Claude-only artifact) still ships in the agy package, and every mention of running it in the emitted skill is Claude-scoped', async () => {
+    // #430's note: whether to strip perms.mjs from the agy package tree is a judgment
+    // call — it's inert unless something tells the agy agent to run it. Pin that it's
+    // present (unchanged emit behaviour, AC.3 — perms.mjs itself is untouched for
+    // Claude) and that every place the emitted skill mentions invoking it is visibly
+    // scoped to Claude, so an agy-hosted agent reading it has no reason to run it.
+    const { dest } = await emitTo();
+    await expect(access(join(dest, 'scripts', 'autopilot', 'perms.mjs'))).resolves.toBeUndefined();
+    const body = await readFile(join(dest, 'skills', 'autopilot', 'SKILL.md'), 'utf8');
+    const idx = [...body.matchAll(/perms\.mjs/g)].map((m) => m.index);
+    expect(idx.length).toBeGreaterThan(0);
+    for (const i of idx) {
+      const windowText = body.slice(Math.max(0, i - 400), Math.min(body.length, i + 100));
+      expect(windowText, `perms.mjs mention at ${i} is not visibly Claude-scoped`).toMatch(/Claude/);
+    }
+  });
+
+  it("AC-430.5 (AC.3): perms.mjs's Claude behaviour (source, not emitted) is unchanged by this fix", async () => {
+    const src = await readFile(join(pluginRoot(), 'scripts', 'autopilot', 'perms.mjs'), 'utf8');
+    expect(src).toMatch(/\.claude\/settings\.local\.json/); // still Claude-only, still prints the real path
+    const mod = await import(pathToFileURL(join(pluginRoot(), 'scripts', 'autopilot', 'perms.mjs')).href);
+    expect(mod.permsBlock()).toEqual({ permissions: { allow: expect.any(Array) } });
+    expect(mod.ALLOW.length).toBeGreaterThan(0);
+  });
+});
