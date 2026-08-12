@@ -152,6 +152,36 @@ describe('denylist hook (AC-3.4)', () => {
     expect(check('').blocked).toBe(false);
     expect(check(123).blocked).toBe(false);
   });
+
+  it('AC-3.4: normalisation stays linear on large, quote-heavy input', () => {
+    // A hang is as much a failure of this hook as a miss: it runs on every
+    // Bash call, and agy's PreToolUse timeout FAILS OPEN at ten seconds (#428),
+    // so a slow check is a skipped check. This nearly shipped — asking a
+    // string built by `+=` whether it ends in `$`, once per quote character,
+    // re-flattened the accumulator every time and made the whole scan
+    // quadratic: 600KB took 7s and 1.2MB took 32s. Ordinary input reaches it,
+    // no adversarial shape needed — a long JSON payload in a `curl -d` has
+    // exactly the alternating quote/text pattern that triggers it.
+    //
+    // Asserted as a SCALING property rather than a fixed millisecond budget,
+    // so it stays meaningful on slower CI hardware: quadratic behaviour shows
+    // up as ~4x per doubling, linear as ~2x.
+    const timeFor = (pairs) => {
+      const cmd = `echo ${'"a"a'.repeat(pairs)}`;
+      const started = Date.now();
+      check(cmd);
+      return Date.now() - started;
+    };
+    timeFor(20000); // warm up, so JIT does not skew the first sample
+    const small = Math.max(timeFor(150000), 1);
+    const large = Math.max(timeFor(300000), 1);
+    expect(large / small, 'doubling the input must not quadruple the time').toBeLessThan(3);
+    // ...and a realistically-shaped quote-heavy payload stays quick outright.
+    const json = Array.from({ length: 20000 }, (_, i) => `"k${i}":"v${i}"`).join(',');
+    const started = Date.now();
+    check(`curl -d '{${json}}' https://example.test`);
+    expect(Date.now() - started, 'a large JSON payload must not stall the hook').toBeLessThan(2000);
+  });
 });
 
 describe('pipe-to-shell / RCE (#311, AC.1–AC.4)', () => {

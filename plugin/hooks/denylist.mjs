@@ -179,14 +179,34 @@ function normalizeShellText(rawCommand) {
   // tokens the shell would have kept apart, i.e. match more, never less — the
   // safe direction — and a CR cannot spell part of a flag either way.
   const command = rawCommand.replace(/\r/g, '');
-  let out = '';
+  // Output is accumulated as single-character CHUNKS and joined once at the
+  // end, rather than appended onto a growing string.
+  //
+  // This is not a micro-optimisation, it is the difference between linear and
+  // quadratic. The `$'…'` rule below has to know whether the output currently
+  // ends in `$`, and it has to be able to take that `$` back off. Asking a
+  // string being built by `+=` a question about its contents forces the engine
+  // to flatten it, and doing that once per quote character turns the whole
+  // scan quadratic: an ordinary quote-heavy command (a long JSON payload in a
+  // `curl -d`, say) measured seven seconds at 600KB and thirty-two at 1.2MB.
+  // On a hook that runs on every single Bash call, with agy's fail-open
+  // timeout at ten seconds (#428), that is a hang, not a slowdown — and it is
+  // the same failure class that got brace expansion cut from this ticket, so
+  // it does not get to ship in the part that stays.
+  //
+  // With chunks, appending is O(1), the "ends with `$`" question is answered
+  // by a tracked boolean, and taking that `$` back off is a pop.
+  const parts = [];
+  let endsDollar = false; // does the output currently end with `$`?
   let quote = null;    // the active quote character, or null
   let ansiC = false;   // the active single-quote region was opened as `$'…'`
   let litDollar = false; // the `$` just emitted came from `\$`, so it is DATA
+  /** Append one character, keeping `endsDollar` true to the output. */
+  const push = (ch) => { parts.push(ch); endsDollar = ch === '$'; };
   // A separator that survived escaping/quoting is inert as a separator, so
   // emit a space rather than the character itself — splitSegments() is blind
   // to quoting and would otherwise split the command around it.
-  const emit = (ch) => { out += SEPARATOR_CHARS.test(ch) ? ' ' : ch; };
+  const emit = (ch) => push(SEPARATOR_CHARS.test(ch) ? ' ' : ch);
   // An ESCAPED character, i.e. one that appeared after a backslash. Almost all
   // of them are just data and go through emit() — but a backslash-NEWLINE is
   // bash's LINE CONTINUATION, and bash deletes BOTH bytes with no replacement,
@@ -203,7 +223,7 @@ function normalizeShellText(rawCommand) {
   // String.fromCodePoint throws above U+10FFFF and `$'\UFFFFFFFF'` is
   // reachable input, while check() must never throw (AC-3.4).
   const emitCodePoint = (code) => {
-    if (!Number.isInteger(code) || code < 0x20 || code > 0x7e) { out += ' '; return; }
+    if (!Number.isInteger(code) || code < 0x20 || code > 0x7e) { push(' '); return; }
     emit(String.fromCharCode(code));
   };
   for (let i = 0; i < command.length; i++) {
@@ -220,14 +240,17 @@ function normalizeShellText(rawCommand) {
         // `$'…'` / `$"…"`: a PRECEDING `$` is quoting syntax, not data — unless
         // it was itself escaped (`\$'…'`), in which case it is a literal `$`
         // and the quotes that follow are ordinary.
-        const introducer = out.endsWith('$') && !litDollar;
+        const introducer = endsDollar && !litDollar;
         ansiC = introducer && ch === "'";
-        if (introducer) out = out.slice(0, -1);
+        if (introducer) {
+          parts.pop(); // drop the `$`: it was quoting syntax, not data
+          endsDollar = parts[parts.length - 1] === '$';
+        }
         quote = ch;
         litDollar = false;
         continue;
       }
-      out += ch;
+      push(ch);
       litDollar = false;
       continue;
     }
@@ -304,7 +327,7 @@ function normalizeShellText(rawCommand) {
     }
     emit(ch);
   }
-  return out;
+  return parts.join('');
 }
 
 export const RULES = [
