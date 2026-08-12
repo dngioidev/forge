@@ -467,6 +467,16 @@ describe('AC-307: the emitted package is relocatable — survives `agy plugin in
     expect(quiet.join('\n')).not.toContain('NOTE (--out)');
   });
 
+  it('AC-431.3: the in-place (no --out) emit ALSO prints the `agy plugin validate` verification guidance — previously silent', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agy-emit-'));
+    const lines = [];
+    const res = await emitAgyPlugin({ destRoot: join(dir, 'inplace'), viaOut: false, log: (m) => lines.push(m) });
+    expect(res.ok).toBe(true);
+    const out = lines.join('\n');
+    expect(out).toContain('agy plugin validate forge');
+    expect(out).toMatch(/next/i);
+  });
+
   it('AC-307.1: pure builders emit relative paths regardless of any dest argument', () => {
     // no dest is threaded in anymore; a stray arg must not resurface an absolute path
     const mcp = buildMcpConfig({ hasForgeCore: true });

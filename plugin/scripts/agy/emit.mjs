@@ -273,12 +273,16 @@ export async function emitAgyPlugin({ srcRoot = pluginRoot(), destRoot, cwd = pr
   log(`agy: rewrote \${CLAUDE_PLUGIN_ROOT} -> plugin-root-relative in ${rewritten} emitted skill/command file(s)`);
   log('agy: config paths are plugin-root-relative -> the package is relocatable (survives `agy plugin install` copy + `--out` deletion)');
   log('agy: install with  agy plugin install "' + dest + '" (or discover in place under .agents/plugins/forge/)');
+  // #431 AC.3: verification guidance must print on BOTH paths. Previously this only
+  // fired when --out was passed (viaOut), so the recommended in-place flow (no --out)
+  // finished silently with nothing telling the operator how to confirm it worked.
+  log('agy: next — run  agy plugin validate forge  to confirm it resolves (skills/agents/commands/mcpServers/hooks should all report green; see docs/guides/cross-gai.md#step-4--install-and-validate-with-agy). `/forge:doctor` also checks this package once it is emitted (#431).');
   // #307: the in-place discovery flow (no --out) is the verified-primary path. When
   // staging for a copy install, tell the operator to confirm the emitted config
   // resolves on their agy build — MCP-arg CWD is not independently doc-confirmed.
   if (viaOut) {
     log('agy: NOTE (--out): the in-place discovery flow (no --out) is the recommended/verified-primary path.');
-    log('agy: NOTE (--out): after `agy plugin install`, run `agy plugin validate forge` to confirm the MCP server + hooks resolve from the copied plugin root.');
+    log('agy: NOTE (--out): after `agy plugin install`, re-run  agy plugin validate forge  against the installed copy to confirm the MCP server + hooks resolve from the copied plugin root.');
   }
   return { ok: true, dest, written, hasForgeCore, rewritten, viaOut };
 }

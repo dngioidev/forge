@@ -105,9 +105,13 @@ the package's files; that is expected, not a sign something went wrong.
 To tell whether an update is available: the emitted `plugin.json`'s `version`
 field is the forge version currently pinned in the consumer's repo; compare it
 against the forge checkout's own `plugin/.claude-plugin/plugin.json` after a
-`git pull` there. Automating that comparison as a `forge:doctor` check is
-tracked in [#431](https://github.com/dngioidev/forge/issues/431), not built by
-this guide.
+`git pull` there. `/forge:doctor` automates this comparison
+([#431](https://github.com/dngioidev/forge/issues/431)) — run from a Claude
+Code session with the emitted package sitting in the same repo, it reports
+`agy-staleness: ok/warn` by comparing the two versions itself. The one case
+it can't automate: running doctor **from inside the emitted copy itself**
+(no separate reference checkout) has nothing to compare against and stays
+silent — the manual check above is still how you'd confirm freshness there.
 
 ### What gets emitted (the plugin layout)
 
