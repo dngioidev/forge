@@ -15,6 +15,31 @@ describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () =>
     expect(check('git push --force-with-lease origin feat/1-x').blocked).toBe(false); // still allowed
   });
 
+  it('AC-429.3: a force-push spelled as a BUNDLED short flag blocks too (-uf / -fu, not just standalone -f)', () => {
+    // git's parse-options bundles short boolean options (the same mechanism as
+    // `git commit -am`), so these are real forced non-fast-forward updates. The
+    // old standalone-`\s-f\b` regex missed them, which mattered once #429's
+    // allowlist began granting a bare `allow` to anything starting `git push `.
+    for (const cmd of ['git push -uf origin main', 'git push -fu origin main', 'git push -uf origin main --tags']) {
+      expect(check(cmd).rule, cmd).toBe('force-push');
+    }
+    // and still blocks when buried in a chain
+    expect(check('git status && git push -uf origin main').rule).toBe('force-push');
+  });
+
+  it('AC-429.3: the bundled-flag widening does not false-positive on ordinary pushes', () => {
+    for (const cmd of [
+      'git push -u origin feat/x',           // -u alone, no force
+      'git push origin feature-f',           // mid-word dash in a branch name
+      'git push --set-upstream origin x',
+      'git push --follow-tags origin main',
+      'git push --quiet origin main',
+      'git push --force-with-lease origin x', // the sanctioned safe alternative
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
+
   it('AC-B85.3: destructive command in one segment still blocks; benign chained segments do not', () => {
     expect(check('npm test && git reset --hard HEAD~1').rule).toBe('hard-reset');
     expect(check('git add -A && git clean -fdx').rule).toBe('git-clean-force');

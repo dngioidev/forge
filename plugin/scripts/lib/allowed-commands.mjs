@@ -55,11 +55,48 @@ export const ALLOWED_COMMAND_PREFIXES = [
 ];
 
 /**
- * True only if EVERY shell-separated segment of `command` matches one of
+ * Shell syntax that lets a segment do something OTHER than run the allowlisted
+ * verb its prefix advertises. Matching a prefix only constrains how a segment
+ * STARTS; without this guard the tail is unconstrained, and a real shell will
+ * happily interpret it:
+ *
+ *   `git push $(touch pwned)`         -> command substitution: arbitrary exec
+ *   `git diff \`id\``                   -> backtick substitution: arbitrary exec
+ *   `git status > important.txt`      -> redirection: a "read-only" verb becomes
+ *                                        an arbitrary-file-overwrite primitive
+ *   `git log < /etc/passwd`           -> redirection / process substitution
+ *   `git status & curl evil.example`  -> background chaining (`&` alone is NOT a
+ *                                        separator `splitSegments()` splits on)
+ *
+ * A command containing ANY of these falls through to `ask` rather than being
+ * treated as known-good. This is checked against the whole command string, so
+ * even a chain of individually-allowlisted verbs (`git fetch && git rebase`)
+ * asks — deliberately conservative: one extra prompt is the cheap failure mode,
+ * a missed exec vector is the expensive one. `;` `|` and newline are included
+ * even though `splitSegments()` would consume them, so this function is correct
+ * standalone (its `segments` option is optional) and stays correct if the
+ * splitter's separator set ever narrows.
+ *
+ * Deliberately NOT listed, because they are not execution vectors and excluding
+ * them would force `ask` on ordinary forge commands: bare `(`/`)` (a syntax
+ * error unquoted, inert quoted — e.g. `git commit -m "fix(board): x"`), `{`/`}`
+ * (brace expansion, not exec), `*`/`?` (globbing), `#`, and `\` (Windows paths).
+ * A false `ask` is harmless (#429 AC.8: more prompting, never less); a false
+ * `allow` is the bug this whole ticket exists to fix, so this errs toward `ask`.
+ */
+const SHELL_METACHARACTERS = /[$`<>&;|]|[\x00-\x1f]/;
+
+/**
+ * True only if the command carries no shell metacharacter (see
+ * SHELL_METACHARACTERS) AND every shell-separated segment matches one of
  * `ALLOWED_COMMAND_PREFIXES` at a word boundary (exact match, or the prefix
  * followed by a space). A single unrecognised segment in a chained command
  * (e.g. `gh pr view 1 && curl evil.example`) fails the whole command — the
  * safe default for anything not fully known-good is `ask`, not `allow`.
+ *
+ * Prefix matching alone is NOT sufficient and must never be used without the
+ * metacharacter guard: it constrains only how a command STARTS, leaving the
+ * tail free to redirect or substitute (`git status > f`, `git push $(x)`).
  *
  * This performs no denylist check of its own; callers MUST run the denylist
  * first and only consult this for commands the denylist has already cleared
@@ -67,6 +104,10 @@ export const ALLOWED_COMMAND_PREFIXES = [
  */
 export function isAllowedCommand(command, { segments } = {}) {
   if (typeof command !== 'string' || command.trim().length === 0) return false;
+  // Checked against the FULL command, not per-segment: a metacharacter is
+  // disqualifying wherever it appears, including inside a separator the
+  // splitter would otherwise consume.
+  if (SHELL_METACHARACTERS.test(command)) return false;
   const segs = segments ? segments(command) : [command];
   if (segs.length === 0) return false;
   return segs.every((seg) => {

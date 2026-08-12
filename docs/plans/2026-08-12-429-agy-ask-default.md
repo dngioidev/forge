@@ -46,7 +46,14 @@ map each one to a passing test; they correspond 1:1 to the ticket's AC.1-AC.8.
 New `plugin/scripts/lib/allowed-commands.mjs` exporting
 `ALLOWED_COMMAND_PREFIXES` (the command set from the ticket body) and
 `isAllowedCommand(command, { segments })`, which requires every shell-split
-segment to match a prefix at a word boundary.
+segment to match a prefix at a word boundary **and** the command to carry no
+shell metacharacter. The metacharacter guard is load-bearing, not defensive
+polish: prefix matching constrains only how a command *starts*, so without it
+`git status > f` (an explicitly "read-only" verb) becomes an arbitrary-file
+overwrite and `git push $(x)` becomes arbitrary code execution — both silently
+allowed, which would have re-opened the exact hole this ticket exists to
+close. Caught by adversarial review of the first implementation; now
+regression-tested at both the unit and the hook level.
 
 **Files:** plugin/scripts/lib/allowed-commands.mjs
 
@@ -68,6 +75,28 @@ on a hit. Else `isAllowedCommand()` -> `allow`. Else -> `ask` (was: bare
 an evaluated run_command call" this ticket targets.
 
 **Files:** plugin/hooks/agy-deny.mjs
+
+## Task 3b (code): close the bundled-short-flag force-push gap (AC-429.3)
+
+`plugin/hooks/denylist.mjs`'s force-push rule matched only a **standalone**
+`-f` (`/\s-f\b/`). git's parse-options bundles short boolean options (same
+mechanism as `git commit -am`), so `git push -uf` / `-fu` are real forced,
+non-fast-forward updates that the rule missed. That was survivable while the
+agy hook allowed everything anyway; it is **not** survivable once AC-429.2's
+allowlist grants a bare `allow` to anything starting `git push ` — the miss
+becomes a silent auto-approved force-push, i.e. the exact #434 failure mode.
+Rule now collects single-dash short-flag clusters (the technique
+`recursive-delete` already uses) and tests for `f` within them, keeping
+`--force-with-lease` and mid-word dashes (`feature-f`) out of the cluster.
+
+Scope note: the original ticket body lists "changing the denylist rules" as a
+non-goal, but that was written pre-scope-update, when this was a feature
+ticket. Revised AC-429.3 makes denylist-outranks-allowlist load-bearing and
+names a force-push as the pinned case; an allowlist that green-lights
+`git push -uf` does not satisfy it. This change is strictly *more* blocking
+and grants nothing. Found by `forge:security`.
+
+**Files:** plugin/hooks/denylist.mjs, tests/hooks/denylist.test.mjs
 
 ## Task 4 (test): pin single-sourcing (AC-429.4)
 

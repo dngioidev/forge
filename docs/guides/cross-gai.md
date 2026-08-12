@@ -314,12 +314,30 @@ CRUD, push/commit/checkout/rebase/fetch, and read-only `git status`/`diff`/
 `log`/`rev-parse`). A command with **any** shell-separated segment that isn't
 on the list falls back to `ask`, not `allow`.
 
+Matching a prefix is necessary but **not sufficient**. A prefix constrains only
+how a command *starts*, so the allowlist additionally rejects any command
+carrying shell syntax that would let it do something other than run that verb —
+command substitution (`$(…)`, backticks), redirection (`>`, `<`), `&`, and the
+other separators. Without that guard `git status > important.txt` would turn an
+explicitly read-only verb into an arbitrary-file overwrite, and
+`git push $(…)` into arbitrary code execution — both silently pre-authorized.
+Anything carrying a metacharacter asks, including a chain of individually
+allowlisted verbs such as `git fetch && git rebase`: deliberately conservative,
+because one extra prompt is far cheaper than one missed execution vector.
+
 **The denylist always outranks the allowlist.** `agy-deny.mjs` checks the
 denylist first, unconditionally, before ever consulting the allowlist — a
 command that is both allowlisted (e.g. `git push`) and denylisted (e.g. a
 force-push) is **denied**. This precedence is pinned by a dedicated test
 (`tests/hooks/agy-deny.test.mjs`, "the denylist strictly outranks the
 allowlist").
+
+Precedence is only as good as the denylist's own coverage, so #429 also
+tightened the force-push rule to catch **bundled** short flags: git bundles
+short boolean options (as in `git commit -am`), making `git push -uf` a real
+forced update that the previous standalone-`-f` regex missed. Harmless while
+the hook allowed everything; a silent auto-approved force-push once the
+allowlist started granting `allow` to anything beginning `git push `.
 
 **A residual gap this fix cannot close from forge's side.** The spike verified
 that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)
