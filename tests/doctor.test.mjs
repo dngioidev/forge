@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runDoctor } from '../plugin/scripts/doctor.mjs';
 import { run } from '../plugin/scripts/lib/exec.mjs';
+import { emitAgyPlugin } from '../plugin/scripts/agy/emit.mjs';
 import { fakeGh, fieldsResponse, REPO_VIEW, AUTH_OK } from './helpers/fakegh.mjs';
 
 const noop = () => {};
@@ -488,6 +489,88 @@ describe('runDoctor — graph availability notice (#386)', () => {
     await runDoctor({ gh, cwd, log: noop });
     const after = await readFile(join(cwd, '.claude', 'forge.json'), 'utf8');
     expect(after).toBe(before);
+  });
+});
+
+describe('runDoctor — agy adapter health (#431 AC.1/AC.2/AC.4/AC.5)', () => {
+  const routes = [['auth status', AUTH_OK], ['repo view', REPO_VIEW], [() => true, { ok: false, stderr: 'x' }]];
+  const okExec = async () => ({ ok: true, stdout: 'agy 1.1.7', stderr: '', code: 0 });
+  const missingExec = async () => ({ ok: false, stdout: '', stderr: 'ENOENT', code: -1 });
+
+  /** Write a valid forge.json with a `features` block override (undefined = omit it entirely). */
+  async function writeCfgAgy(cwd, features) {
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    delete committed.runner; // keep runner checks out of scope for these tests
+    if (features !== undefined) committed.features = features;
+    else delete committed.features;
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+  }
+
+  it('AC-431.5 negative case: no emitted agy package, features.agy off → zero agy-* rows anywhere in the report', async () => {
+    const cwd = await gitRepo();
+    await writeCfgAgy(cwd, undefined);
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop, exec: missingExec });
+    expect(res.results.filter((r) => r.name.startsWith('agy'))).toEqual([]);
+  });
+
+  it('AC-431.1: an emitted package present, agy on PATH → agy-cli/agy-package/agy-rewrite all ok', async () => {
+    const cwd = await gitRepo();
+    await writeCfgAgy(cwd, undefined);
+    await emitAgyPlugin({ destRoot: join(cwd, '.agents', 'plugins', 'forge'), log: noop });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop, exec: okExec });
+    expect(byName(res, 'agy-cli')[0].level).toBe('ok');
+    expect(byName(res, 'agy-package')[0].level).toBe('ok');
+    expect(byName(res, 'agy-rewrite')[0].level).toBe('ok');
+  });
+
+  it('an emitted package present, agy NOT on PATH → agy-cli warns (never fails doctor outright)', async () => {
+    const cwd = await gitRepo();
+    await writeCfgAgy(cwd, undefined);
+    await emitAgyPlugin({ destRoot: join(cwd, '.agents', 'plugins', 'forge'), log: noop });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop, exec: missingExec });
+    expect(byName(res, 'agy-cli')[0].level).toBe('warn');
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('agy-cli');
+  });
+
+  it('AC-431.4: features.agy on, no package emitted → ONLY agy-offload fires; the adapter block stays silent (decoupled gating)', async () => {
+    const cwd = await gitRepo();
+    await writeCfgAgy(cwd, { agy: true });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop, exec: missingExec });
+    expect(byName(res, 'agy-offload')[0].level).toBe('warn');
+    expect(byName(res, 'agy-cli')).toEqual([]);
+    expect(byName(res, 'agy-package')).toEqual([]);
+  });
+
+  it('features.agy off, package emitted → agy-offload absent, adapter block still runs', async () => {
+    const cwd = await gitRepo();
+    await writeCfgAgy(cwd, undefined);
+    await emitAgyPlugin({ destRoot: join(cwd, '.agents', 'plugins', 'forge'), log: noop });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop, exec: okExec });
+    expect(byName(res, 'agy-offload')).toEqual([]);
+    expect(byName(res, 'agy-cli')[0].level).toBe('ok');
+  });
+
+  it('AC-431.2: BREAK IT: a stale emitted package (old version) → agy-staleness warns without failing doctor', async () => {
+    const cwd = await gitRepo();
+    await writeCfgAgy(cwd, undefined);
+    const pkgDir = join(cwd, '.agents', 'plugins', 'forge');
+    await emitAgyPlugin({ destRoot: pkgDir, log: noop });
+    const markerPath = join(pkgDir, 'plugin.json');
+    const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+    marker.version = '0.0.1';
+    await writeFile(markerPath, JSON.stringify(marker), 'utf8');
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop, exec: okExec });
+    const row = byName(res, 'agy-staleness')[0];
+    expect(row.level).toBe('warn');
+    expect(row.msg).toMatch(/stale/);
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('agy-staleness');
   });
 });
 

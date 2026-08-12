@@ -15,6 +15,7 @@ import {
   fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion,
   detectRunnerServices, serviceTargetResults,
 } from './lib/runner-checks.mjs';
+import { checkAgyAdapter, checkAgyOffload } from './lib/agy-checks.mjs';
 
 /**
  * Local self-hosted-runner health (ADR-0005 decisions 1 & 3, #225/AC4). Appends
@@ -199,6 +200,17 @@ export async function runDoctor(ctx) {
   // local self-hosted runner (ADR-0005 / #225 AC4) — silent unless runner.enabled
   if (cfg.ok && cfg.runner?.enabled === true) {
     await checkRunner({ gh, cwd, runner: cfg.runner, results, exec, detect: detectServices });
+  }
+
+  // agy adapter health (#431 AC.1/AC.2) — silent unless an emitted package is found
+  // at .agents/plugins/forge/, mirroring the runner.enabled precedent immediately
+  // above: no adapter present means no agy output at all.
+  if (cfg.ok) {
+    await checkAgyAdapter({ cwd, exec, results });
+    // features.agy offload reachability (AC.4) — independently gated; see agy-checks.mjs
+    // for why this is deliberately NOT folded into the block above.
+    const offload = await checkAgyOffload({ cfg: cfg.config, exec });
+    if (offload) results.push(offload);
   }
 
   // statusline wired (info-level) — local settings first (that's where init writes it)
