@@ -76,20 +76,42 @@ const PUSH_DELETE = longFlag('delete', 2);
 const BRANCH_DELETE = longFlag('delete', 1);
 const BRANCH_FORCE = longFlag('force', 4);
 
+/** Separators splitSegments() divides on — see neutralisation note below. */
+const SEPARATOR_CHARS = /[;|&\n]/;
+
 /**
- * Strip shell quote characters before matching (#437, found by adversarial
- * review). Every rule in this file is a TEXT match against the command line,
- * but a shell removes quotes before the target program ever sees its argv — so
- * `git push -"f" origin main` and `git branch '-D' main` are byte-identical to
- * their unquoted forms as far as git is concerned, while defeating every
- * dash-anchored pattern here. Quoting one character of a flag token was
- * therefore a universal bypass of the WHOLE denylist, not a gap in any single
- * rule, and it defeated the two rules #437 set out to harden just as
- * completely as the rest.
+ * Undo the shell's own quoting/escaping before matching (#437, both rounds of
+ * the adversarial security review).
  *
- * Only `"` and `'` are removed. Backticks are deliberately PRESERVED, because
- * `eval-exec`'s SUBSTITUTION test matches on them — stripping those would
- * trade one bypass for another.
+ * Every rule in this file is a TEXT match against the command line, but a
+ * shell removes quotes and escapes before the target program ever sees its
+ * argv. `git push -"f" origin main`, `git push -\f origin main` and
+ * `git push $'-f' origin main` all deliver the identical `-f` to git, while
+ * each defeats a purely literal, dash-anchored pattern. That made quoting or
+ * escaping ONE character of a flag token a universal bypass of the WHOLE
+ * denylist — not a gap in any single rule — and it defeated the two rules #437
+ * set out to harden exactly as completely as the pre-existing ones.
+ *
+ * Three normalisations, each closing one reported bypass class:
+ *
+ *  1. **Quote characters are removed** (`-"f"` -> `-f`).
+ *  2. **Backslashes are removed** (`-\f` -> `-f`, `-\-hard` -> `--hard`), and
+ *     the `$` introducing ANSI-C/locale quoting is dropped so `$'-f'` -> `-f`.
+ *     A `$` anywhere else is untouched, so `$TMP` still matches SAFE_RM_TARGETS
+ *     and `$(` still trips `eval-exec`.
+ *  3. **Shell separators found INSIDE a quoted region become spaces.**
+ *     `splitSegments()` is not quote-aware, so a separator hidden in a quoted
+ *     argument would otherwise fragment the command around it and carry the
+ *     verb into a different segment than its flag — e.g. a quoted `;` between
+ *     `git branch` and `-D` splits them apart, and neither half matches on its
+ *     own. (That fragmentation PREDATES this change — verified against this
+ *     branch's first commit — but it is the same bypass class, so it is closed
+ *     here rather than left. Separators OUTSIDE quotes are untouched, so real
+ *     chained commands still split exactly as before, which is what keeps #85's
+ *     false-positive fix working.)
+ *
+ * Backticks are deliberately PRESERVED throughout: `eval-exec`'s SUBSTITUTION
+ * test matches on them, so stripping those would trade one bypass for another.
  *
  * Direction of the trade: this can only ever make a rule match MORE text. The
  * over-match it can produce (a destructive spelling quoted inside some
@@ -98,8 +120,28 @@ const BRANCH_FORCE = longFlag('force', 4);
  * told to rephrase. That is the cheap failure mode; a silently-executed
  * force-push is not.
  */
-function stripQuotes(command) {
-  return command.replace(/["']/g, '');
+function normalizeShellText(command) {
+  let out = '';
+  let quote = null;
+  for (const ch of command) {
+    if (quote === null) {
+      if (ch === '"' || ch === "'") {
+        // `$'…'` / `$"…"`: the `$` is part of the quoting syntax, not the value.
+        if (out.endsWith('$')) out = out.slice(0, -1);
+        quote = ch;
+        continue;
+      }
+      if (ch === '\\') continue; // escape char: drop it, keep what it escaped
+      out += ch;
+      continue;
+    }
+    if (ch === quote) { quote = null; continue; }
+    if (ch === '\\') continue;
+    // Inside quotes a separator cannot actually separate anything, so blunt it
+    // rather than letting the (quote-blind) splitter act on it.
+    out += SEPARATOR_CHARS.test(ch) ? ' ' : ch;
+  }
+  return out;
 }
 
 export const RULES = [
@@ -281,11 +323,12 @@ import { escalateMessage } from '../scripts/lib/escalate-msg.mjs';
 
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
-  // Quote-strip BEFORE matching so a quoted flag token can't hide a
-  // destructive spelling from every rule at once (#437). Safe to do ahead of
-  // the split: splitSegments() is not quote-aware either, so removing quotes
-  // cannot change how the command divides into segments.
-  const normalized = stripQuotes(command);
+  // Undo shell quoting/escaping BEFORE matching, so a quoted or backslash-
+  // escaped flag token can't hide a destructive spelling from every rule at
+  // once (#437). This runs ahead of the split on purpose: it also neutralises
+  // separators sitting inside quotes, which is what stops a quoted `;` from
+  // fragmenting a command away from its own flag.
+  const normalized = normalizeShellText(command);
   const segs = segments(normalized);
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
