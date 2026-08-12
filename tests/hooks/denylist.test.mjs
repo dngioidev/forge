@@ -255,6 +255,111 @@ describe('recursive-delete long flags (#312, AC-312.*)', () => {
   });
 });
 
+describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
+  // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
+  // and `--hard`, in either order, and regardless of a global git flag before
+  // `reset`.
+  it('AC-437.1: git reset --hard blocks with other flags interposed, in any order', () => {
+    for (const cmd of [
+      'git reset --quiet --hard HEAD~1',   // --quiet sits between reset and --hard
+      'git reset --hard --quiet',          // --hard first, --quiet after
+      'git -c x=y reset --hard',           // a global flag before the reset subcommand
+      'git reset -q --hard HEAD~1',        // short -q interposed
+    ]) {
+      expect(check(cmd).rule, cmd).toBe('hard-reset');
+    }
+  });
+
+  // AC-437.1 — git reset's own long-option set has exactly one option starting
+  // with "h" (--hard; verified against `git reset -h` on git 2.55), so --h/
+  // --ha/--har are all UNAMBIGUOUS abbreviations git itself resolves to --hard
+  // (the same parse-options prefix rule that makes `git push --mir` mean
+  // `--mirror`, #429), confirmed empirically: `git reset --h <ref>` discards
+  // working-tree changes exactly like `--hard` does.
+  it('AC-437.1: unambiguous abbreviations of --hard block too (--h, --ha, --har)', () => {
+    for (const cmd of ['git reset --h HEAD~1', 'git reset --ha HEAD~1', 'git reset --har HEAD~1']) {
+      expect(check(cmd).rule, cmd).toBe('hard-reset');
+    }
+  });
+
+  // AC-437.3 — the widening does not false-positive on ordinary/safe resets.
+  it('AC-437.3: the hard-reset widening does not false-positive on safe resets', () => {
+    for (const cmd of [
+      'git reset HEAD~1',        // default --mixed
+      'git reset --soft HEAD~1',
+      'git reset --mixed HEAD~1',
+      'git reset --merge HEAD~1',
+      'git reset --keep HEAD~1',
+      'git reset -q HEAD~1',
+      'git reset --help',        // NOT an abbreviation of --hard — diverges at the 2nd char
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
+});
+
+describe('env-branch-delete reordered/bundled/short-flag spellings (#437, AC-437.2)', () => {
+  // AC-437.2 — `git push -d` is git's own documented short form of `--delete`
+  // (`git push -h`); the old rule checked only the long form and a bare `:`
+  // refspec, so this was a complete miss, not just an adjacency gap.
+  it('AC-437.2: git push -d (short form of --delete) blocks a protected-branch delete', () => {
+    expect(check('git push -d origin main').rule).toBe('env-branch-delete');
+    expect(check('git push origin -d main').rule).toBe('env-branch-delete');
+    expect(check('git push -d origin staging').rule).toBe('env-branch-delete');
+  });
+
+  // AC-437.2 — git branch's force-delete is reachable via -D OR the equivalent
+  // -d+-f pairing, in ANY spelling/order/bundling: bundled short (-fd/-df),
+  // long form (--delete --force, either order), a long/short mix, or -D itself
+  // bundled with another short flag. Verified empirically against git 2.55:
+  // each of these force-deletes an UNMERGED branch exactly like -D does; the
+  // old regex matched only the literal, unbundled `-D` token.
+  it('AC-437.2: git branch force-delete of a protected branch blocks under every spelling', () => {
+    for (const cmd of [
+      'git branch -D main',
+      'git branch -fd main',
+      'git branch -df main',
+      'git branch --delete --force main',
+      'git branch --force --delete main',
+      'git branch --delete -f main',
+      'git branch -f --delete main',
+      'git branch -Dq main',   // -D bundled with an unrelated short flag
+      'git branch -qD main',
+    ]) {
+      expect(check(cmd).rule, cmd).toBe('env-branch-delete');
+    }
+  });
+
+  // AC-437.3 — the widening does not false-positive on safe branch/push
+  // operations: a plain merged-only -d delete (no force), a force MOVE/create
+  // (no delete), ordinary pushes, and any operation on a non-protected branch.
+  it('AC-437.3: the env-branch-delete widening does not false-positive on safe operations', () => {
+    for (const cmd of [
+      'git branch -d main',              // plain delete, no force — refuses unless merged
+      'git branch -f main other-commit', // force MOVE/create, not a delete
+      'git push -u origin feat/x',
+      'git push origin feat/x',
+      'git push --force-with-lease origin feat/3-x',
+      'git branch -D feat/3-old-branch', // -D, but not a protected branch name
+      'git branch -fd feat/3-old-branch',
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
+
+  // AC-437.4 — force-push, recursive-delete, and env-branch-delete now share
+  // one flag-cluster helper instead of each hand-rolling the same regex (the
+  // duplication #437's own ticket body flagged). This is a behavior-preserving
+  // extraction, evidenced here by exercising bundled-flag detection through
+  // all three consuming rules in one place, not just individually elsewhere
+  // in this file.
+  it('AC-437.4: bundled short-flag detection behaves identically across all three consumers of the shared cluster helper', () => {
+    expect(check('git push -uf origin main').rule).toBe('force-push');           // force-push, alnum cluster
+    expect(check('rm -xrf src/').rule).toBe('recursive-delete');                  // recursive-delete, alpha cluster
+    expect(check('git branch -fd main').rule).toBe('env-branch-delete');          // env-branch-delete, alnum cluster
+  });
+});
+
 describe('shared escalate message (#321, AC-321.1)', () => {
   const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
 

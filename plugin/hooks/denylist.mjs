@@ -18,6 +18,24 @@
 const SAFE_RM_TARGETS = /(node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)/i;
 const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 
+/**
+ * Collect every single-dash SHORT flag cluster in a command into one string of
+ * letters (and, when `alnum`, digits) — e.g. "git push -uf origin main" -> "uf".
+ * The `(?:^|\s)-` anchor keeps GNU/git long `--flag` (double dash) and mid-word
+ * dashes (`feat-f`, a branch name that happens to contain "-f") out of the
+ * cluster, so neither can spoof nor dodge a short flag. `alnum` widens the class
+ * to digits for git's own numeric short flags (`-4`/`-6`) that bundle with a
+ * boolean (`-4f` really forces, see force-push); `rm` has no numeric short
+ * flags, so recursive-delete keeps the narrower alpha-only class.
+ *
+ * Extracted (#437 AC.4) from force-push and recursive-delete, which had each
+ * hand-rolled this same regex separately; env-branch-delete now reuses it too.
+ */
+function shortFlagCluster(command, { alnum = false } = {}) {
+  const charClass = alnum ? '[a-zA-Z0-9]' : '[a-zA-Z]';
+  return (command.match(new RegExp(`(?:^|\\s)-(${charClass}+)`, 'g')) || []).join('');
+}
+
 export const RULES = [
   {
     name: 'force-push',
@@ -48,28 +66,78 @@ export const RULES = [
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
-      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z0-9]+)/g) || []).join('');
-      return /f/.test(shortFlags);
+      return /f/.test(shortFlagCluster(c, { alnum: true }));
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
   {
     name: 'env-branch-delete',
-    test: (c) => (/\bgit\b[^\n]*\bpush\b[^\n]*(--delete|:)/.test(c) || /\bgit branch\b[^\n]*-D/.test(c)) && PROTECTED_BRANCHES.test(c),
+    // `git push` accepts `-d` as the literal short form of `--delete` (`git push
+    // -h`); the old regex checked only `--delete` and a bare `:` refspec, so
+    // `git push -d origin main` — a real, immediate remote branch delete —
+    // wasn't just a spelling gap, it slipped past denylist AND force-push both
+    // (#437). `git branch` accepts `-D`, or the equivalent `-d`+`-f` pairing in
+    // ANY spelling/order/bundling (short `-fd`/`-df`, long `--delete --force` /
+    // `--force --delete`, a long/short mix, or `-D` itself bundled with another
+    // short flag like `-Dq`/`-qD`) — verified empirically against git 2.55:
+    // `git branch -fd <unmerged>` and `git branch --delete --force <unmerged>`
+    // both force-delete exactly like `-D`, and the old regex matched only the
+    // literal, unbundled `-D` token. Abbreviations of the LONG forms (`--del`,
+    // `--forc`, …) remain an accepted, documented gap here — see the note at the
+    // end of RULES; force-push (#429) set the same precedent of not
+    // abbreviation-matching `--force`.
+    test: (c) => {
+      if (!PROTECTED_BRANCHES.test(c)) return false;
+      if (/\bgit\b[^\n]*\bpush\b[^\n]*(?:--delete\b|:)/.test(c)) return true;
+      if (/\bgit\b[^\n]*\bpush\b/.test(c) && /d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+      if (/\bgit branch\b/.test(c)) {
+        const cluster = shortFlagCluster(c, { alnum: true });
+        if (/D/.test(cluster)) return true; // -D, incl. bundled (-Dq / -qD), IS delete+force
+        const hasForce = /f/.test(cluster) || /--force\b/.test(c);
+        const hasDelete = /d/.test(cluster) || /--delete\b/.test(c);
+        if (hasForce && hasDelete) return true;
+      }
+      return false;
+    },
     msg: 'deleting main/environment branches is never agent work',
   },
   {
     name: 'hard-reset',
-    test: (c) => /\bgit\b[^\n]*\breset\s+--hard\b/.test(c),
+    // `git reset`'s own long-option set (`git reset -h`, verified against git
+    // 2.55) has exactly ONE option starting with "h" — --hard — so --h/--ha/
+    // --har/--hard are all UNAMBIGUOUS abbreviations git itself accepts (parse-
+    // options prefix matching, the same rule that makes `git push --mir` mean
+    // `--mirror`, #429). The old regex additionally required --hard immediately
+    // after `reset` with only whitespace between them, so `git reset --quiet
+    // --hard` — an equally irrecoverable hard reset — slipped through because
+    // --quiet sat in the way (#437). Fixed on both axes: "reset" may be followed
+    // by any other flags in any order before --hard appears, AND any
+    // unambiguous prefix of --hard matches, not just the full spelling.
+    test: (c) => /\bgit\b[^\n]*\breset\b[^\n]*(?:^|\s)--h(?:a(?:r(?:d)?)?)?\b/.test(c),
     msg: 'git reset --hard discards work irrecoverably',
   },
   {
     name: 'git-clean-force',
+    // Audited for the #437 adjacency/spelling class: NOT anchored to be
+    // adjacent to `clean` (the `[^\n]*` already spans any other flags in any
+    // order — `git clean -n -f`, `git clean --interactive --force` both match
+    // today), and `-[a-zA-Z]*f` already matches any bundled short cluster ending
+    // in `f` (`-xdf`, `-df`) AND the long `--force` (its own "0 letters between
+    // the dash and a literal f" case fires immediately on `--f...`, so any
+    // prefix of --force matches too, not just the full word). No reordering,
+    // bundling, or abbreviation gap found; left unchanged.
     test: (c) => /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(c),
     msg: 'git clean -f deletes untracked files irrecoverably',
   },
   {
     name: 'history-rewrite',
+    // Audited for the #437 class: filter-branch/filter-repo are SUBCOMMAND/
+    // binary names, not flags — git does not abbreviate those, so there is no
+    // abbreviation surface here the way there is for a flag like --hard. Left
+    // unchanged; `git-filter-repo --path x` (the standalone-binary invocation
+    // form, no `git ` prefix word) is already caught because the hyphen in
+    // "git-filter-repo" is a non-word char, so `\bgit\b` still matches "git" as
+    // a whole word inside it.
     test: (c) => /\bgit\b[^\n]*\b(filter-branch|filter-repo)\b/.test(c),
     msg: 'history rewriting is escalation-only (secrets are scrubbed by rotation, not rewrites — spec §4 respond)',
   },
@@ -77,14 +145,11 @@ export const RULES = [
     name: 'recursive-delete',
     test: (c) => {
       if (!/\brm\b/.test(c)) return false;
-      // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) — the `(?:^|\s)-`
-      // anchor keeps GNU `--recursive`/`--force` (double dash) and mid-word dashes
-      // (`file-r.txt`) out of this bucket so they can't spoof a short flag.
-      // Deliberately `[a-zA-Z]` where force-push above uses `[a-zA-Z0-9]`: git
-      // has numeric short flags (`-4`) that can bundle with `-f`, `rm` has none,
-      // so widening here would buy nothing. Not an oversight — #437 tracks
-      // extracting one shared flag-cluster helper for both rules.
-      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
+      // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
+      // helper. Deliberately alpha-only (default) where force-push above passes
+      // `alnum: true`: git has numeric short flags (`-4`) that can bundle with
+      // `-f`, `rm` has none, so widening here would buy nothing.
+      const shortFlags = shortFlagCluster(c);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
       const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
