@@ -79,13 +79,15 @@ const SAFE_RM_TARGET =
  * Splitting on whitespace also closes the sharpest reported variant, which
  * needed no visible second argument at all: normalizeShellText() emits an
  * inert SPACE for any decoded control byte, so `$'/etc/shadow-backup\x00
- * scratchpad'` — one argument to a reader, and truncated at the NUL to just
- * `/etc/shadow-backup` by real bash — normalises to two tokens here. Under
- * the old whole-string test the hidden `scratchpad` exempted the line; split
- * per token, `/etc/shadow-backup` is judged on its own and blocks. Treating
- * that space as a separator over-approximates (bash would have dropped the
- * tail entirely) in the BLOCKING direction, which is the right way to be
- * wrong about a byte no legitimate path contains.
+ * scratchpad'` — one single-quoted argument, in which a real bash session
+ * drops the embedded NUL byte and fuses everything around it into that SAME
+ * one argument, rather than truncating anything away — normalises to two
+ * tokens here. Under the old whole-string test the hidden `scratchpad`
+ * exempted the line; split per token, `/etc/shadow-backup` is judged on its
+ * own and blocks. Treating the decoded NUL's stand-in space as a token
+ * separator over-approximates (real bash keeps the whole quoted string as
+ * ONE argument, byte dropped, rest fused) in the BLOCKING direction, which is
+ * the right way to be wrong about a byte no legitimate path contains.
  *
  * Flag tokens are skipped, not judged: they are not delete targets, and
  * `--force` must not be mistaken for a path. A line with NO target token left
@@ -281,25 +283,26 @@ function normalizeShellText(rawCommand) {
   // guarantee only ever covered NUL spelled as an ESCAPE. A NUL byte sitting
   // literally in the command text never reaches emitCodePoint(): it flows
   // through the plain push()/emit() paths untouched (emit() neutralises only
-  // `;|&\n`), so the checker saw ONE opaque token spanning a byte that the
-  // exec layer treats as a hard C-string terminator. That divergence reopened
-  // the very class the escape form had closed —
+  // `;|&\n`), so the checker saw ONE opaque token spanning the byte —
   // `rm -rf /prod-secrets<NUL>/scratchpad` read as a single path ending in the
-  // safe component `scratchpad`, while the kernel truncates at the NUL and
-  // deletes `/prod-secrets`. It is reachable input, not a curiosity: `\u0000`
+  // safe component `scratchpad`, exempting the whole line. It is reachable
+  // input, not a curiosity: `\u0000`
   // is a legal JSON string escape and main()'s JSON.parse hands it straight to
   // check() with no sanitisation, as does agy-deny.mjs (#446, adversarial
   // security review of the anchoring fix).
   //
   // Mapping it to the same inert SPACE the decoded form already gets makes the
-  // two spellings agree, and blocks under BOTH readings of a NUL: if the
-  // consumer truncates (real exec), the surviving head `/prod-secrets` is now
-  // judged on its own; if it instead ignores the byte, the head is still
-  // judged on its own. Either way the dangerous component stops being vouched
-  // for by a safe word on the far side of the byte. Deliberately NUL ONLY, not
-  // control bytes generally: VT/FF are real in-token data that bash does not
-  // word-split on, and splitting there is exactly the non-IFS bypass the IFS
-  // split above exists to prevent.
+  // two spellings agree, and blocks regardless of how a downstream consumer
+  // actually handles the byte — which is NOT truncation under either concrete
+  // path checked: Node's child_process throws on an embedded NUL before the
+  // command ever runs, and a persistent bash session silently drops the byte
+  // and fuses the surrounding text into ONE argument rather than cutting
+  // anything off. This fix does not need to match either of those; it
+  // deliberately over-blocks by splitting the token at the byte, so
+  // `/prod-secrets` is judged on its own merits either way. Deliberately NUL
+  // ONLY, not control bytes generally: VT/FF are real in-token data that bash
+  // does not word-split on, and splitting there is exactly the non-IFS bypass
+  // the IFS split above exists to prevent.
   const command = rawCommand.replace(/\r/g, '').replace(/\0/g, ' ');
   // Output is accumulated as single-character CHUNKS and joined once at the
   // end, rather than appended onto a growing string.

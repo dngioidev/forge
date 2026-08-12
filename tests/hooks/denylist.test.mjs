@@ -406,10 +406,13 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
   // AC-446.6 — the sharpest reported variant of the decoy, needing no visible
   // second argument at all. normalizeShellText() emits an inert SPACE for any
   // decoded control byte, so a NUL escape splices a hidden safe word onto the
-  // single real target. Real bash TRUNCATES `$'…'` at an embedded NUL, so the
-  // command genuinely deletes only the dangerous prefix — the trailing word
-  // exists purely to fool a whole-line match, and is invisible without hex
-  // inspection. Splitting per token judges the real target on its own merits.
+  // single real target. A persistent bash session drops the embedded NUL byte
+  // and fuses the surrounding text into ONE quoted argument rather than
+  // truncating anything away — the trailing word is not discarded, it stays
+  // part of the same real target, existing purely to fool a whole-line match
+  // and invisible without hex inspection. Splitting per token judges the real
+  // target on its own merits regardless of how a shell would actually resolve
+  // the byte.
   it('AC-446.6: a NUL-escape hidden decoy cannot exempt the real target', () => {
     const B = String.fromCharCode(92);
     const S = String.fromCharCode(39);
@@ -427,10 +430,13 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
   // the inert-space guarantee it relies on lives in emitCodePoint(), which
   // DECODED escapes reach and a literal byte does not. So a NUL already present
   // in the command text sailed straight through as ordinary data, and the
-  // checker judged one opaque token spanning a byte that exec treats as a hard
-  // string terminator: the real deletion is the truncated head, while the safe
-  // word hiding behind the NUL vouched for the whole line. Reachable without
-  // any shell quoting at all — `\u0000` is legal JSON, and check() is handed
+  // checker judged one opaque token spanning the byte, with the safe word on
+  // the far side vouching for the whole line. This is NOT a truncation bug:
+  // Node's child_process throws on an embedded NUL before the command ever
+  // runs, and a bash session drops the byte and fuses the text around it into
+  // one argument rather than cutting anything off — either way, nothing here
+  // relies on which of those happens. Reachable without any shell quoting at
+  // all — `\u0000` is legal JSON, and check() is handed
   // the parsed string unsanitised. (Found by the adversarial security review of
   // the anchoring fix; the escape form alone was NOT enough.)
   it('AC-446.6: a RAW NUL byte splice is neutralised exactly like the escape form', () => {
@@ -443,9 +449,9 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
     ]) {
       expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
     }
-    // The head is what actually gets deleted, so when the head is genuinely
-    // safe the line stays exempt — the byte must not become a blunt "block
-    // anything containing a NUL" rule.
+    // Neither runtime turns this into a "block anything containing a NUL"
+    // rule: the substitution judges each side of the byte on its own merits,
+    // so when both sides are genuinely safe words the line stays exempt.
     expect(check(`rm -rf dist${NUL}build`).blocked).toBe(false);
   });
 
