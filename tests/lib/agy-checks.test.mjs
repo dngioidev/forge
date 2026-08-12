@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -129,6 +129,26 @@ describe('agy-checks — checkAgyRewrite / #294 regression class', () => {
     const pkgDir = await emitReal(cwd);
     expect(await findUnrewrittenPlaceholders(pkgDir)).toEqual([]);
     expect((await checkAgyRewrite({ pkgDir })).level).toBe('ok');
+  });
+
+  it('security: skills/ replaced with a symlink to an external directory is NOT followed (top-level symlink guard)', async () => {
+    const cwd = await tmpDir();
+    const pkgDir = await emitReal(cwd);
+    const outside = await tmpDir('agy-outside-');
+    await mkdir(join(outside, 'evil'), { recursive: true });
+    await writeFile(join(outside, 'evil', 'SECRET.md'), 'node "${CLAUDE_PLUGIN_ROOT}/x"', 'utf8');
+    await rm(join(pkgDir, 'skills'), { recursive: true, force: true });
+    try {
+      // 'junction' needs no elevated privilege on Windows; ignored (plain symlink) elsewhere.
+      await symlink(outside, join(pkgDir, 'skills'), 'junction');
+    } catch (err) {
+      // Some CI sandboxes forbid symlink/junction creation entirely — the guard this
+      // test targets is still exercised on any environment that does allow it.
+      console.warn('skipping symlink-guard test: cannot create a symlink/junction here —', err.message);
+      return;
+    }
+    const hits = await findUnrewrittenPlaceholders(pkgDir);
+    expect(hits).toEqual([]); // must NOT have walked into `outside` via the symlinked skills/ dir
   });
 
   it('BREAK IT: hand-editing an emitted skill to reintroduce ${CLAUDE_PLUGIN_ROOT} -> warns and names the file', async () => {

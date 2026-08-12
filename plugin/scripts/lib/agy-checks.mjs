@@ -27,18 +27,18 @@
  * throws, never crashes doctor (same contract as runner-checks.mjs).
  */
 import { join, dirname, resolve } from 'node:path';
-import { readFile, readdir, access } from 'node:fs/promises';
+import { readFile, readdir, access, lstat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { ok, warn, fail } from './runner-checks.mjs'; // generic {name,level,msg,hint} result shape — not runner-specific
 import { compareVersions } from './runner-release.mjs'; // generic dotted-version compare, reused as-is
+import { readJson } from './jsonfile.mjs'; // parse-or-throw; every call site opts into "unreadable/malformed -> null" via .catch
 import { agyEnabled } from '../agy/core.mjs';
 
 /** Where `init --host agy` emits by default (no `--out`) — the recommended, verified-primary path (docs/guides/cross-gai.md). */
 export const AGY_PKG_RELPATH = join('.agents', 'plugins', 'forge');
 
-async function readJsonSafe(path) {
-  try { return JSON.parse(await readFile(path, 'utf8')); } catch { return null; }
-}
+/** Parse-or-null: missing, unreadable, AND malformed all degrade to null here — every caller in this module treats "can't read it" and "it's garbage" the same way (a fail/warn row, never a throw). */
+const readJsonSafe = (path) => readJson(path).catch(() => null);
 
 async function pathExists(path) {
   try { await access(path); return true; } catch { return false; }
@@ -140,11 +140,19 @@ export async function checkAgyPackageIntegrity({ pkgDir, marker }) {
  * (`rewriteAgyRuntimePaths`); this re-checks the emitted COPY post-hoc, catching
  * a hand-edit, a partial/interrupted emit, or a future emitter regression. Scans
  * only `skills/` and `commands/` — the only trees `emit.mjs` rewrites — and only
- * `.md` files, never following a symlink (same defensive guard as the emitter).
+ * `.md` files, never following a symlink (same defensive guard as the emitter)
+ * — including the `skills/`/`commands/` TOP-LEVEL directory itself: an emitted
+ * package is read from a checked-out tree that could, in principle, carry a
+ * hostile PR's crafted content (e.g. `skills/` replaced with a symlink to an
+ * arbitrary directory), so the entry guard below has to apply before the first
+ * `readdir` too, not just to entries discovered during the walk.
  */
 export async function findUnrewrittenPlaceholders(pkgDir) {
   const hits = [];
   for (const d of ['skills', 'commands']) {
+    const top = join(pkgDir, d);
+    const topStat = await lstat(top).catch(() => null);
+    if (!topStat || topStat.isSymbolicLink() || !topStat.isDirectory()) continue;
     const walk = async (dir) => {
       const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
       for (const e of entries) {
@@ -156,7 +164,7 @@ export async function findUnrewrittenPlaceholders(pkgDir) {
         if (text.includes('${CLAUDE_PLUGIN_ROOT}')) hits.push(p.slice(pkgDir.length + 1).replace(/\\/g, '/'));
       }
     };
-    await walk(join(pkgDir, d));
+    await walk(top);
   }
   return hits;
 }
