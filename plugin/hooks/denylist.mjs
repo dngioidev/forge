@@ -152,6 +152,14 @@ function normalizeShellText(command) {
   // emit a space rather than the character itself — splitSegments() is blind
   // to quoting and would otherwise split the command around it.
   const emit = (ch) => { out += SEPARATOR_CHARS.test(ch) ? ' ' : ch; };
+  // Decoded escapes go through here rather than String.fromCodePoint directly:
+  // that throws RangeError above U+10FFFF (`$'\UFFFFFFFF'` is reachable input),
+  // and check() must never throw (AC-3.4). An out-of-range escape cannot spell
+  // a flag character anyway, so dropping it is both safe and correct.
+  const emitCodePoint = (code) => {
+    if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return;
+    emit(String.fromCodePoint(code));
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     const next = command[i + 1];
@@ -175,18 +183,21 @@ function normalizeShellText(command) {
     if (ch === quote) { quote = null; ansiC = false; continue; }
     if (ch === '\\' && next !== undefined) {
       if (ansiC) {
-        // \xHH / \uHHHH / \UHHHHHHHH — hex byte or code point.
-        const hex = /^(x)([0-9a-fA-F]{1,2})|^(u)([0-9a-fA-F]{1,4})|^(U)([0-9a-fA-F]{1,8})/.exec(command.slice(i + 1));
+        // \xHH / \uHHHH / \UHHHHHHHH — hex byte or code point. The digit caps
+        // are bash's own, and they matter: `\x` takes at most TWO digits, so
+        // `$'\x2df'` is `-` followed by a literal `f` (i.e. `-f`), not a
+        // three-digit hex escape that would swallow the flag letter.
+        const hex = /^(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/.exec(command.slice(i + 1));
         if (hex) {
-          const digits = hex[2] ?? hex[4] ?? hex[6];
-          emit(String.fromCodePoint(parseInt(digits, 16)));
+          const digits = hex[1] ?? hex[2] ?? hex[3];
+          emitCodePoint(parseInt(digits, 16));
           i += 1 + digits.length;
           continue;
         }
-        // \NNN — octal byte.
+        // \NNN — octal byte. Masked to a byte, as bash does.
         const oct = /^[0-7]{1,3}/.exec(command.slice(i + 1));
         if (oct) {
-          emit(String.fromCharCode(parseInt(oct[0], 8)));
+          emitCodePoint(parseInt(oct[0], 8) & 0xff);
           i += oct[0].length;
           continue;
         }

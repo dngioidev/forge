@@ -447,6 +447,24 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
+  it('AC-437.5: an out-of-range unicode escape never throws (fail-open contract, AC-3.4)', () => {
+    // String.fromCodePoint throws RangeError above U+10FFFF, and `$'\UFFFFFFFF'`
+    // is reachable input — so the decoder must range-check before decoding or
+    // check() stops being total. An out-of-range escape cannot spell a flag
+    // character anyway, so dropping it is both safe and correct.
+    for (const esc of ['UFFFFFFFF', 'U00110000', 'U0010FFFF', 'uD800', '777', 'x', 'u', 'U']) {
+      const cmd = `git push ${D}${S}${B}${esc}${S} origin main`;
+      expect(() => check(cmd), cmd).not.toThrow();
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
+
+  it('AC-437.5: \\x takes at most two hex digits, so the flag letter after it is not swallowed', () => {
+    // bash caps `\xHH` at two digits, so `$'\x2df'` is `-` + literal `f` = `-f`.
+    // A greedier regex would read `2df` as one escape and MISS the force-push.
+    expect(check(`git push ${D}${S}${B}x2df${S} origin main`).rule).toBe('force-push');
+  });
+
   it('AC-437.5: a separator QUOTED between a verb and its flag cannot fragment the command', () => {
     // splitSegments() is not quote-aware, so a `;` hidden inside a quoted
     // argument used to split the verb away from its own flag, leaving neither
