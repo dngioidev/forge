@@ -108,11 +108,26 @@ const SHELL_METACHARACTERS = /[$`<>&;|]|[\x00-\x1f]/;
  * the denylist costs a prompt, never a silent destructive action.
  *
  * A verb belongs here when its ARGUMENTS can make it destructive or can escape
- * the verb entirely. Four do:
+ * the verb entirely. Seven do — keep this list in step with the array below and
+ * with the guarded-verbs table in docs/guides/cross-gai.md:
  *   `node`          — `-e`/`--eval`/`-p` is unrestricted code execution
+ *   `pnpm verify`   — pnpm forwards args to vitest, whose `--reporter=<path>`
+ *                     / `--config=<path>` import()s that module at startup
  *   `git push`      — force / delete / mirror / refspec rewrite published refs
- *   `git checkout`  — `-- .` / `-f` silently discards uncommitted local work
+ *   `git fetch`     — `--upload-pack=<program>` executes that program
+ *   `git rebase`    — `-x`/`--exec` runs arbitrary shell per replayed commit
+ *   `git checkout`  — `-- .` / `-f` / a bare path silently discards local work
  *   `gh pr merge`   — `--admin` bypasses branch protection
+ *
+ * Note what four of those seven have in common: `node -e`, `pnpm verify
+ * --reporter=`, `git rebase -x` and `git fetch --upload-pack=` are all
+ * arbitrary code execution reached through a verb that looks innocuous, and
+ * NONE of them needs a shell metacharacter — SHELL_METACHARACTERS cannot see
+ * them. Each was found by a separate adversarial review round. When adding a
+ * verb to ALLOWED_COMMAND_PREFIXES, the question to ask is not "is this verb
+ * safe" but "can any argument make it run something else, read/write an
+ * arbitrary path, or rewrite published history".
+ *
  * The rest of ALLOWED_COMMAND_PREFIXES are safe for any argument (`git status`,
  * `gh issue view`, …) or are read-only.
  */

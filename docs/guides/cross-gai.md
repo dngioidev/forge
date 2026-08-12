@@ -349,9 +349,19 @@ those spellings were found missing across successive review rounds — and
 because `denylist.mjs` describes itself as *"a tripwire for a few
 known-catastrophic commands, not a security boundary"* — an allowlist layered
 on top would turn every remaining denylist gap into a silent approve rather
-than a prompt. So the four verbs whose danger lives in their **arguments**
+than a prompt. So the seven verbs whose danger lives in their **arguments**
 carry a guard, and the guard is a **positive** model: it enumerates the
 arguments that are safe, not the ones that are dangerous.
+
+Four of the seven are arbitrary **code execution** behind an innocuous-looking
+verb — `node -e`, `pnpm verify --reporter=<path>`, `git rebase -x`,
+`git fetch --upload-pack=<program>` — and **none of them needs a shell
+metacharacter**, so the guard above cannot see them. Each was found by a
+separate adversarial review round of this very fix. That is the argument for
+the positive model, and the question to ask before adding any verb to the
+allowlist: not *"is this verb safe"* but *"can any argument make it run
+something else, read or write an arbitrary path, or rewrite published
+history"*.
 
 | verb | auto-approved | asks |
 | --- | --- | --- |
@@ -374,7 +384,7 @@ destructive action. It also means `--force-with-lease` asks: permitted by the
 denylist as the sanctioned safe alternative, but still a force operation, so a
 human sees it.
 
-`git checkout` is the strictest of the four, and deliberately so:
+`git checkout` is the strictest of the seven, and deliberately so:
 `git checkout <name>` is **ambiguous** — git resolves `<name>` as a ref if one
 exists and otherwise as a *path*, and the path form discards that path's
 uncommitted changes irrecoverably. Nothing in the command string separates the
