@@ -2,11 +2,11 @@
 
 **Date:** 2026-08-12 · **Ticket:** #428 (parent #182) · **Route:** spike (deliverable = this findings doc; no product-source changes — the security finding below is filed separately as #434).
 
-**agy version tested: 1.1.7** (`C:/Users/dngioi/AppData/Local/agy/bin/agy`, `agy --version` → `1.1.7`). `docs/guides/cross-gai.md:19,27` and ADR-0007 record the adapter as proven on v1.1.5 — this spike is the first re-verification against a newer build. No version-dependent behaviour was found (the hook I/O contract, decision semantics, and CLI flags below all match what ADR-0007 recorded on v1.1.5), so nothing here invalidates that prior verification, but it should be re-checked again at the next `agy` bump per ADR-0007 "(c)" build-time-confirmation rule.
+**agy version tested: 1.1.7** (`%LOCALAPPDATA%/agy/bin/agy` on Windows, `agy --version` → `1.1.7`). `docs/guides/cross-gai.md:19,27` and ADR-0007 record the adapter as proven on v1.1.5 — this spike is the first re-verification against a newer build. No version-dependent behaviour was found (the hook I/O contract, decision semantics, and CLI flags below all match what ADR-0007 recorded on v1.1.5), so nothing here invalidates that prior verification, but it should be re-checked again at the next `agy` bump per ADR-0007 "(c)" build-time-confirmation rule.
 
 ## The question
 
-`plugin/hooks/agy-deny.mjs:29` and `:42` return `{"decision":"allow"}` as the default for every `run_command` that isn't a denylist hit. ADR-0007 records that agy's `PreToolUse` hook protocol accepts `allow`/`deny`/`ask`/`force_ask` (`:37`, `:54`) but never states what each decision actually does to agy's own approval prompt. Two readings inverted each other going in:
+`plugin/hooks/agy-deny.mjs:29` and `:42` return `{"decision":"allow"}` as the default for every `run_command` that isn't a denylist hit. ADR-0007 records agy's `PreToolUse` hook decisions across two places — `:37` lists `allow`/`deny`/`ask` in the host-capability matrix, and `:54` adds `force_ask` in the live-verification section — but neither states what each decision actually does to agy's own approval prompt. Two readings inverted each other going in:
 
 1. `allow` = auto-approve, suppresses agy's prompt → forge is already blanket-pre-authorizing every shell command on agy (security finding).
 2. `allow` = "this hook has no objection", agy still applies its own approval flow → the allowlist gap is real, fix is selective `allow` with `ask` as the default.
@@ -24,7 +24,7 @@
 
 Taken at face value, this settles the question the ADR left open: **`allow` suppresses agy's own approval prompt.** It is not "no objection, agy still asks" — the doc's own verb is "automatically allow."
 
-**Source 2 — empirical confirmation via a scratch plugin** (built for this spike, not part of the forge plugin; lived under `C:/Users/dngioi/AppData/Local/Temp/claude/.../scratchpad/agy-428/`, outside the forge repo, and is not part of this PR). A project-root `.agents/hooks.json` registered a throwaway `node hooks/pretool.mjs` hook on matcher `"*"` that logs every payload and returns a decision read from a control file, so the same rig could be re-run with each of the four decisions without touching hooks.json between runs. Driven headlessly via `agy --print "<instruct the agent to run one exact command>" --add-dir <scratch> --mode accept-edits` (with and without `--dangerously-skip-permissions`).
+**Source 2 — empirical confirmation via a scratch plugin** (built for this spike, not part of the forge plugin; lived under a throwaway session scratchpad dir beneath `%LOCALAPPDATA%/Temp/`, outside the forge repo, and is not part of this PR). A project-root `.agents/hooks.json` registered a throwaway `node hooks/pretool.mjs` hook on matcher `"*"` that logs every payload and returns a decision read from a control file, so the same rig could be re-run with each of the four decisions without touching hooks.json between runs. Driven headlessly via `agy --print "<instruct the agent to run one exact command>" --add-dir <scratch> --mode accept-edits` (with and without `--dangerously-skip-permissions`).
 
 The empirical results **reveal a second, independent gate that the docs don't separately name**, and this is the real finding of the spike:
 

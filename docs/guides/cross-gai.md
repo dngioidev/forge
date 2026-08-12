@@ -10,7 +10,9 @@ other GAI (generative-AI dev) hosts.
 
 This guide documents the one host that is **proven today**: Antigravity, driven
 by its `agy` CLI. It was verified end-to-end against live `agy` v1.1.5 on
-2026-07-26 (see ADR-0007, "Spike verification on real agy"). Codex is a
+2026-07-26 (see ADR-0007, "Spike verification on real agy"), and the hook
+contract was re-verified against **v1.1.7** on 2026-08-12 with no drift
+([#428 spike](../spikes/2026-08-12-agy-approval-semantics.md)). Codex is a
 separate, **deferred** adapter tracked in [#292](https://github.com/dngioidev/forge/issues/292)
 and is **not built** — do not expect it to work yet.
 
@@ -24,7 +26,7 @@ guide.
 
 | need | check | notes |
 | --- | --- | --- |
-| Antigravity `agy` CLI | `agy --version` | proven on v1.1.5; the plugin system ingests the Claude plugin format directly |
+| Antigravity `agy` CLI | `agy --version` | proven on v1.1.5, hook contract re-verified on v1.1.7 (#428); the plugin system ingests the Claude plugin format directly |
 | Node >= 22.13 | `node --version` | the whole engine runs on Node; the hook shims are ESM |
 | git + `gh` (authenticated) | `git --version`, `gh auth status` | needed by the board/gate/release CLIs, not by the emit step itself |
 | a forge checkout | — | you run `forge init --host agy` from the forge plugin source |
