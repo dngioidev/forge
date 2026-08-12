@@ -16,18 +16,65 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     expect(ALLOW).toEqual(ALLOWED_COMMAND_PREFIXES.map((p) => `Bash(${p}:*)`));
   });
 
-  it('AC-429.2: isAllowedCommand() allows every listed prefix used bare or with trailing args', () => {
-    for (const prefix of ALLOWED_COMMAND_PREFIXES) {
+  it('AC-429.2: isAllowedCommand() allows every NON-argument-sensitive prefix, bare or with trailing args', () => {
+    const plain = ALLOWED_COMMAND_PREFIXES.filter((p) => !ARGUMENT_SENSITIVE_COMMANDS.includes(p));
+    expect(plain.length, 'expected most prefixes to be argument-insensitive').toBeGreaterThan(10);
+    for (const prefix of plain) {
       expect(isAllowedCommand(prefix, { segments: splitSegments }), prefix).toBe(true);
-      if (ARGUMENT_SENSITIVE_COMMANDS.includes(prefix)) {
-        // Argument-sensitive prefixes deliberately do NOT accept an arbitrary
-        // flag — that is the whole point of the guard (an unknown flag could be
-        // an abbreviation of a destructive one). Covered by its own tests below.
-        expect(isAllowedCommand(`${prefix} --flag value`, { segments: splitSegments }), prefix).toBe(false);
-        continue;
-      }
       expect(isAllowedCommand(`${prefix} --flag value`, { segments: splitSegments }), prefix).toBe(true);
     }
+  });
+
+  it('AC-429.3: every argument-sensitive prefix REFUSES an arbitrary unknown flag', () => {
+    // The guard's whole point: an unrecognised flag may be an abbreviation of a
+    // destructive one (`--mir` IS `--mirror`), so unknown means ask, per verb.
+    expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual(['node', 'git push', 'git checkout', 'gh pr merge']);
+    for (const prefix of ARGUMENT_SENSITIVE_COMMANDS) {
+      expect(isAllowedCommand(`${prefix} --some-unknown-flag`, { segments: splitSegments }), prefix).toBe(false);
+    }
+  });
+
+  it('AC-429.3: `node` auto-allows only a script path — inline code execution asks', () => {
+    // node -e/--eval/-p is unrestricted code execution (full fs/child_process/
+    // network) and was reaching a bare `allow`. node stops parsing its own
+    // options at the first non-option, so requiring a plain first argument both
+    // closes that and keeps the whole forge script tier auto-approved.
+    for (const cmd of [
+      'node -e "require(\'os\').hostname()"',
+      'node --eval "1+1"',
+      'node -p "process.env"',
+      'node -',        // read program from stdin
+      'node',          // bare REPL: an unattended session must not enter one silently
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+    for (const cmd of [
+      'node plugin/scripts/board/move.mjs --issue 429 --status done',
+      'node scripts/x.mjs',
+      'node bin/forge.mjs board status',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
+  it('AC-429.3: `git checkout` auto-allows switching refs, never discarding local work', () => {
+    for (const cmd of [
+      'git checkout -- .',   // discards ALL uncommitted changes
+      'git checkout .',      // same
+      'git checkout src/',   // discards changes under a path
+      'git checkout -f main',// force-switch, discarding conflicting changes
+      'git checkout -B main',// force-reset a branch pointer
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+    for (const cmd of ['git checkout main', 'git checkout -b feat/x', 'git checkout fix/429-agy-ask-default']) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
+  it('AC-429.3: `gh pr merge --admin` (branch-protection bypass) asks; ordinary merges still allow', () => {
+    expect(isAllowedCommand('gh pr merge 429 --admin --squash', { segments: splitSegments })).toBe(false);
+    expect(isAllowedCommand('gh pr merge 429 --squash --delete-branch', { segments: splitSegments })).toBe(true);
   });
 
   it('isAllowedCommand() rejects an unrecognised command and a look-alike prefix without the required word boundary', () => {

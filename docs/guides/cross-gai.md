@@ -349,23 +349,30 @@ those spellings were found missing across successive review rounds — and
 because `denylist.mjs` describes itself as *"a tripwire for a few
 known-catastrophic commands, not a security boundary"* — an allowlist layered
 on top would turn every remaining denylist gap into a silent approve rather
-than a prompt. So `git push` is treated as **argument-sensitive**, and the
-guard is a **positive** model: it enumerates the arguments that are safe, not
-the ones that are dangerous. Only a plain push auto-approves — `git push`,
-`git push <remote> <branch>`, and a short list of inert flags
-(`-u`/`--set-upstream`, `-q`/`--quiet`, `-v`/`--verbose`, `--dry-run`,
-`--porcelain`, `--progress`/`--no-progress`). **Any** other argument falls to
-`ask`.
+than a prompt. So the four verbs whose danger lives in their **arguments**
+carry a guard, and the guard is a **positive** model: it enumerates the
+arguments that are safe, not the ones that are dangerous.
+
+| verb | auto-approved | asks |
+| --- | --- | --- |
+| `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
+| `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
+| `git checkout` | switching refs, and `-b <name>` | `-- .`, `.`, `src/`, `-f`, `-B` — anything that discards uncommitted work |
+| `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |
 
 That direction is not stylistic. git's parse-options accepts **unambiguous
 long-option abbreviations**, so `git push --mir` *is* `--mirror` and
-`git push --del` *is* `--delete`. A deny-list of dangerous spellings would need
-a separate entry for `--mir`, `--mirr`, `--mirro`, … and could never be
-complete; the set of *safe* arguments is finite and closed. The practical
-guarantee: an unrecognised flag — an abbreviation, or a flag git adds in some
-future version — costs a prompt, never a silent history rewrite. It also means
-`--force-with-lease` asks: permitted by the denylist as the sanctioned safe
-alternative, but still a force operation, so a human sees it.
+`git push --del` *is* `--delete` — both verified against live git. A deny-list
+of dangerous spellings would need a separate entry for `--mir`, `--mirr`,
+`--mirro`, … and could never be complete; the set of *safe* arguments is finite
+and closed. The practical guarantee: an unrecognised flag — an abbreviation, or
+a flag a tool adds in some future version — costs a prompt, never a silent
+destructive action. It also means `--force-with-lease` asks: permitted by the
+denylist as the sanctioned safe alternative, but still a force operation, so a
+human sees it.
+
+Everything else on the allowlist is safe with any argument (`git status`,
+`gh issue view`, `pnpm verify`, …) and is deliberately not guarded.
 
 **A residual gap this fix cannot close from forge's side.** The spike verified
 that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)

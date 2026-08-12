@@ -107,7 +107,7 @@ nothing. All found by `forge:security`.
 
 **Files:** plugin/hooks/denylist.mjs, tests/hooks/denylist.test.mjs
 
-## Task 3c (code): allowlist argument guard for `git push` (AC-429.3, defense in depth)
+## Task 3c (code): allowlist argument guards (AC-429.3, defense in depth)
 
 Three of those spellings were found missing across two successive review
 rounds. The *pattern* is the real finding: `denylist.mjs` self-describes as "a
@@ -120,18 +120,43 @@ against the branch — both reached `allow` under the first, deny-shaped version
 of this guard. A dangerous-flag list would need `--mir`, `--mirr`, `--mirro`,
 … and still never be complete.
 
-So `allowed-commands.mjs` treats `git push` as argument-sensitive with a
-**positive** guard: auto-allow only when every argument is a known-safe flag
-(`-u`/`--set-upstream`, `-q`/`--quiet`, `-v`/`--verbose`, `--dry-run`,
-`--porcelain`, `--progress`/`--no-progress`) or a plain remote/ref token (no
-leading `-` or `+`, no `:`). Anything else asks — abbreviations, and any flag
-git adds in future. Deliberately redundant with the denylist; the test is
-written to keep passing even if a denylist rule regressed. Side effect:
-`--force-with-lease` asks — permitted, but a human sees it.
+So `allowed-commands.mjs` guards the four verbs whose danger lives in their
+arguments, with a **positive** model — auto-allow only when every argument is
+known-safe:
+
+- **`node`** (critical, round 3) — `node -e "<code>"` / `--eval` / `-p` / `-`
+  was reaching a bare `allow`: unrestricted code execution with full
+  fs/child_process/network reach, silently. node stops parsing its own options
+  at the first non-option, so requiring the first argument to be a plain script
+  path closes it while keeping the whole forge script tier auto-approved —
+  which is the entire reason `node` is on the allowlist.
+- **`git push`** — inert flags (`-u`/`--set-upstream`, `-q`, `-v`,
+  `--dry-run`, `--porcelain`, `--progress`) or a plain remote/ref token.
+- **`git checkout`** (major, round 3) — `git checkout -- .` / `.` / `src/` /
+  `-f` silently discard uncommitted work. Now ref-switching and `-b <name>`
+  only.
+- **`gh pr merge`** (major, round 3) — `--admin` bypasses branch protection.
+
+Anything else asks, including abbreviations and any flag a tool adds in
+future. Deliberately redundant with the denylist; the tests are written to
+keep passing even if a denylist rule regressed. Two intended side effects:
+`--force-with-lease` asks (permitted, but a human sees it), and a bare `node`
+asks (an unattended session must not silently enter a REPL).
 `ARGUMENT_SENSITIVE_COMMANDS` is exported so tests reason about the set rather
 than hardcoding it twice.
 
-**Files:** plugin/scripts/lib/allowed-commands.mjs, tests/lib/allowed-commands.test.mjs
+Also fixed in `denylist.mjs`: the short-flag cluster scan was `[a-zA-Z]`-only,
+so `git push -4f` (bundling git's IPv4 flag with `-f`) evaded it — verified on
+live git as a real forced update. Now `[a-zA-Z0-9]`.
+
+Deliberately left at `ask` rather than `deny`: `git push --prune --all`
+(deletes remote-only branches) and the `--mir`/`--del` abbreviations. The
+allowlist guard stops all of them executing silently; extending the *denylist*
+to every abbreviation is the unwinnable enumeration described above, and `ask`
+is the right outcome for a destructive-but-legitimate maintenance command.
+
+**Files:** plugin/scripts/lib/allowed-commands.mjs, plugin/hooks/denylist.mjs,
+tests/lib/allowed-commands.test.mjs, tests/hooks/denylist.test.mjs
 
 ## Task 4 (test): pin single-sourcing (AC-429.4)
 

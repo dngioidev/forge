@@ -20,11 +20,21 @@ describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () =>
     // `git commit -am`), so these are real forced non-fast-forward updates. The
     // old standalone-`\s-f\b` regex missed them, which mattered once #429's
     // allowlist began granting a bare `allow` to anything starting `git push `.
-    for (const cmd of ['git push -uf origin main', 'git push -fu origin main', 'git push -uf origin main --tags']) {
+    for (const cmd of [
+      'git push -uf origin main',
+      'git push -fu origin main',
+      'git push -uf origin main --tags',
+      // Digit-interposed: `-4` is git's IPv4 flag, and bundling it with -f still
+      // forces. An [a-zA-Z]-only cluster scan misses it (verified on live git).
+      'git push -4f origin main',
+      'git push -6f origin main',
+    ]) {
       expect(check(cmd).rule, cmd).toBe('force-push');
     }
     // and still blocks when buried in a chain
     expect(check('git status && git push -uf origin main').rule).toBe('force-push');
+    // ...without false-positiving on the digit flags alone
+    expect(check('git push -4 origin main').blocked).toBe(false);
   });
 
   it('AC-429.3: --mirror is a force-update of every ref (and deletes remote refs absent locally) and blocks', () => {

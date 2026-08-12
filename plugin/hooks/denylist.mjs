@@ -45,7 +45,10 @@ export const RULES = [
       if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
       if (/\s--mirror\b/.test(c)) return true;
       if (/(?:^|\s)\+\S/.test(c)) return true;
-      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
+      // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
+      // -f and really does force-update (verified against live git), but an
+      // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
+      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z0-9]+)/g) || []).join('');
       return /f/.test(shortFlags);
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',

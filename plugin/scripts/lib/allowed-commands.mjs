@@ -103,28 +103,68 @@ const SHELL_METACHARACTERS = /[$`<>&;|]|[\x00-\x1f]/;
  * need their own entry. Enumerating the SAFE arguments is finite and closed.
  *
  * Consequence: an unrecognised flag — including any abbreviation, and any flag
- * git adds in future — falls to `ask`. That is the intended failure mode. This
- * is deliberately redundant with the denylist: a spelling that slips past the
- * denylist costs a prompt, never a silent history rewrite.
+ * a tool adds in future — falls to `ask`. That is the intended failure mode.
+ * This is deliberately redundant with the denylist: a spelling that slips past
+ * the denylist costs a prompt, never a silent destructive action.
+ *
+ * A verb belongs here when its ARGUMENTS can make it destructive or can escape
+ * the verb entirely. Four do:
+ *   `node`          — `-e`/`--eval`/`-p` is unrestricted code execution
+ *   `git push`      — force / delete / mirror / refspec rewrite published refs
+ *   `git checkout`  — `-- .` / `-f` silently discards uncommitted local work
+ *   `gh pr merge`   — `--admin` bypasses branch protection
+ * The rest of ALLOWED_COMMAND_PREFIXES are safe for any argument (`git status`,
+ * `gh issue view`, …) or are read-only.
  */
+
+/** A bare operand: a ref, remote, path or number — never a flag (`-`) or force refspec (`+`). */
+const PLAIN_OPERAND = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+
 const ARGUMENT_SENSITIVE_PREFIXES = [
+  {
+    prefix: 'node',
+    // node stops parsing its OWN options at the first non-option argument, so
+    // "the first argument is a plain script path" is sufficient: everything
+    // after it belongs to the script, not to node. This is what stops
+    // `node -e "<code>"` / `--eval` / `-p` / `-` (read program from stdin) —
+    // unrestricted code execution with full fs/child_process/network reach —
+    // while leaving the entire forge script tier (`node scripts/x.mjs --flag`)
+    // auto-approved, which is the whole reason `node` is on the allowlist.
+    argsOk: (args) => args.length > 0 && PLAIN_OPERAND.test(args[0]),
+  },
   {
     prefix: 'git push',
     // Flags that cannot force, delete, or rewrite anything. `--force-with-lease`
     // is deliberately NOT here: it is permitted by the denylist as the sanctioned
     // safe alternative, but it is still a force operation, so a human should see
     // it rather than have it auto-approved.
-    safeFlags: new Set([
+    argsOk: (args) => args.every((a) => new Set([
       '-u', '--set-upstream',
       '-q', '--quiet',
       '-v', '--verbose',
       '--progress', '--no-progress',
       '--porcelain', '--dry-run',
-    ]),
-    // A bare remote or ref token: must not start with `-` (a flag) or `+` (a
-    // force refspec) and must not contain `:` (an explicit src:dst refspec,
-    // including the `:branch` deletion form).
-    safeOperand: /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/,
+    ]).has(a) || PLAIN_OPERAND.test(a)),
+  },
+  {
+    prefix: 'git checkout',
+    // Switching to a ref is routine; touching PATHS is what destroys work.
+    // `git checkout -- .`, `git checkout .` and `git checkout src/` all discard
+    // uncommitted changes irrecoverably, and `-f` does the same while switching.
+    // So: at most `-b <name>`, and operands must be ref-shaped — not `.`, not
+    // the `--` path separator, not a trailing-slash directory.
+    argsOk: (args) => args.every(
+      (a) => a === '-b' || (PLAIN_OPERAND.test(a) && a !== '.' && !a.endsWith('/')),
+    ),
+  },
+  {
+    prefix: 'gh pr merge',
+    // `--admin` bypasses branch-protection requirements — the one gh flag here
+    // that defeats a repo's own safety configuration.
+    argsOk: (args) => args.every((a) => new Set([
+      '--squash', '-s', '--merge', '-m', '--rebase', '-r',
+      '--delete-branch', '-d', '--auto',
+    ]).has(a) || PLAIN_OPERAND.test(a)),
   },
 ];
 
@@ -138,10 +178,9 @@ export const ARGUMENT_SENSITIVE_COMMANDS = ARGUMENT_SENSITIVE_PREFIXES.map((s) =
 /** Every whitespace-separated argument after an argument-sensitive prefix is known-safe. */
 function argsAreSafe(segment, spec) {
   const tail = segment.slice(spec.prefix.length).trim();
-  if (tail === '') return true; // the bare verb, e.g. `git push`
-  return tail.split(/\s+/).every(
-    (arg) => spec.safeFlags.has(arg) || spec.safeOperand.test(arg),
-  );
+  // `node` with no argument opens a REPL, which an unattended session must not
+  // silently enter, so its argsOk rejects the empty list rather than shortcutting.
+  return spec.argsOk(tail === '' ? [] : tail.split(/\s+/));
 }
 
 /**
