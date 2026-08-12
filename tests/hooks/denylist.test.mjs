@@ -777,6 +777,50 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
       expect(check(cmd).blocked, cmd).toBe(false);
     }
   });
+
+  it('AC-437.5: a quote close must reset endsDollar, so an adjacent quote is not misread as $\'…\' (full-branch review, round 3)', () => {
+    // `endsDollar`/`litDollar` were set while INSIDE a quoted region but never
+    // reset when that region closed. If the region's last emitted character
+    // happened to be a literal `$` (e.g. `'$'`) and another quote followed
+    // immediately -- adjacent quoted segments, a real bash idiom for splicing
+    // a literal `$` next to more text -- the stale `endsDollar` made the new
+    // quote misread as introducing `$'…'` ANSI-C syntax, even though the `$`
+    // was ordinary data from the PREVIOUS, already-closed quote.
+    //
+    // Ground truth for every case here was taken from real bash argv
+    // expansion (`bash -c 'printf "[%s]\n" ...'`), not from reading the code:
+    //   '$''-D'      -> bash concatenates adjacent quotes into one literal
+    //                   argument `$-D` -- not a delete flag.
+    //   '$''--force' -> literal `$--force` -- not a force flag.
+    //   ''$'\x2df'   -> the sanity check in the OTHER direction: an EMPTY
+    //                   closed quote (no trailing $, so no stale flag to begin
+    //                   with) immediately followed by a GENUINE $'...' must
+    //                   still decode -- `-f` -- so the fix must not blunt real
+    //                   ANSI-C introduction, only the false one.
+    const cases = [
+      [`git branch ${S}${D}${S}${S}-D${S} main`, false, undefined],
+      [`git push ${S}${D}${S}${S}--force${S} origin main`, false, undefined],
+      [`git push ${S}${S}${D}${S}${B}x2df${S} origin main`, true, 'force-push'],
+    ];
+    for (const [cmd, blocked, rule] of cases) {
+      const result = check(cmd);
+      expect(result.blocked, cmd).toBe(blocked);
+      if (blocked) expect(result.rule, cmd).toBe(rule);
+    }
+  });
+
+  it('AC-437.5: the adjacent-quote-close boundary reproduces across every rule sharing the normaliser', () => {
+    // The bug lived in normalizeShellText(), shared by every rule, so it is
+    // not force-push/env-branch-delete specific -- confirm hard-reset and
+    // recursive-delete see the same stale-$ false positive fixed too.
+    const cases = [
+      [`git reset ${S}${D}${S}${S}--hard${S}`, false],
+      [`rm ${S}${D}${S}${S}-rf${S} /real/path`, false],
+    ];
+    for (const [cmd, blocked] of cases) {
+      expect(check(cmd).blocked, cmd).toBe(blocked);
+    }
+  });
 });
 
 describe('long-option abbreviations git itself accepts (#437, AC-437.6)', () => {

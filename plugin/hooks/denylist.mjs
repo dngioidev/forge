@@ -75,6 +75,8 @@ const PUSH_MIRROR = longFlag('mirror', 1);
 const PUSH_DELETE = longFlag('delete', 2);
 const BRANCH_DELETE = longFlag('delete', 1);
 const BRANCH_FORCE = longFlag('force', 4);
+//   git reset --hard    -> `--h`    (the only reset long option starting "h")
+const HARD_RESET = longFlag('hard', 1);
 
 /** Separators splitSegments() divides on — see neutralisation note below. */
 const SEPARATOR_CHARS = /[;|&\n]/;
@@ -254,7 +256,24 @@ function normalizeShellText(rawCommand) {
       litDollar = false;
       continue;
     }
-    if (ch === quote) { quote = null; ansiC = false; continue; }
+    if (ch === quote) {
+      // A `$` cannot carry forward as syntax-relevant across a completed
+      // quote region: if the region's LAST emitted character happened to be a
+      // literal `$` (e.g. `'$'`), `endsDollar` would otherwise still read
+      // true here, and an immediately adjacent quote (`'$''-D'` — bash
+      // concatenates adjacent quoted segments into one argument, a real idiom
+      // for splicing a literal `$` next to more text) would be misread as
+      // `$'…'` ANSI-C syntax introduced by that stale `$`, when the `$` was
+      // just ordinary data from the quote that already closed (#437,
+      // adversarial review round 3). Resetting both flags on close removes
+      // the false signal at its source rather than guarding every call site
+      // that opens a quote.
+      quote = null;
+      ansiC = false;
+      endsDollar = false;
+      litDollar = false;
+      continue;
+    }
     if (ch === '\\' && next !== undefined) {
       if (ansiC) {
         // \xHH / \uHHHH / \UHHHHHHHH — hex byte or code point. The digit caps
@@ -414,7 +433,15 @@ export const RULES = [
     // --quiet sat in the way (#437). Fixed on both axes: "reset" may be followed
     // by any other flags in any order before --hard appears, AND any
     // unambiguous prefix of --hard matches, not just the full spelling.
-    test: (c) => /\bgit\b[^\n]*\breset\b[^\n]*(?:^|\s)--h(?:a(?:r(?:d)?)?)?\b/.test(c),
+    //
+    // Rebuilt on the same abbrev()/longFlag() helpers as the other three
+    // rules (#437 review, minor finding): this used to hand-roll its own
+    // `--h(?:a(?:r(?:d)?)?)?\b` instead of reusing them, the exact duplication
+    // AC.4 otherwise consolidated. `\b` vs. `longFlag`'s `(?![\w-])` cannot
+    // diverge for THIS flag — `git reset` has no `--hard-*` sibling for a
+    // longer flag to be mistaken for — so folding it in is a pure
+    // de-duplication, not a behaviour change.
+    test: (c) => /\bgit\b[^\n]*\breset\b/.test(c) && HARD_RESET.test(c),
     msg: 'git reset --hard discards work irrecoverably',
   },
   {
