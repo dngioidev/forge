@@ -465,6 +465,52 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     expect(check(`git push ${D}${S}${B}x2df${S} origin main`).rule).toBe('force-push');
   });
 
+  it('AC-437.5: octal escapes are masked to a byte, as bash does', () => {
+    // Real bash wraps ANSI-C octal mod 256, so `$'\455'` is `-` (0o455 & 0xff
+    // = 0x2d) — verified by printing the expanded argv. Decoding the raw value
+    // instead yields an unrelated character and MISSES a real force-push.
+    expect(check(`git push ${D}${S}${B}455f${S} origin main`).rule).toBe('force-push');
+    expect(check(`git branch ${D}${S}${B}055D${S} main`).rule).toBe('env-branch-delete');
+  });
+
+  it('AC-437.5: a decoded separator is inert and cannot fragment the command', () => {
+    // Decoded output feeds the same separator-neutralising path as everything
+    // else, so an escape decoding to `;` or a newline can't split a verb away
+    // from its own flag.
+    expect(check(`git branch ${D}${S}${B}x3b${S} -D main`).rule).toBe('env-branch-delete');
+    expect(check(`git branch ${D}${S}${B}n${S} -D main`).rule).toBe('env-branch-delete');
+  });
+
+  it('AC-437.5: non-printable and unrecognised escapes are inert, never fabricating a flag', () => {
+    // Deliberate narrowing: only PRINTABLE ASCII can spell a flag, so control
+    // escapes (`\cA` is one control byte in real bash) and out-of-range values
+    // collapse to a single inert outcome instead of needing a branch each.
+    // An unrecognised escape keeps BOTH characters, as bash does (`$'\z'` is a
+    // literal 2-char `\z`), rather than dropping the backslash and inventing a
+    // character the shell never produced.
+    for (const cmd of [
+      `git push ${D}${S}${B}cA${S} origin main`,
+      `git push ${D}${S}${B}c${S} origin main`,
+      `git push ${D}${S}${B}z${S} origin main`,
+      `echo ${D}${S}${B}z${S}`,
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+    // ...and an inert escape cannot mask a real flag sitting beside it.
+    expect(check(`git push ${D}${S}${B}x2df${S} ${D}${S}${B}cA${S} origin main`).rule).toBe('force-push');
+  });
+
+  it('AC-437.5: an ESCAPED dollar does not introduce ANSI-C quoting', () => {
+    // In real bash `\$'\n'` is the literal 3-char `$\n` — the `$` is data, so
+    // the quotes after it are ordinary and nothing is decoded (verified by
+    // printing the expanded argv). Treating it as `$'…'` would both drop a
+    // literal `$` and decode escapes the shell deliberately left alone.
+    expect(check(`echo ${B}${D}${S}${B}n${S}`).blocked).toBe(false);
+    expect(check(`git push ${B}${D}${S}${B}x2df${S} origin main`).blocked).toBe(false);
+    // ...while genuine ANSI-C quoting still decodes.
+    expect(check(`git push ${D}${S}${B}x2df${S} origin main`).rule).toBe('force-push');
+  });
+
   it('AC-437.5: a separator QUOTED between a verb and its flag cannot fragment the command', () => {
     // splitSegments() is not quote-aware, so a `;` hidden inside a quoted
     // argument used to split the verb away from its own flag, leaving neither

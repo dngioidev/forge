@@ -134,8 +134,18 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  * `$'\x2df'` to `-f`, `$'\055D'` to `-D`, `$'\x2d\x2dhard'` to `--hard`. An
  * attacker can spell any flag, or any whole word, as hex or octal bytes, so a
  * normaliser that only handles `$'-f'` (where the content is already literal)
- * closes almost none of the surface. Every escape bash decodes there is
- * decoded here.
+ * closes almost none of the surface.
+ *
+ * SCOPE OF THE DECODER, stated narrowly because earlier drafts of this comment
+ * twice claimed more than the code delivered: the goal is not to reproduce
+ * bash. It is to recover the PRINTABLE ASCII a flag could be spelled with.
+ * Every decoded escape is therefore funnelled through `emitCodePoint()`, which
+ * keeps a character only if it is printable ASCII and emits an inert space
+ * otherwise. Control bytes, out-of-range values, and astral code points cannot
+ * spell `-`, a letter, or a digit, so collapsing all of them to one inert
+ * outcome is both safe and much easier to keep correct — it removes
+ * range-checking, `\c` control escapes, and unicode edge cases as separate
+ * things to get right, rather than adding a branch per case.
  */
 
 /** Single-character ANSI-C escapes bash decodes inside `$'…'`. */
@@ -146,19 +156,20 @@ const ANSI_C_ESCAPES = {
 
 function normalizeShellText(command) {
   let out = '';
-  let quote = null;   // the active quote character, or null
-  let ansiC = false;  // the active single-quote region was opened as `$'…'`
+  let quote = null;    // the active quote character, or null
+  let ansiC = false;   // the active single-quote region was opened as `$'…'`
+  let litDollar = false; // the `$` just emitted came from `\$`, so it is DATA
   // A separator that survived escaping/quoting is inert as a separator, so
   // emit a space rather than the character itself — splitSegments() is blind
   // to quoting and would otherwise split the command around it.
   const emit = (ch) => { out += SEPARATOR_CHARS.test(ch) ? ' ' : ch; };
-  // Decoded escapes go through here rather than String.fromCodePoint directly:
-  // that throws RangeError above U+10FFFF (`$'\UFFFFFFFF'` is reachable input),
-  // and check() must never throw (AC-3.4). An out-of-range escape cannot spell
-  // a flag character anyway, so dropping it is both safe and correct.
+  // Every DECODED escape lands here. Anything that isn't printable ASCII
+  // becomes an inert space: it cannot spell a flag, and it keeps this total —
+  // String.fromCodePoint throws above U+10FFFF and `$'\UFFFFFFFF'` is
+  // reachable input, while check() must never throw (AC-3.4).
   const emitCodePoint = (code) => {
-    if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return;
-    emit(String.fromCodePoint(code));
+    if (!Number.isInteger(code) || code < 0x20 || code > 0x7e) { out += ' '; return; }
+    emit(String.fromCharCode(code));
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -167,17 +178,22 @@ function normalizeShellText(command) {
       if (ch === '\\') {
         // Drop the backslash, consume AND emit what it escaped, so an escaped
         // quote can never be mistaken for a quoting delimiter.
-        if (next !== undefined) { emit(next); i++; }
+        if (next !== undefined) { emit(next); litDollar = next === '$'; i++; } else litDollar = false;
         continue;
       }
       if (ch === '"' || ch === "'") {
-        // `$'…'` / `$"…"`: the `$` is part of the quoting syntax, not the value.
-        ansiC = out.endsWith('$') && ch === "'";
-        if (out.endsWith('$')) out = out.slice(0, -1);
+        // `$'…'` / `$"…"`: a PRECEDING `$` is quoting syntax, not data — unless
+        // it was itself escaped (`\$'…'`), in which case it is a literal `$`
+        // and the quotes that follow are ordinary.
+        const introducer = out.endsWith('$') && !litDollar;
+        ansiC = introducer && ch === "'";
+        if (introducer) out = out.slice(0, -1);
         quote = ch;
+        litDollar = false;
         continue;
       }
       out += ch;
+      litDollar = false;
       continue;
     }
     if (ch === quote) { quote = null; ansiC = false; continue; }
@@ -194,14 +210,21 @@ function normalizeShellText(command) {
           i += 1 + digits.length;
           continue;
         }
-        // \NNN — octal byte. Masked to a byte, as bash does.
+        // \NNN — octal. Masked to a byte, as bash does: `$'\455'` is `-`.
         const oct = /^[0-7]{1,3}/.exec(command.slice(i + 1));
         if (oct) {
           emitCodePoint(parseInt(oct[0], 8) & 0xff);
           i += oct[0].length;
           continue;
         }
-        emit(ANSI_C_ESCAPES[next] ?? next);
+        // \cX — Control-X. Always a control byte, so always inert here.
+        if (next === 'c') { out += ' '; i += command[i + 2] === undefined ? 1 : 2; continue; }
+        const simple = ANSI_C_ESCAPES[next];
+        // An UNRECOGNISED escape keeps both characters in bash (`$'\z'` is a
+        // literal backslash-z), so preserve rather than silently drop the
+        // backslash — dropping it invents a character the shell never produced.
+        if (simple === undefined) out += '\\';
+        emit(simple ?? next);
         i++;
         continue;
       }
