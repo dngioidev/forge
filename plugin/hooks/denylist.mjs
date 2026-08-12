@@ -21,21 +21,34 @@ const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 export const RULES = [
   {
     name: 'force-push',
-    // Short `-f` must be matched INSIDE a bundled cluster, not only standalone:
-    // git's parse-options bundles short boolean options the same way `git commit
-    // -am` does, so `git push -uf` / `-fu` are real forced, non-fast-forward
-    // updates that the old standalone-`-f` regex missed and the #429 allowlist
-    // would then have auto-approved as an ordinary `git push`. Same short-flag
-    // collection technique as recursive-delete below: the `(?:^|\s)-` anchor
-    // keeps long `--force-with-lease` and mid-word dashes (`feat-f`) out of the
-    // cluster so neither can spoof (or dodge) a short flag.
+    // git has FOUR documented ways to force-update a published ref, and this
+    // rule historically matched only the first two spellings (#429). Each of
+    // the others was a real forced push that slipped through — and, once the
+    // #429 allowlist began granting `allow` to anything starting `git push `,
+    // slipped through *silently*. All four:
+    //   1. long   `--force`      (but NOT --force-with-lease/--force-if-includes,
+    //                             the sanctioned safer idioms)
+    //   2. short  `-f`, INCLUDING bundled clusters — git's parse-options bundles
+    //             short booleans the way `git commit -am` does, so `git push -uf`
+    //             forces just as much as `-f`
+    //   3. `--mirror` — force-updates EVERY ref under refs/ and DELETES remote
+    //             refs absent locally; strictly worse than a single --force
+    //   4. a leading `+` on the refspec (`git push origin +main`, `+src:dst`) —
+    //             documented force syntax, previously caught only by accident
+    //             when a protected-branch name happened to appear (env-branch-
+    //             delete's `:` + PROTECTED_BRANCHES), so `+trunk:trunk` sailed past
+    // Short-flag collection uses the same technique as recursive-delete below:
+    // the `(?:^|\s)-` anchor keeps long `--force-*` flags and mid-word dashes
+    // (`feat-f`) out of the cluster so neither can spoof (or dodge) a short flag.
     test: (c) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
-      if (/\s--force\b(?!-with-lease)/.test(c)) return true;
+      if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
+      if (/\s--mirror\b/.test(c)) return true;
+      if (/(?:^|\s)\+\S/.test(c)) return true;
       const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
       return /f/.test(shortFlags);
     },
-    msg: 'git push --force/-f (incl. bundled short flags like -uf) rewrites published history',
+    msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
   {
     name: 'env-branch-delete',

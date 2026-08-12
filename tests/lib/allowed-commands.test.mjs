@@ -63,6 +63,39 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     }
   });
 
+  it("AC-429.3: `git push` argument guard — the allowlist does not blanket-trust a push's arguments, independent of the denylist", () => {
+    // Defense in depth. Three force-push spellings were found missing from
+    // denylist.mjs during #429's review rounds (-uf, --mirror, +refspec). Each
+    // is fixed there, but denylist.mjs is self-described as "a tripwire ... not
+    // a security boundary", and an allowlist on top turns every one of its gaps
+    // into a SILENT approve. So these must fail the ALLOWLIST too — this test
+    // keeps passing even if a denylist rule regressed.
+    for (const cmd of [
+      'git push --mirror origin',
+      'git push origin +trunk:trunk',
+      'git push origin +develop',
+      'git push -uf origin main',
+      'git push --force origin main',
+      'git push --delete origin some-branch',
+      'git push origin :some-branch',              // the colon-deletion form
+      'git push --force-with-lease origin feat/x', // a force op: a human should see it
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
+  it('AC-429.2: the push argument guard still auto-allows the ordinary push shapes agents actually type', () => {
+    for (const cmd of [
+      'git push',
+      'git push origin main',
+      'git push origin fix/429-agy-ask-default',
+      'git push -u origin feat/x',
+      'git push --set-upstream origin feat/x',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
   it('AC-429.3: the guard holds when isAllowedCommand is called standalone, without a segments splitter', () => {
     // The `segments` option is optional; the metacharacter guard must not
     // depend on it (it runs against the full string before any splitting).

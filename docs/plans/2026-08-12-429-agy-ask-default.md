@@ -76,27 +76,53 @@ an evaluated run_command call" this ticket targets.
 
 **Files:** plugin/hooks/agy-deny.mjs
 
-## Task 3b (code): close the bundled-short-flag force-push gap (AC-429.3)
+## Task 3b (code): close the force-push spelling gaps (AC-429.3)
 
-`plugin/hooks/denylist.mjs`'s force-push rule matched only a **standalone**
-`-f` (`/\s-f\b/`). git's parse-options bundles short boolean options (same
-mechanism as `git commit -am`), so `git push -uf` / `-fu` are real forced,
-non-fast-forward updates that the rule missed. That was survivable while the
-agy hook allowed everything anyway; it is **not** survivable once AC-429.2's
-allowlist grants a bare `allow` to anything starting `git push ` — the miss
-becomes a silent auto-approved force-push, i.e. the exact #434 failure mode.
-Rule now collects single-dash short-flag clusters (the technique
-`recursive-delete` already uses) and tests for `f` within them, keeping
-`--force-with-lease` and mid-word dashes (`feature-f`) out of the cluster.
+`plugin/hooks/denylist.mjs`'s force-push rule matched only two of git's
+**four** documented force-update spellings. All were survivable while the agy
+hook allowed everything anyway; none is survivable once AC-429.2's allowlist
+grants a bare `allow` to anything starting `git push ` — each miss becomes a
+silent auto-approved history rewrite, i.e. the exact #434 failure mode.
+
+- **bundled short `-f`** — git's parse-options bundles short booleans (same
+  mechanism as `git commit -am`), so `git push -uf` / `-fu` force. Rule now
+  collects single-dash short-flag clusters (the technique `recursive-delete`
+  already uses).
+- **`--mirror`** — force-updates every ref under `refs/` *and* deletes remote
+  refs absent locally; strictly worse than a single-branch `--force`.
+- **a leading `+` on the refspec** (`git push origin +trunk:trunk`) —
+  documented force syntax, previously caught only by *accident*, and only when
+  a protected-branch name happened to appear in the string (via
+  `env-branch-delete`'s `:` + `PROTECTED_BRANCHES`).
+- Also fixed a false positive in the same rule: `--force-if-includes`, git's
+  recommended companion to `--force-with-lease`, was denied as if it were a
+  bare `--force`.
 
 Scope note: the original ticket body lists "changing the denylist rules" as a
-non-goal, but that was written pre-scope-update, when this was a feature
-ticket. Revised AC-429.3 makes denylist-outranks-allowlist load-bearing and
-names a force-push as the pinned case; an allowlist that green-lights
-`git push -uf` does not satisfy it. This change is strictly *more* blocking
-and grants nothing. Found by `forge:security`.
+non-goal, but that predates the scope update, when this was a feature ticket.
+Revised AC-429.3 makes denylist-outranks-allowlist load-bearing and names a
+force-push as the pinned case; an allowlist that green-lights
+`git push --mirror` does not satisfy it. Strictly *more* blocking; grants
+nothing. All found by `forge:security`.
 
 **Files:** plugin/hooks/denylist.mjs, tests/hooks/denylist.test.mjs
+
+## Task 3c (code): allowlist argument guard for `git push` (AC-429.3, defense in depth)
+
+Three of those spellings were found missing across two successive review
+rounds. The *pattern* is the real finding: `denylist.mjs` self-describes as "a
+tripwire ... not a security boundary", and an allowlist layered on top
+converts every one of its gaps into a **silent** approve rather than a prompt.
+So `allowed-commands.mjs` now treats `git push` as argument-sensitive: only a
+plain push (`git push`, `git push origin <branch>`, `-u`/`--set-upstream`) is
+auto-allowed; force / refspec / deletion syntax falls to `ask` even when the
+denylist did not recognise that spelling. Deliberately redundant with the
+denylist — if a fifth spelling appears, the failure mode is a prompt, not a
+silent history rewrite. Its test is written to keep passing even if a denylist
+rule regressed. Side effect: `--force-with-lease` now asks (permitted, but a
+human sees it).
+
+**Files:** plugin/scripts/lib/allowed-commands.mjs, tests/lib/allowed-commands.test.mjs
 
 ## Task 4 (test): pin single-sourcing (AC-429.4)
 

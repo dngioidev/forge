@@ -332,12 +332,30 @@ force-push) is **denied**. This precedence is pinned by a dedicated test
 (`tests/hooks/agy-deny.test.mjs`, "the denylist strictly outranks the
 allowlist").
 
-Precedence is only as good as the denylist's own coverage, so #429 also
-tightened the force-push rule to catch **bundled** short flags: git bundles
-short boolean options (as in `git commit -am`), making `git push -uf` a real
-forced update that the previous standalone-`-f` regex missed. Harmless while
-the hook allowed everything; a silent auto-approved force-push once the
-allowlist started granting `allow` to anything beginning `git push `.
+Precedence is only as good as the denylist's own coverage, and review of this
+fix found the force-push rule was matching only two of git's **four**
+documented force-update spellings. All four now block: `--force`; a bundled
+short `-f` (git bundles short booleans as in `git commit -am`, so `git push
+-uf` forces); `--mirror` (force-updates every ref and deletes remote refs
+absent locally); and a leading `+` on the refspec (`git push origin +trunk`).
+Each was harmless while the hook allowed everything anyway — and each became a
+silent auto-approved history rewrite the moment the allowlist began granting
+`allow` to anything beginning `git push `. The safe idioms
+`--force-with-lease` and `--force-if-includes` are correctly **not** treated as
+a plain `--force`.
+
+**The allowlist does not blanket-trust arguments either.** Because three of
+those spellings were found missing across successive review rounds — and
+because `denylist.mjs` describes itself as *"a tripwire for a few
+known-catastrophic commands, not a security boundary"* — an allowlist layered
+on top would turn every remaining denylist gap into a silent approve. So
+`git push` is treated as **argument-sensitive**: only a plain push
+(`git push`, `git push origin <branch>`, `-u`/`--set-upstream`) is
+auto-approved, and anything carrying force, refspec, or deletion syntax falls
+to `ask` **even if the denylist did not recognise that particular spelling**.
+This is deliberately redundant with the denylist: if a fifth force-push
+spelling turns up, the failure mode is a prompt, not a silent history rewrite.
+It also means `--force-with-lease` asks — permitted, but a human sees it.
 
 **A residual gap this fix cannot close from forge's side.** The spike verified
 that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)
