@@ -140,6 +140,11 @@ known-safe:
   auto-approves; plain `git checkout main` asks. Closes the class rather than
   half-closing it, for ~1 extra prompt per ticket.
 - **`gh pr merge`** (major, round 3) — `--admin` bypasses branch protection.
+- **`git rebase`** (critical, round 5) — `-x`/`--exec "<cmd>"` runs an
+  arbitrary shell command after every replayed commit, and needs no shell
+  metacharacter to do it (`git rebase -x "touch pwned" main` is plain text), so
+  the metacharacter guard did not catch it. Flow-control flags and plain refs
+  only.
 - **`pnpm verify`** (critical, round 4) — pnpm forwards trailing args to
   `vitest run`, and vitest `import()`s a `--reporter=<path>` /
   `--config=<path>` module at startup, before any test runs: arbitrary code

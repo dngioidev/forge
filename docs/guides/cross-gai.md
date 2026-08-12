@@ -358,6 +358,7 @@ arguments that are safe, not the ones that are dangerous.
 | `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
 | `pnpm verify` | the bare command, nothing else | any argument — pnpm forwards them to `vitest`, whose `--reporter=<path>` / `--config=<path>` `import()`s that module at startup |
 | `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
+| `git rebase` | plain refs and flow control (`--continue`, `--abort`, `--skip`, `--onto`, `-q`, `--autostash`) | `-x` / `--exec` (runs arbitrary shell after every replayed commit), `-i` |
 | `git checkout` | branch **creation** only — `-b <name>`, optionally from a start point | everything else, including plain `git checkout main` (see below) |
 | `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |
 
@@ -385,9 +386,14 @@ instead of half-closing it.
 Everything else on the allowlist is safe with any argument (`git status`,
 `gh issue view`, `gh pr create`, …) and is deliberately not guarded.
 
-One honest scope limit on the `node` guard: it checks that a **script path**
-was given, not *which* script, so `node <any-on-disk-path>` still
-auto-approves. Executing an arbitrary on-disk script is the capability that
+Two accepted limits, recorded rather than glossed. `gh pr create --body-file`
+and `gh issue comment --body-file` take an arbitrary local path and publish its
+contents — that is the mechanism forge uses for every PR body and trail
+comment, so it stays unguarded by design; treat it as "this session can publish
+any file it can read", not as an oversight.
+
+And the `node` guard checks that a **script path** was given, not *which*
+script, so `node <any-on-disk-path>` still auto-approves. Executing an arbitrary on-disk script is the capability that
 allowlist entry exists to grant — it is the single entry covering forge's whole
 script tier — so narrowing it to forge's own tree is tracked as
 [#438](https://github.com/dngioidev/forge/issues/438) rather than quietly

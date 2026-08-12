@@ -183,6 +183,19 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     ),
   },
   {
+    prefix: 'git rebase',
+    // `git rebase -x/--exec "<cmd>"` runs an ARBITRARY SHELL COMMAND after every
+    // replayed commit — full command execution behind an ordinary-looking rebase,
+    // and it needs no shell metacharacter to do it (`git rebase -x "touch pwned"`
+    // is plain text). `-i/--interactive` also opens an editor, which an
+    // unattended session must not silently enter. So only the flow-control flags
+    // and plain refs auto-approve.
+    argsOk: flagsAndOperands(
+      '--continue', '--abort', '--skip', '--onto',
+      '-q', '--quiet', '--autostash',
+    ),
+  },
+  {
     prefix: 'git checkout',
     // `git checkout <name>` is genuinely AMBIGUOUS: git resolves <name> as a ref
     // if one exists and otherwise as a path, and `git checkout <path>` discards

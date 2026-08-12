@@ -28,7 +28,9 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
   it('AC-429.3: every argument-sensitive prefix REFUSES an arbitrary unknown flag', () => {
     // The guard's whole point: an unrecognised flag may be an abbreviation of a
     // destructive one (`--mir` IS `--mirror`), so unknown means ask, per verb.
-    expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual(['node', 'pnpm verify', 'git push', 'git checkout', 'gh pr merge']);
+    expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual([
+      'node', 'pnpm verify', 'git push', 'git rebase', 'git checkout', 'gh pr merge',
+    ]);
     for (const prefix of ARGUMENT_SENSITIVE_COMMANDS) {
       expect(isAllowedCommand(`${prefix} --some-unknown-flag`, { segments: splitSegments }), prefix).toBe(false);
     }
@@ -69,6 +71,23 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
       'node scripts/x.mjs',
       'node bin/forge.mjs board status',
     ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
+  it('AC-429.3: `git rebase -x/--exec` runs arbitrary shell and asks; flow-control rebases still allow', () => {
+    // --exec runs a shell command after EVERY replayed commit. It needs no shell
+    // metacharacter to do it, so the metacharacter guard does not catch it —
+    // `git rebase -x "touch pwned" main` is plain text and was reaching allow.
+    for (const cmd of [
+      'git rebase -x "touch pwned" main',
+      'git rebase --exec "touch pwned" main',
+      'git rebase --exec script.sh main',
+      'git rebase -i main', // interactive: opens an editor an unattended session must not enter
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+    for (const cmd of ['git rebase main', 'git rebase origin/main', 'git rebase --continue', 'git rebase --abort']) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
     }
   });
