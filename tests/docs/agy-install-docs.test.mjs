@@ -18,8 +18,13 @@ describe('#423 — AGY install docs', () => {
     const guide = await readFile(join(repoRoot, 'docs', 'guides', 'install.md'), 'utf8');
     expect(guide).toContain('### Claude Code');
     expect(guide).toContain('### Antigravity (agy)');
-    // grounded in the real emit command from cross-gai.md — no invented steps
-    expect(guide).toContain('node plugin/scripts/init.mjs --host agy');
+    // #433 (AC-433.2): the emit command runs from the consumer's project dir with an
+    // absolute path to the checkout's emitter — NOT the bare relative form asserted
+    // here before #433, which encoded the wrong-cwd bug (init.mjs:56 resolves the dest
+    // relative to cwd, not the forge source). Reviewer sign-off (spec §13): asserting
+    // the old bare-relative string forever would re-lock the bug #433 fixes, so this
+    // assertion is updated to the corrected absolute-path invocation.
+    expect(guide).toContain('node C:\\tools\\forge\\plugin\\scripts\\init.mjs --host agy');
     expect(guide).toMatch(/\[Cross-GAI guide\]\(cross-gai\.md\)/);
     // does not duplicate the Claude-Code slash/terminal command pair for agy
     const agySection = guide.slice(guide.indexOf('### Antigravity (agy)'));
