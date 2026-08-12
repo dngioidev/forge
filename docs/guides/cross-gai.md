@@ -29,7 +29,7 @@ guide.
 | Antigravity `agy` CLI | `agy --version` | proven on v1.1.5, hook contract re-verified on v1.1.7 (#428); the plugin system ingests the Claude plugin format directly |
 | Node >= 22.13 | `node --version` | the whole engine runs on Node; the hook shims are ESM |
 | git + `gh` (authenticated) | `git --version`, `gh auth status` | needed by the board/gate/release CLIs, not by the emit step itself |
-| a forge checkout | — | you run `forge init --host agy` from the forge plugin source |
+| a forge checkout | — | source of the emitter script; see [Step 1](#step-1--emit-the-agy-plugin-package) for exactly where it runs from |
 
 The emit step (`forge init --host agy`) needs only `node` — it writes files and
 does not touch `gh` or the board. `gh`/`git` are needed once you actually drive
@@ -39,16 +39,24 @@ forge inside an agy session (board moves, gates, release readiness).
 
 ## Step 1 — emit the agy plugin package
 
-From a forge checkout, run the host-emit mode of `init`:
+Run the host-emit mode of `init` **from the directory of the project you're
+adding forge to** — not from inside the forge checkout. `init.mjs` resolves
+its output relative to the **current working directory**, always, whether or
+not `--out` is passed; if you're a first-time adopter with no forge checkout
+yet, get one first (`git clone https://github.com/dngioidev/forge C:\tools\forge`
+— see [install.md's Antigravity section](install.md#antigravity-agy) for the
+full first-time walkthrough), then point at its emitter by absolute path:
 
 ```
-node plugin/scripts/init.mjs --host agy --out C:\agy\forge
+cd C:\my\project
+node C:\tools\forge\plugin\scripts\init.mjs --host agy --out C:\agy\forge
 ```
 
 - `--host agy` is the only supported host today. Any other value is refused with
   a message pointing at #292 (Codex deferred).
 - `--out <dir>` sets where the package is staged. If omitted, it defaults to
-  `.agents/plugins/forge/` under the current directory.
+  `.agents/plugins/forge/` under the current directory (of your project, per
+  the cwd rule above).
 - **The in-place discovery flow (no `--out`) is the recommended primary path.**
   With no `--out` the package is emitted into `.agents/plugins/forge/` and
   discovered where it sits — nothing is copied, so there is no staging-dir to
@@ -70,6 +78,33 @@ current working directory or any ancestor of it, a directory that contains the
 forge source, or any non-empty directory that does not already carry a forge
 `plugin.json` marker (`{"name":"forge"}`). This blast-radius guard means a
 mistyped `--out .` cannot delete your working tree.
+
+### Updating the emitted package
+
+Because the emitter is a clean, idempotent re-emit (above), **updating is the
+same command you ran to install** — there is no separate update mechanism to
+learn:
+
+- **In-place (no `--out`, recommended):** re-run Step 1's command from your
+  project directory. agy discovers the refreshed package where it already
+  sits — nothing further to do.
+- **Copy install (`--out` + `agy plugin install`):** re-run Step 1's command
+  into the same `--out` dir, then re-run `agy plugin install "<out-dir>"` and
+  `agy plugin validate forge` — the copy under `~/.gemini/config/plugins/forge/`
+  is a point-in-time copy, so it only picks up the update once you re-install it.
+
+The emitted package is expected to be **committed** to the consuming project's
+repo (not gitignored) — see
+[install.md's Antigravity section](install.md#antigravity-agy) for the full
+rationale. An update therefore shows up as an ordinary, reviewable diff across
+the package's files; that is expected, not a sign something went wrong.
+
+To tell whether an update is available: the emitted `plugin.json`'s `version`
+field is the forge version currently pinned in the consumer's repo; compare it
+against the forge checkout's own `plugin/.claude-plugin/plugin.json` after a
+`git pull` there. Automating that comparison as a `forge:doctor` check is
+tracked in [#431](https://github.com/dngioidev/forge/issues/431), not built by
+this guide.
 
 ### What gets emitted (the plugin layout)
 

@@ -89,6 +89,9 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
 
     const gi = await readFile(join(cwd, '.gitignore'), 'utf8');
     expect(gi).toContain('.forge/');
+    // AC-433.4: the emitted agy package (.agents/plugins/forge/) is meant to be
+    // committed (owner decision, #433) — init must never gitignore .agents/.
+    expect(gi).not.toMatch(/\.agents\//);
 
     // #109: init writes a .gitattributes normalizing line endings to LF
     const ga = await readFile(join(cwd, '.gitattributes'), 'utf8');

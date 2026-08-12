@@ -32,13 +32,30 @@ This brings the 20 skills, the `/forge:*` commands, the safety + learning hooks,
 
 ### Antigravity (agy)
 
-forge's engine is host-agnostic ([ADR-0007](../decisions/0007-cross-gai-mcp-first.md)); Antigravity, via its `agy` CLI, is the one adapter **proven end-to-end today** (Codex is deferred, see [#292](https://github.com/dngioidev/forge/issues/292)). From a forge checkout:
+forge's engine is host-agnostic ([ADR-0007](../decisions/0007-cross-gai-mcp-first.md)); Antigravity, via its `agy` CLI, is the one adapter **proven end-to-end today** (Codex is deferred, see [#292](https://github.com/dngioidev/forge/issues/292)). Unlike Claude Code there is no marketplace — an agy-only adopter (no Claude subscription) needs a forge checkout to emit from. Three steps, start to finish:
+
+**1. Get a forge checkout** — once; you reuse it for every project you adopt forge into, and for every future update:
 
 ```
-node plugin/scripts/init.mjs --host agy
+git clone https://github.com/dngioidev/forge C:\tools\forge
 ```
 
-No `--out` is the recommended path: the package emits in place to `.agents/plugins/forge/` and agy discovers it there — nothing to copy or relocate. agy ingests the Claude plugin format natively (skills, agents, and commands copied byte-for-byte, slash commands auto-converted to skills), so you get the same 20 skills and `/forge:*` commands as Claude Code. For a custom `--out` staging path, the MCP/hook wiring detail, Windows gotchas (MAX_PATH), and the full capability/parity matrix, see the [Cross-GAI guide](cross-gai.md).
+(macOS/Linux: forward slashes, e.g. `~/tools/forge`.) Anywhere on disk works — the checkout is a source you emit *from*, never itself the target of the next step.
+
+**2. Emit the plugin package into your project.** Run this from your **project's own directory** — not from inside the forge checkout — with an **absolute path** to the checkout's emitter:
+
+```
+cd C:\my\project
+node C:\tools\forge\plugin\scripts\init.mjs --host agy
+```
+
+`init.mjs` resolves the output directory relative to the **current working directory**, not the forge checkout — running it while `cd`'d into the checkout emits the package into forge's own tree instead of your project. No `--out` is the recommended path: the package emits in place to `.agents/plugins/forge/` under your project and agy discovers it there — nothing to copy or relocate. agy ingests the Claude plugin format natively (skills, agents, and commands copied byte-for-byte, slash commands auto-converted to skills), so you get the same 20 skills and `/forge:*` commands as Claude Code.
+
+**3. Commit the emitted package.** `.agents/plugins/forge/` is meant to be committed to your project's repo — that's what gives every teammate the same, version-pinned forge without each of them needing their own checkout. `/forge:init` (step 2 below) only ever adds `.forge/` to `.gitignore`, never `.agents/`. Expect roughly 126 files on the first commit — that's the package, not a mistake.
+
+**Updating later:** re-run the exact command from step 2 — the emitter is a clean, idempotent re-emit of its own output directory, so there is no separate update command to learn. Commit the result; on an already-adopted repo that's a reviewable, all-at-once diff across the package's files, which is expected (the whole point of committing a version-pinned snapshot), not a sign something broke. For a copy install (you passed `--out` and ran `agy plugin install`), also re-run `agy plugin install "<out-dir>"` and `agy plugin validate forge` afterward so the installed copy picks up the refreshed files. To check what you're on: the emitted `.agents/plugins/forge/plugin.json`'s `version` field is the pinned forge version; compare it against your checkout's own `plugin/.claude-plugin/plugin.json` after `git -C C:\tools\forge pull` to see if an update is available. (Automating that comparison as a `forge:doctor` staleness check is tracked in [#431](https://github.com/dngioidev/forge/issues/431) — not built yet; this is a manual read for now.)
+
+For a custom `--out` staging path, the MCP/hook wiring detail, Windows gotchas (MAX_PATH), and the full capability/parity matrix, see the [Cross-GAI guide](cross-gai.md).
 
 ## 2. Bootstrap: `/forge:init`
 
