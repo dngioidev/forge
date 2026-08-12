@@ -382,14 +382,25 @@ function braceAlternatives(body) {
  * first-come budget runs out before generating it. Splitting the budget
  * guarantees every alternative is represented by at least one word, so no
  * alternative's text can be dropped no matter where it sits or how many
- * precede it. Depth is bounded implicitly: each level divides the budget, so
- * nesting stops expanding once a branch's share reaches one — which is also
- * why no recursion-depth guard is needed: a group always has at least two
- * alternatives, so the share at least halves every level and bottoms out after
- * log2(budget) of them.
+ * precede it.
+ *
+ * DEPTH is bounded two ways, deliberately belt-and-braces. The share is
+ * divided by at least two even when a group offers fewer alternatives, so it
+ * strictly shrinks every level; and `depth` caps the recursion outright.
+ *
+ * Both, because the structural argument alone was tried and was WRONG. It ran
+ * "a group always has at least two alternatives, so the share at least halves"
+ * — which a single-element RANGE (`{a..a}`, `{1..1}`) falsifies: it yields
+ * exactly one alternative, the share did not shrink, and twenty thousand of
+ * them in one word overflowed the stack with an uncaught RangeError, through a
+ * function whose whole contract is that it never throws (AC-3.4). A
+ * one-character counter-example beat the reasoning, so the reasoning does not
+ * get to stand alone here.
  */
-function expandBraces(word, budget = BRACE_BUDGET) {
-  if (budget <= 1 || !word.includes('{')) return [word];
+const BRACE_MAX_DEPTH = 32;
+
+function expandBraces(word, budget = BRACE_BUDGET, depth = 0) {
+  if (budget <= 1 || depth >= BRACE_MAX_DEPTH || !word.includes('{')) return [word];
   INNER_BRACE_GROUP.lastIndex = 0;
   let m;
   while ((m = INNER_BRACE_GROUP.exec(word)) !== null) {
@@ -397,9 +408,11 @@ function expandBraces(word, budget = BRACE_BUDGET) {
     if (alts === null) continue; // literal group (e.g. `{...}`), keep scanning
     const pre = word.slice(0, m.index);
     const post = word.slice(m.index + m[0].length);
-    const share = Math.max(1, Math.floor(budget / alts.length));
+    // `Math.max(2, …)` is what guarantees the share strictly shrinks: a group
+    // with a single alternative would otherwise pass its budget along intact.
+    const share = Math.max(1, Math.floor(budget / Math.max(2, alts.length)));
     const out = [];
-    for (const alt of alts) out.push(...expandBraces(pre + alt + post, share));
+    for (const alt of alts) out.push(...expandBraces(pre + alt + post, share, depth + 1));
     return out.length > 0 ? out : [word];
   }
   return [word];

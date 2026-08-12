@@ -566,6 +566,30 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
+  it('AC-437.7: a SINGLE-element range cannot drive recursion without bound', () => {
+    // The counter-example that killed the "depth is bounded implicitly"
+    // argument. That argument ran "a group always has at least two
+    // alternatives, so the share at least halves every level" — and a
+    // single-element range (`{a..a}`, `{1..1}`) yields exactly ONE, so the
+    // share passed through undiminished. Twenty thousand of them in one word
+    // overflowed the stack with an uncaught RangeError, in a function whose
+    // whole contract is that it never throws (AC-3.4). Now guarded twice: the
+    // share is divided by at least two regardless of alternative count, and
+    // depth is capped outright.
+    for (const cmd of [
+      `git push ${'{a..a}'.repeat(20000)} origin main`,
+      `git push ${'{1..1}'.repeat(20000)} origin main`,
+      `git push ${'{a..a'.repeat(20000)}${'}'.repeat(20000)}`,
+    ]) {
+      const started = Date.now();
+      expect(() => check(cmd), cmd).not.toThrow();
+      expect(Date.now() - started, 'must stay fast').toBeLessThan(1000);
+    }
+    // ...and a single-element range is still inert, as bash renders it.
+    expect(check('git push --forc{e..e} origin main').blocked).toBe(true); // -> --force
+    expect(check('git push --forc{x..x} origin main').blocked).toBe(false);
+  });
+
   it('AC-437.7: the long-word cost bound does not become a hiding place', () => {
     // A very long word drops to a share of one to keep expansion linear. That
     // must not turn into a bypass: every alternative is still represented, so
