@@ -307,205 +307,6 @@ function normalizeShellText(rawCommand) {
   return out;
 }
 
-/** An INNERMOST brace group — no nested braces, so recursion handles the rest. */
-const INNER_BRACE_GROUP = /\{([^{}]*)\}/g;
-/**
- * `{a..e}` / `{1..9}`: bash expands a SEQUENCE with no comma anywhere — and
- * with an OPTIONAL third `..step` segment (`{a..e..2}`, `{1..9..3}`). The step
- * form matters as much as the plain one: `--f{o..o..1}rce` really does hand
- * git `--force` (verified against bash), so a two-segment-only pattern leaves
- * exactly the same hole for it that a comma-only check left for ranges.
- * bash takes the step's magnitude, so a negative one still walks toward the
- * end value rather than away from it.
- */
-const CHAR_RANGE = /^([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d{1,7}))?$/;
-const NUM_RANGE = /^(-?\d{1,7})\.\.(-?\d{1,7})(?:\.\.(-?\d{1,7}))?$/;
-/**
- * Budget for brace expansion, counted in CHARACTERS OF GENERATED TEXT and
- * shared across the whole command.
- *
- * Counting characters rather than words, and pooling across the command rather
- * than per word, is the third attempt at this bound and the first that is the
- * right shape. Two earlier ones each became a hiding place, and for the same
- * underlying reason: they bounded a proxy instead of the thing that actually
- * costs.
- *
- *  - A per-word count of 256 covered only eight sequential two-way groups, so
- *    a 47-character argument spelling a flag across nine of them expanded fine
- *    in bash and was never generated here.
- *  - A separate cheap path for long words expanded only that word's FIRST
- *    group, so a padding group followed by a completing one hid it — and the
- *    padding group could expand to EMPTY, which is what made the "you cannot
- *    glue a flag onto padding and still have a clean token" reasoning wrong.
- *  - Neither was global, so a command of a few hundred such words could push
- *    total generated text past the engine's own string ceiling and throw.
- *
- * A character pool has none of those seams: cost and bound are the same
- * quantity. A short word with many groups expands fully because it is cheap; a
- * huge word stops early because it is expensive; and the total can never
- * exceed the pool no matter how the command is shaped. Every alternative is
- * still emitted at least once even when there is no room to recurse, so
- * running low degrades coverage of COMBINATIONS, never the presence of an
- * individual alternative.
- *
- * Full coverage remains exponential in the number of groups, so a deep enough
- * construction still exceeds any finite pool. That is a property of the
- * problem, stated plainly in the PR rather than implied away.
- */
-const BRACE_OUTPUT_BUDGET = 1 << 18; // 256 KiB of generated text per command
-/** Belt-and-braces alongside the pool; see the note on expandBraces(). */
-const BRACE_MAX_DEPTH = 32;
-/** Cap on one range's length; `{1..100000}` must not materialise. */
-const RANGE_CAP = 64;
-
-/**
- * The alternatives a brace group expands to, or null if bash would leave it
- * alone. Comma form OR range form — the range form matters because it needs no
- * comma at all, so a comma-only check misses it entirely: `--forc{d..e}` really
- * does hand git `--force` (verified against both shells here), and `-{e..f}`
- * really does hand it `-f`.
- *
- * Returning null for everything else is what keeps `-f query='mutation{...}'`
- * — an ordinary `gh api` argument that #85 already pins — literal, exactly as
- * bash leaves it.
- */
-function braceAlternatives(body) {
-  if (body.includes(',')) return body.split(',');
-  const chars = CHAR_RANGE.exec(body);
-  if (chars) {
-    return rangeValues(
-      chars[1].codePointAt(0), chars[2].codePointAt(0), chars[3],
-      (code) => String.fromCharCode(code),
-    );
-  }
-  const nums = NUM_RANGE.exec(body);
-  if (nums) {
-    return rangeValues(Number(nums[1]), Number(nums[2]), nums[3], String);
-  }
-  return null;
-}
-
-/**
- * Walk `from` to `to` inclusive, honouring an optional step. bash uses the
- * step's MAGNITUDE and always walks toward the end value, so a negative or
- * zero step never reverses direction or loops forever. Capped by RANGE_CAP,
- * and `to` is only hit exactly when the step divides the span — hence the
- * direction test in the loop condition rather than an equality break.
- */
-function rangeValues(from, to, rawStep, render) {
-  const magnitude = rawStep === undefined ? 1 : Math.abs(Number(rawStep));
-  const stride = (magnitude >= 1 ? magnitude : 1) * (from <= to ? 1 : -1);
-  const out = [];
-  for (let v = from; out.length < RANGE_CAP; v += stride) {
-    out.push(render(v));
-    if (stride > 0 ? v + stride > to : v + stride < to) break;
-  }
-  return out;
-}
-
-/**
- * Expand ONE word's brace groups into the words bash would produce, e.g.
- * `--forc{e,}` -> `--force --forc`.
- *
- * `budget` is the CHARACTERS this subtree may generate. It is split across a
- * group's alternatives rather than consumed first-come-first-served, and that
- * detail is load-bearing: a first-come budget lets an attacker starve the
- * expander by padding a group with cheap alternatives ahead of the dangerous
- * one, which bash still delivers as a real standalone argument.
- *
- * Every alternative is emitted at least once even when there is no room to
- * recurse into it. So running low degrades coverage of COMBINATIONS, never the
- * presence of an individual alternative — which is what stops a bound from
- * becoming a hiding place, the way two earlier ones did.
- *
- * DEPTH is capped outright in addition to the budget, deliberately
- * belt-and-braces, because the structural argument for depth was tried here
- * once and was WRONG. It ran "a group always has at least two alternatives, so
- * the share at least halves" — which a single-element RANGE (`{a..a}`,
- * `{1..1}`) falsifies: it yields exactly one alternative, so the share did not
- * shrink, and twenty thousand of them in one word overflowed the stack with an
- * uncaught RangeError, from a function whose whole contract is that it never
- * throws (AC-3.4). A one-character counter-example beat the reasoning, so the
- * reasoning does not get to stand alone.
- */
-function expandBraces(word, budget, depth = 0) {
-  if (depth >= BRACE_MAX_DEPTH || !word.includes('{')) return [word];
-  INNER_BRACE_GROUP.lastIndex = 0;
-  let m;
-  while ((m = INNER_BRACE_GROUP.exec(word)) !== null) {
-    const alts = braceAlternatives(m[1]);
-    if (alts === null) continue; // literal group (e.g. `{...}`), keep scanning
-    const pre = word.slice(0, m.index);
-    const post = word.slice(m.index + m[0].length);
-    const share = Math.floor(budget / alts.length);
-    const out = [];
-    for (const alt of alts) {
-      const candidate = pre + alt + post;
-      // Recurse only where the share genuinely covers this branch's own
-      // output; otherwise still emit the alternative, just unexpanded.
-      if (share >= candidate.length * 2) {
-        out.push(...expandBraces(candidate, share, depth + 1));
-      } else {
-        out.push(candidate);
-      }
-    }
-    return out.length > 0 ? out : [word];
-  }
-  return [word];
-}
-
-/**
- * Apply brace expansion across a normalised command (#437, found while
- * sweeping for further places this file's view of a command diverges from the
- * argv the shell really delivers — the question that produced the last several
- * findings).
- *
- * Why it is needed: brace expansion can COMPLETE a flag the text never spells.
- * `git push --forc{e,} origin main` hands git a real `--force`, and
- * `rm -r{f,} /opt/danger` a real `-rf`, while the literal text contains
- * neither — verified against both shells on this machine.
- *
- * Why it is a SEPARATE pass, deliberately: every previous bug on this branch
- * came from adding cases to the quote/escape state machine, where a mistake
- * desynchronises everything after it. This runs afterwards, over the finished
- * text, and cannot affect that machine at all. The cost of that choice is that
- * it no longer knows what was quoted, so a QUOTED brace group — literal to
- * bash — is expanded here too. That over-matches, which is the safe direction
- * and consistent with how this file already treats quoted mentions.
- *
- * `\S+` leaves every WHITESPACE character exactly where it was, so newlines
- * still delimit lines. Note that three of the four separators splitSegments()
- * acts on (`;`, `|`, `&`) are NOT whitespace, so one sitting against a word
- * (`-{D,}main;rm`) is swept into that word and repeated into each generated
- * alternative. That is harmless only because splitSegments() splits on
- * CHARACTERS rather than word tokens, so a repeated separator still separates —
- * stated explicitly because relying on the neater-sounding "separators are
- * preserved" would be relying on something that isn't true.
- *
- * The character budget is a POOL shared by every word, drawn down as text is
- * generated. Per-word budgets were tried and were not enough: a command of a
- * few hundred separately-affordable words still added up to more generated
- * text than the engine will hold in one string, and the resulting throw
- * escaped a function documented never to throw. A hook that runs on every
- * single Bash call must never be the reason a session stalls or a check is
- * skipped (AC-3.4), and only a global bound gives that.
- *
- * Words are expanded longest-budget-first in input order; once the pool is
- * spent the rest are left literal. Note what that does NOT weaken: a literal
- * dangerous spelling anywhere in the command is still matched by the rules
- * directly, because expansion only ever ADDS candidate text.
- */
-function expandBraceWords(text) {
-  if (!text.includes('{')) return text; // the overwhelmingly common case
-  let pool = BRACE_OUTPUT_BUDGET;
-  return text.replace(/\S+/g, (word) => {
-    if (pool <= 0 || !word.includes('{')) return word;
-    const expanded = expandBraces(word, pool).join(' ');
-    pool -= expanded.length;
-    return expanded;
-  });
-}
-
 export const RULES = [
   {
     name: 'force-push',
@@ -690,24 +491,21 @@ export function check(command) {
   // once (#437). This runs ahead of the split on purpose: it also neutralises
   // separators sitting inside quotes, which is what stops a quoted `;` from
   // fragmenting a command away from its own flag.
-  // Then expand brace groups, which can COMPLETE a flag the literal text never
-  // spells (`--forc{e,}` reaches git as `--force`). Deliberately a separate,
-  // later pass over the finished text rather than another case inside the
-  // state machine above — see expandBraceWords().
   //
-  // Normalisation is guarded and falls back to the RAW command, because the
-  // alternative to this fallback is not "a smaller match" but NO match at all:
-  // check() is documented never to throw, `handle()` does not wrap it, and the
-  // agy shim imports it directly — so a throw here escaped as an uncaught
-  // error and the process-level fail-open let the command run unchecked. A
-  // hostile input could therefore skip every rule without hiding anything,
-  // which is strictly worse than any spelling bypass. Falling back to the raw
-  // text keeps every rule running: a literally-spelled destructive command
-  // still blocks, and only the extra candidates normalisation would have added
-  // are lost.
+  // Guarded, falling back to the RAW command, because the alternative to this
+  // fallback is not "a smaller match" but NO match at all: check() is
+  // documented never to throw, handle() does not wrap it, and the agy shim
+  // imports it directly — so a throw would escape uncaught and the
+  // process-level fail-open would let the command run unchecked. That is
+  // strictly worse than any spelling bypass, since it needs nothing hidden.
+  // The raw text still runs through every rule, so a literally-spelled
+  // destructive command still blocks. normalizeShellText() is a single linear
+  // scan with no recursion, so this should be unreachable — but "should be
+  // unreachable" is exactly the reasoning that failed twice on this branch,
+  // and the guard costs nothing.
   let normalized;
   try {
-    normalized = expandBraceWords(normalizeShellText(command));
+    normalized = normalizeShellText(command);
   } catch {
     normalized = command;
   }
