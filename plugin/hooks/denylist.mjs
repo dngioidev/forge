@@ -437,10 +437,15 @@ export const RULES = [
     // Rebuilt on the same abbrev()/longFlag() helpers as the other three
     // rules (#437 review, minor finding): this used to hand-roll its own
     // `--h(?:a(?:r(?:d)?)?)?\b` instead of reusing them, the exact duplication
-    // AC.4 otherwise consolidated. `\b` vs. `longFlag`'s `(?![\w-])` cannot
-    // diverge for THIS flag — `git reset` has no `--hard-*` sibling for a
-    // longer flag to be mistaken for — so folding it in is a pure
-    // de-duplication, not a behaviour change.
+    // AC.4 otherwise consolidated. Two small, both SAFE-direction deltas from
+    // the old regex, found by re-review and stated precisely rather than
+    // claimed away: (1) `\b` vs. `longFlag`'s `(?![\w-])` diverge on a
+    // hyphen-continued, non-existent flag like `--hard-core` — the old regex
+    // blocked it, this one doesn't, but no real `git reset` flag starts with
+    // "hard-", so nothing that actually resets anything stops being caught;
+    // (2) splitting into two ANDed regexes drops the old requirement that
+    // `--hard` appear textually AFTER `reset`, so `git --hard reset` now also
+    // matches, which is strictly MORE caught, never less.
     test: (c) => /\bgit\b[^\n]*\breset\b/.test(c) && HARD_RESET.test(c),
     msg: 'git reset --hard discards work irrecoverably',
   },

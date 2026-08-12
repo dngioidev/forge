@@ -821,6 +821,23 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
       expect(check(cmd).blocked, cmd).toBe(blocked);
     }
   });
+
+  it('AC-437.5: the quote-close reset holds across DOUBLE- and MIXED-quote adjacency, not just single-quote (full-branch review, coverage note)', () => {
+    // The fix (resetting endsDollar/litDollar unconditionally on `ch ===
+    // quote`) does not care which quote character closed, so the same false
+    // positive was reachable through a double-quoted `$` or a single/double
+    // mix, not only the single-quote case above. Ground truth again taken
+    // from real bash (`bash -c 'printf "[%s]\n" "$""-D"'` etc.), not read off
+    // the code: all three concatenate to the same inert literal `$-D`.
+    const cases = [
+      `git branch ${Q}${D}${Q}${Q}-D${Q} main`, // "$""-D"
+      `git branch ${S}${D}${S}${Q}-D${Q} main`, // '$'"-D"
+      `git branch ${Q}${D}${Q}${S}-D${S} main`, // "$"'-D'
+    ];
+    for (const cmd of cases) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
 });
 
 describe('long-option abbreviations git itself accepts (#437, AC-437.6)', () => {
