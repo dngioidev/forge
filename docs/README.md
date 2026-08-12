@@ -42,6 +42,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 - [#389 — scaffold docs structure](plans/2026-08-06-389-scaffold-docs-structure.md) — tasks for #389 (parent #182): `forge:init` seeds `docs/{specs,plans,spikes,design,decisions,guides}/` + a route-index template on a fresh scaffold only, never on adopt; the convention documented as a named rule in `docs/guides/install.md`.
 - [#407 — GraphQL call reduction](plans/2026-08-08-407-graphql-call-reduction.md) — tasks for #407 (parent #183): wires the dead `rateBudget()` preflight into autopilot's run-start + periodic checks, threads the `forge-ci` monitor's fresh transition into `merge.mjs`'s `ciGreen()` to cut a redundant CI-status poll, and memoizes `lib/board.mjs`'s repo/field lookups per `gh` instance.
 - [#408 — outage detection + recovery](plans/2026-08-08-408-outage-detection.md) — tasks for #408 (parent #183): `isPlatformOutage()` in `exec.mjs`, stuck-queued wiring in the CI-watch monitor, and bounded rebase+repush recovery in the merge bar — distinguishes a GitHub Actions platform outage from a real gate failure.
+- [#423 — clarify AGY install docs](plans/2026-08-12-423-agy-install-docs.md) — tasks for #423: splits `docs/guides/install.md`'s "Install the plugin" step into Claude Code / Antigravity (agy) subsections and adds an agy install box to `site/index.html`'s Install section, grounded in the existing Cross-GAI guide.
 
 ## Spikes
 
@@ -76,7 +77,7 @@ One line per doc. Update this file whenever a doc lands, moves, or renames (`for
 
 ## Guides
 
-- [Install](guides/install.md) — forge into any project: prerequisites, marketplace install, init adopt-vs-create, doctor, per-feature wiring, superpowers migration.
+- [Install](guides/install.md) — forge into any project: prerequisites, marketplace install (Claude Code or Antigravity), init adopt-vs-create, doctor, per-feature wiring, superpowers migration.
 - [Handbook](guides/handbook.md) — daily use: the laws, the cockpit, the Build loop, every human interaction point, care/knowledge/scale flows, gates + situations tables.
 - [Cross-GAI (agy)](guides/cross-gai.md) — run forge on Antigravity: `forge init --host agy` emit flow, plugin layout, MCP/hooks wiring, the deny/capture shims, Windows gotchas (MAX_PATH), and the honest capability/parity matrix.
 - [Troubleshooting](guides/troubleshooting.md) — known issues: update-not-visible ladder, statusline wiring overwrites, board drift, hooks, environment.

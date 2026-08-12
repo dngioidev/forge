@@ -442,13 +442,13 @@
   <div class="wrap">
     <div>
       <span class="eyebrow">Install</span>
-      <h2>Three commands, inside Claude Code.</h2>
+      <h2>Three commands inside Claude Code — one to emit for Antigravity.</h2>
       <div class="steps" style="margin-top:26px">
         <div class="step"><span class="num">01</span><span class="txt">Add the marketplace, install the plugin.</span></div>
         <div class="step"><span class="num">02</span><span class="txt">Run <span class="c">/forge:init</span> — adopt or create, wire the board, gates, hooks.</span></div>
         <div class="step"><span class="num">03</span><span class="txt">Describe work as tickets. Run <span class="c">/forge:deliver</span> or <span class="c">/forge:autopilot</span>.</span></div>
       </div>
-      <p class="req">Prerequisites: <code>Claude Code</code>, <code>Node ≥ 22.13</code>, <code>pnpm 10.14+</code>, and a GitHub account. Full wiring in the <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/install.md" style="color:var(--claude)">install guide</a>.</p>
+      <p class="req">Prerequisites: <code>Claude Code</code>, <code>Node ≥ 22.13</code>, <code>pnpm 10.14+</code>, and a GitHub account. Full wiring in the <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/install.md" style="color:var(--claude)">install guide</a>. Running <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/cross-gai.md" style="color:var(--claude)">Antigravity</a> instead? Same plugin, its own one-command emit flow — see the box alongside.</p>
     </div>
     <div>
       <div class="installbox">
@@ -456,6 +456,10 @@
 <pre><span class="p">/plugin</span> marketplace add dngioidev/forge
 <span class="p">/plugin</span> install forge@forge
 <span class="p">/forge:init</span></pre>
+      </div>
+      <div class="installbox" style="margin-top:14px">
+        <div class="top">or, running Antigravity (agy)</div>
+<pre><span class="p">node</span> plugin/scripts/init.mjs --host agy</pre>
       </div>
       <div class="cta-row" style="margin-top:22px">
         <a class="btn btn-primary" href="https://github.com/dngioidev/forge">Star on GitHub</a>
