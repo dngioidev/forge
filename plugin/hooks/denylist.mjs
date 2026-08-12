@@ -18,6 +18,337 @@
 const SAFE_RM_TARGETS = /(node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)/i;
 const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 
+/**
+ * Collect every single-dash SHORT flag cluster in a command into one string of
+ * letters (and, when `alnum`, digits) — e.g. "git push -uf origin main" -> "uf".
+ * The `(?:^|\s)-` anchor keeps GNU/git long `--flag` (double dash) and mid-word
+ * dashes (`feat-f`, a branch name that happens to contain "-f") out of the
+ * cluster, so neither can spoof nor dodge a short flag. `alnum` widens the class
+ * to digits for git's own numeric short flags (`-4`/`-6`) that bundle with a
+ * boolean (`-4f` really forces, see force-push); `rm` has no numeric short
+ * flags, so recursive-delete keeps the narrower alpha-only class.
+ *
+ * Extracted (#437 AC.4) from force-push and recursive-delete, which had each
+ * hand-rolled this same regex separately; env-branch-delete now reuses it too.
+ */
+function shortFlagCluster(command, { alnum = false } = {}) {
+  const charClass = alnum ? '[a-zA-Z0-9]' : '[a-zA-Z]';
+  return (command.match(new RegExp(`(?:^|\\s)-(${charClass}+)`, 'g')) || []).join('');
+}
+
+/**
+ * Build the regex source for a long flag AND every unambiguous abbreviation of
+ * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
+ * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
+ * --mirror. `minLen` is the SHORTEST prefix that is unambiguous for that flag
+ * on that specific git subcommand. Every value used below was determined
+ * empirically against real git 2.55, not guessed: git refuses a prefix that
+ * could mean two options ("error: ambiguous option"), so the boundary differs
+ * per verb depending on which sibling flags that verb happens to have.
+ */
+function abbrev(word, minLen) {
+  let tail = '';
+  for (let i = word.length - 1; i >= minLen; i--) tail = `(?:${word[i]}${tail})?`;
+  return word.slice(0, minLen) + tail;
+}
+
+/**
+ * A long flag as a whole token: `--<flag-or-unambiguous-abbreviation>` at a
+ * token start, not followed by further word characters or a hyphen. That
+ * trailing `(?![\w-])` is what stops an abbreviation pattern from firing on a
+ * LONGER, different flag that merely shares its prefix — `--m…` must not match
+ * `--max-count`, and a `--force` pattern must not match `--force-with-lease`.
+ */
+const longFlag = (word, minLen) => new RegExp(`(?:^|\\s)--${abbrev(word, minLen)}(?![\\w-])`);
+
+// Empirically-verified shortest unambiguous prefixes (git 2.55):
+//   git push --mirror   -> `--m`    (no other push long option starts with "m")
+//   git push --delete   -> `--de`   (`--d` is ambiguous with --dry-run)
+//   git branch --delete -> `--d`    (the only branch long option starting "d")
+//   git branch --force  -> `--forc` (`--fo` is ambiguous with --format)
+// Deliberately ABSENT, and not an oversight: `git push --force`. Every prefix
+// shorter than the full word is ambiguous with --force-with-lease /
+// --force-if-includes and git rejects it outright, so the existing literal
+// `--force` match is already complete for that flag — and keeps its negative
+// lookahead so the two sanctioned safe idioms stay unblocked (#429).
+const PUSH_MIRROR = longFlag('mirror', 1);
+const PUSH_DELETE = longFlag('delete', 2);
+const BRANCH_DELETE = longFlag('delete', 1);
+const BRANCH_FORCE = longFlag('force', 4);
+//   git reset --hard    -> `--h`    (the only reset long option starting "h")
+const HARD_RESET = longFlag('hard', 1);
+
+/** Separators splitSegments() divides on — see neutralisation note below. */
+const SEPARATOR_CHARS = /[;|&\n]/;
+
+/**
+ * Undo the shell's own quoting/escaping before matching (#437, both rounds of
+ * the adversarial security review).
+ *
+ * Every rule in this file is a TEXT match against the command line, but a
+ * shell removes quotes and escapes before the target program ever sees its
+ * argv. `git push -"f" origin main`, `git push -\f origin main` and
+ * `git push $'-f' origin main` all deliver the identical `-f` to git, while
+ * each defeats a purely literal, dash-anchored pattern. That made quoting or
+ * escaping ONE character of a flag token a universal bypass of the WHOLE
+ * denylist — not a gap in any single rule — and it defeated the two rules #437
+ * set out to harden exactly as completely as the pre-existing ones.
+ *
+ * Three normalisations, each closing one reported bypass class:
+ *
+ *  1. **Quote characters are removed** (`-"f"` -> `-f`).
+ *  2. **Backslashes are removed** (`-\f` -> `-f`, `-\-hard` -> `--hard`), and
+ *     the `$` introducing ANSI-C/locale quoting is dropped so `$'-f'` -> `-f`.
+ *     A `$` anywhere else is untouched, so `$TMP` still matches SAFE_RM_TARGETS
+ *     and `$(` still trips `eval-exec`.
+ *  3. **Shell separators found INSIDE a quoted region become spaces.**
+ *     `splitSegments()` is not quote-aware, so a separator hidden in a quoted
+ *     argument would otherwise fragment the command around it and carry the
+ *     verb into a different segment than its flag — e.g. a quoted `;` between
+ *     `git branch` and `-D` splits them apart, and neither half matches on its
+ *     own. (That fragmentation PREDATES this change — verified against this
+ *     branch's first commit — but it is the same bypass class, so it is closed
+ *     here rather than left. Separators OUTSIDE quotes are untouched, so real
+ *     chained commands still split exactly as before, which is what keeps #85's
+ *     false-positive fix working.)
+ *
+ * Backticks are deliberately PRESERVED throughout: `eval-exec`'s SUBSTITUTION
+ * test matches on them, so stripping those would trade one bypass for another.
+ *
+ * An escape MUST consume the character it escapes. Dropping a backslash while
+ * letting the next character be re-read independently is not a harmless
+ * simplification: an unquoted `\"` would then open a PHANTOM quote region, a
+ * later genuine quote would be misread as closing it, and the flipped parity
+ * would leave a real quoted separator un-neutralised — silently reopening the
+ * very fragmentation bypass (3) closes. That regression was caught in review;
+ * the lookahead below is what prevents it, so keep the two-character step.
+ *
+ * Bash's own escaping rules are followed rather than approximated, because
+ * both directions of error are costly here. Outside quotes a backslash escapes
+ * the next character. Inside DOUBLE quotes it is special only before
+ * `$ ` + "`" + ` " \` or a newline. Inside ordinary SINGLE quotes it has no
+ * special meaning at all and is a literal character — treating it as an escape
+ * there would over-match (`'-\D'` is one inert literal argument to git, not a
+ * branch delete).
+ *
+ * `$'…'` (ANSI-C quoting) is its OWN mode and the sharpest edge of the three.
+ * Dropping its backslashes without DECODING them is not enough: bash expands
+ * `$'\x2df'` to `-f`, `$'\055D'` to `-D`, `$'\x2d\x2dhard'` to `--hard`. An
+ * attacker can spell any flag, or any whole word, as hex or octal bytes, so a
+ * normaliser that only handles `$'-f'` (where the content is already literal)
+ * closes almost none of the surface.
+ *
+ * SCOPE OF THE DECODER, stated narrowly because earlier drafts of this comment
+ * three times claimed more than the code delivered: the goal is not to
+ * reproduce bash. It is to recover the PRINTABLE ASCII a flag could be spelled
+ * with. Every decoded escape — hex, unicode, octal, `\c`, the named single
+ * characters, and the unrecognised passthrough — is emitted only via
+ * `emitCodePoint()`, which keeps a character solely if it is printable ASCII
+ * and emits an inert space otherwise. Control bytes, out-of-range values and
+ * astral code points cannot spell `-`, a letter or a digit, so collapsing them
+ * to one inert outcome is safe and removes range-checking and unicode edge
+ * cases as separate things to get right.
+ *
+ * What that does NOT remove, and what actually bit this file repeatedly: how
+ * far each escape's lookahead may CONSUME. Getting the value right is easy;
+ * getting the terminator right is where the bugs were. The hex/octal forms are
+ * bounded by digit classes, which can never match a quote character, so they
+ * cannot run past the end of their region. `\c` takes an ARBITRARY operand, so
+ * it has no such natural bound — and guarding it case by case lost twice. It
+ * is fixed below by not looking ahead at all, which is why no branch in this
+ * function now has an unbounded lookahead.
+ */
+
+/** Single-character ANSI-C escapes bash decodes inside `$'…'`. */
+const ANSI_C_ESCAPES = {
+  a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n',
+  r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
+};
+
+function normalizeShellText(rawCommand) {
+  // Carriage returns go FIRST, before any other rule looks at the text.
+  // Verified on this platform's own bash (both the Cygwin and the
+  // Git-for-Windows/MSYS2 builds): a bare CR is stripped mid-token (`a\rb`
+  // arrives as `ab`), and consequently `\<CR><LF>` is a line continuation
+  // exactly as `\<LF>` is. Windows editors write CRLF by default, so a command
+  // wrapped over two lines and saved normally hit this — the same
+  // split-instead-of-join miss the newline rule below exists to prevent, via
+  // the platform's default line ending. Handling it here rather than adding a
+  // CRLF case to every rule keeps it to one line and cannot be forgotten by
+  // the next branch someone adds.
+  //
+  // A Linux bash keeps a literal CR instead. Stripping it there can only JOIN
+  // tokens the shell would have kept apart, i.e. match more, never less — the
+  // safe direction — and a CR cannot spell part of a flag either way.
+  const command = rawCommand.replace(/\r/g, '');
+  // Output is accumulated as single-character CHUNKS and joined once at the
+  // end, rather than appended onto a growing string.
+  //
+  // This is not a micro-optimisation, it is the difference between linear and
+  // quadratic. The `$'…'` rule below has to know whether the output currently
+  // ends in `$`, and it has to be able to take that `$` back off. Asking a
+  // string being built by `+=` a question about its contents forces the engine
+  // to flatten it, and doing that once per quote character turns the whole
+  // scan quadratic: an ordinary quote-heavy command (a long JSON payload in a
+  // `curl -d`, say) measured seven seconds at 600KB and thirty-two at 1.2MB.
+  // On a hook that runs on every single Bash call, with agy's fail-open
+  // timeout at ten seconds (#428), that is a hang, not a slowdown — and it is
+  // the same failure class that got brace expansion cut from this ticket, so
+  // it does not get to ship in the part that stays.
+  //
+  // With chunks, appending is O(1), the "ends with `$`" question is answered
+  // by a tracked boolean, and taking that `$` back off is a pop.
+  const parts = [];
+  let endsDollar = false; // does the output currently end with `$`?
+  let quote = null;    // the active quote character, or null
+  let ansiC = false;   // the active single-quote region was opened as `$'…'`
+  let litDollar = false; // the `$` just emitted came from `\$`, so it is DATA
+  /** Append one character, keeping `endsDollar` true to the output. */
+  const push = (ch) => { parts.push(ch); endsDollar = ch === '$'; };
+  // A separator that survived escaping/quoting is inert as a separator, so
+  // emit a space rather than the character itself — splitSegments() is blind
+  // to quoting and would otherwise split the command around it.
+  const emit = (ch) => push(SEPARATOR_CHARS.test(ch) ? ' ' : ch);
+  // An ESCAPED character, i.e. one that appeared after a backslash. Almost all
+  // of them are just data and go through emit() — but a backslash-NEWLINE is
+  // bash's LINE CONTINUATION, and bash deletes BOTH bytes with no replacement,
+  // joining the words on either side into ONE token. Substituting a space (as
+  // emit() does for every other separator, correctly, since bash keeps those as
+  // literal data) would SPLIT that token instead, so `--for\<newline>ce` would
+  // normalise to `--for ce` while bash hands git a clean `--force`. That is a
+  // silent miss on an entirely mundane construct — a long command wrapped over
+  // several lines — not an adversarial one, which is what makes it worth the
+  // special case.
+  const emitEscaped = (ch) => { if (ch !== '\n') emit(ch); };
+  // Every DECODED escape lands here. Anything that isn't printable ASCII
+  // becomes an inert space: it cannot spell a flag, and it keeps this total —
+  // String.fromCodePoint throws above U+10FFFF and `$'\UFFFFFFFF'` is
+  // reachable input, while check() must never throw (AC-3.4).
+  const emitCodePoint = (code) => {
+    if (!Number.isInteger(code) || code < 0x20 || code > 0x7e) { push(' '); return; }
+    emit(String.fromCharCode(code));
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const next = command[i + 1];
+    if (quote === null) {
+      if (ch === '\\') {
+        // Drop the backslash, consume AND emit what it escaped, so an escaped
+        // quote can never be mistaken for a quoting delimiter.
+        if (next !== undefined) { emitEscaped(next); litDollar = next === '$'; i++; } else litDollar = false;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        // `$'…'` / `$"…"`: a PRECEDING `$` is quoting syntax, not data — unless
+        // it was itself escaped (`\$'…'`), in which case it is a literal `$`
+        // and the quotes that follow are ordinary.
+        const introducer = endsDollar && !litDollar;
+        ansiC = introducer && ch === "'";
+        if (introducer) {
+          parts.pop(); // drop the `$`: it was quoting syntax, not data
+          endsDollar = parts[parts.length - 1] === '$';
+        }
+        quote = ch;
+        litDollar = false;
+        continue;
+      }
+      push(ch);
+      litDollar = false;
+      continue;
+    }
+    if (ch === quote) {
+      // A `$` cannot carry forward as syntax-relevant across a completed
+      // quote region: if the region's LAST emitted character happened to be a
+      // literal `$` (e.g. `'$'`), `endsDollar` would otherwise still read
+      // true here, and an immediately adjacent quote (`'$''-D'` — bash
+      // concatenates adjacent quoted segments into one argument, a real idiom
+      // for splicing a literal `$` next to more text) would be misread as
+      // `$'…'` ANSI-C syntax introduced by that stale `$`, when the `$` was
+      // just ordinary data from the quote that already closed (#437,
+      // adversarial review round 3). Resetting both flags on close removes
+      // the false signal at its source rather than guarding every call site
+      // that opens a quote.
+      quote = null;
+      ansiC = false;
+      endsDollar = false;
+      litDollar = false;
+      continue;
+    }
+    if (ch === '\\' && next !== undefined) {
+      if (ansiC) {
+        // \xHH / \uHHHH / \UHHHHHHHH — hex byte or code point. The digit caps
+        // are bash's own, and they matter: `\x` takes at most TWO digits, so
+        // `$'\x2df'` is `-` followed by a literal `f` (i.e. `-f`), not a
+        // three-digit hex escape that would swallow the flag letter.
+        const hex = /^(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/.exec(command.slice(i + 1));
+        if (hex) {
+          const digits = hex[1] ?? hex[2] ?? hex[3];
+          emitCodePoint(parseInt(digits, 16));
+          i += 1 + digits.length;
+          continue;
+        }
+        // \NNN — octal. Masked to a byte, as bash does: `$'\455'` is `-`.
+        const oct = /^[0-7]{1,3}/.exec(command.slice(i + 1));
+        if (oct) {
+          emitCodePoint(parseInt(oct[0], 8) & 0xff);
+          i += oct[0].length;
+          continue;
+        }
+        // \cX — Control-X. This branch consumes NOTHING beyond `\c` itself,
+        // and that is the entire point.
+        //
+        // `\c` is the only escape here taking an ARBITRARY operand, so it is
+        // the only one whose lookahead can reach past this region's
+        // terminator. Two successive review rounds found real bypasses there:
+        // first `\c` eating the closing quote outright, then — after a guard
+        // was added for exactly that — `\c` eating a BACKSLASH that was itself
+        // protecting the closing quote, again closing the region a character
+        // early and desyncing quote state for the whole rest of the line.
+        // Guarding case by case was losing: bash resolves the terminator in a
+        // pass SEPARATE from decoding, and a single-pass scanner cannot mirror
+        // that by accumulating exceptions.
+        //
+        // So this does not look ahead at all. `\cX` always evaluates to a
+        // CONTROL byte, and every control byte is inert here anyway (see
+        // emitCodePoint) — the operand's value cannot change the outcome.
+        // Leaving it unconsumed costs nothing and lets the main loop dispatch
+        // it normally, so the terminator is found by the same audited path as
+        // everywhere else. That removes the bug class rather than enumerating
+        // its instances. The cost is a slight over-match (`$'\cA'` leaves a
+        // stray `A`), which is the safe direction and cannot spell a flag.
+        if (next === 'c') {
+          emitCodePoint(0x5c); emitCodePoint(0x63); // inert, per emitCodePoint
+          i++;
+          continue;
+        }
+        const simple = ANSI_C_ESCAPES[next];
+        if (simple === undefined) {
+          // An UNRECOGNISED escape keeps BOTH characters in bash (`$'\z'` is a
+          // literal backslash-z), so preserve rather than silently drop the
+          // backslash — dropping it invents a character the shell never made.
+          emitCodePoint(0x5c);
+          emitCodePoint(next.codePointAt(0));
+        } else {
+          emitCodePoint(simple.codePointAt(0));
+        }
+        i++;
+        continue;
+      }
+      // Inside double quotes a backslash is an escape only for this small set;
+      // inside ordinary single quotes it is always literal. Note the newline is
+      // IN that set: line continuation is honoured inside double quotes too, so
+      // this needs the same word-joining treatment as the unquoted branch.
+      if (quote === '"' && /["$`\\\n]/.test(next)) {
+        emitEscaped(next);
+        i++;
+        continue;
+      }
+    }
+    emit(ch);
+  }
+  return parts.join('');
+}
+
 export const RULES = [
   {
     name: 'force-push',
@@ -43,33 +374,103 @@ export const RULES = [
     test: (c) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
       if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
-      if (/\s--mirror\b/.test(c)) return true;
+      // --mirror IS abbreviable (unlike --force above): `git push --mir` really
+      // does mirror — verified against live git, it pushed every branch AND tag
+      // with no refspec given. Matching only the full spelling left the exact
+      // abbreviation class #429 identified as unclosable-by-enumeration wide
+      // open in the very rule #429 hardened (#437, adversarial review).
+      if (PUSH_MIRROR.test(c)) return true;
       if (/(?:^|\s)\+\S/.test(c)) return true;
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
-      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z0-9]+)/g) || []).join('');
-      return /f/.test(shortFlags);
+      return /f/.test(shortFlagCluster(c, { alnum: true }));
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
   {
     name: 'env-branch-delete',
-    test: (c) => (/\bgit\b[^\n]*\bpush\b[^\n]*(--delete|:)/.test(c) || /\bgit branch\b[^\n]*-D/.test(c)) && PROTECTED_BRANCHES.test(c),
+    // `git push` accepts `-d` as the literal short form of `--delete` (`git push
+    // -h`); the old regex checked only `--delete` and a bare `:` refspec, so
+    // `git push -d origin main` — a real, immediate remote branch delete —
+    // wasn't just a spelling gap, it slipped past denylist AND force-push both
+    // (#437). `git branch` accepts `-D`, or the equivalent `-d`+`-f` pairing in
+    // ANY spelling/order/bundling (short `-fd`/`-df`, long `--delete --force` /
+    // `--force --delete`, a long/short mix, or `-D` itself bundled with another
+    // short flag like `-Dq`/`-qD`) — verified empirically against git 2.55:
+    // `git branch -fd <unmerged>` and `git branch --delete --force <unmerged>`
+    // both force-delete exactly like `-D`, and the old regex matched only the
+    // literal, unbundled `-D` token. Long-form ABBREVIATIONS are covered too,
+    // at each verb's own empirically-measured ambiguity boundary (see the
+    // longFlag/abbrev constants above): `git push --de`, `git branch --d`, and
+    // `git branch --forc` are all accepted by real git and now all match.
+    test: (c) => {
+      if (!PROTECTED_BRANCHES.test(c)) return false;
+      if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
+        if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
+        if (/d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+      }
+      if (/\bgit branch\b/.test(c)) {
+        const cluster = shortFlagCluster(c, { alnum: true });
+        if (/D/.test(cluster)) return true; // -D, incl. bundled (-Dq / -qD), IS delete+force
+        const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
+        const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
+        if (hasForce && hasDelete) return true;
+      }
+      return false;
+    },
     msg: 'deleting main/environment branches is never agent work',
   },
   {
     name: 'hard-reset',
-    test: (c) => /\bgit\b[^\n]*\breset\s+--hard\b/.test(c),
+    // `git reset`'s own long-option set (`git reset -h`, verified against git
+    // 2.55) has exactly ONE option starting with "h" — --hard — so --h/--ha/
+    // --har/--hard are all UNAMBIGUOUS abbreviations git itself accepts (parse-
+    // options prefix matching, the same rule that makes `git push --mir` mean
+    // `--mirror`, #429). The old regex additionally required --hard immediately
+    // after `reset` with only whitespace between them, so `git reset --quiet
+    // --hard` — an equally irrecoverable hard reset — slipped through because
+    // --quiet sat in the way (#437). Fixed on both axes: "reset" may be followed
+    // by any other flags in any order before --hard appears, AND any
+    // unambiguous prefix of --hard matches, not just the full spelling.
+    //
+    // Rebuilt on the same abbrev()/longFlag() helpers as the other three
+    // rules (#437 review, minor finding): this used to hand-roll its own
+    // `--h(?:a(?:r(?:d)?)?)?\b` instead of reusing them, the exact duplication
+    // AC.4 otherwise consolidated. Two small, both SAFE-direction deltas from
+    // the old regex, found by re-review and stated precisely rather than
+    // claimed away: (1) `\b` vs. `longFlag`'s `(?![\w-])` diverge on a
+    // hyphen-continued, non-existent flag like `--hard-core` — the old regex
+    // blocked it, this one doesn't, but no real `git reset` flag starts with
+    // "hard-", so nothing that actually resets anything stops being caught;
+    // (2) splitting into two ANDed regexes drops the old requirement that
+    // `--hard` appear textually AFTER `reset`, so `git --hard reset` now also
+    // matches, which is strictly MORE caught, never less.
+    test: (c) => /\bgit\b[^\n]*\breset\b/.test(c) && HARD_RESET.test(c),
     msg: 'git reset --hard discards work irrecoverably',
   },
   {
     name: 'git-clean-force',
+    // Audited for the #437 adjacency/spelling class: NOT anchored to be
+    // adjacent to `clean` (the `[^\n]*` already spans any other flags in any
+    // order — `git clean -n -f`, `git clean --interactive --force` both match
+    // today), and `-[a-zA-Z]*f` already matches any bundled short cluster ending
+    // in `f` (`-xdf`, `-df`) AND the long `--force` (its own "0 letters between
+    // the dash and a literal f" case fires immediately on `--f...`, so any
+    // prefix of --force matches too, not just the full word). No reordering,
+    // bundling, or abbreviation gap found; left unchanged.
     test: (c) => /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(c),
     msg: 'git clean -f deletes untracked files irrecoverably',
   },
   {
     name: 'history-rewrite',
+    // Audited for the #437 class: filter-branch/filter-repo are SUBCOMMAND/
+    // binary names, not flags — git does not abbreviate those, so there is no
+    // abbreviation surface here the way there is for a flag like --hard. Left
+    // unchanged; `git-filter-repo --path x` (the standalone-binary invocation
+    // form, no `git ` prefix word) is already caught because the hyphen in
+    // "git-filter-repo" is a non-word char, so `\bgit\b` still matches "git" as
+    // a whole word inside it.
     test: (c) => /\bgit\b[^\n]*\b(filter-branch|filter-repo)\b/.test(c),
     msg: 'history rewriting is escalation-only (secrets are scrubbed by rotation, not rewrites — spec §4 respond)',
   },
@@ -77,14 +478,11 @@ export const RULES = [
     name: 'recursive-delete',
     test: (c) => {
       if (!/\brm\b/.test(c)) return false;
-      // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) — the `(?:^|\s)-`
-      // anchor keeps GNU `--recursive`/`--force` (double dash) and mid-word dashes
-      // (`file-r.txt`) out of this bucket so they can't spoof a short flag.
-      // Deliberately `[a-zA-Z]` where force-push above uses `[a-zA-Z0-9]`: git
-      // has numeric short flags (`-4`) that can bundle with `-f`, `rm` has none,
-      // so widening here would buy nothing. Not an oversight — #437 tracks
-      // extracting one shared flag-cluster helper for both rules.
-      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
+      // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
+      // helper. Deliberately alpha-only (default) where force-push above passes
+      // `alnum: true`: git has numeric short flags (`-4`) that can bundle with
+      // `-f`, `rm` has none, so widening here would buy nothing.
+      const shortFlags = shortFlagCluster(c);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
       const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
@@ -143,11 +541,34 @@ import { escalateMessage } from '../scripts/lib/escalate-msg.mjs';
 
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
-  const segs = segments(command);
+  // Undo shell quoting/escaping BEFORE matching, so a quoted or backslash-
+  // escaped flag token can't hide a destructive spelling from every rule at
+  // once (#437). This runs ahead of the split on purpose: it also neutralises
+  // separators sitting inside quotes, which is what stops a quoted `;` from
+  // fragmenting a command away from its own flag.
+  //
+  // Guarded, falling back to the RAW command, because the alternative to this
+  // fallback is not "a smaller match" but NO match at all: check() is
+  // documented never to throw, handle() does not wrap it, and the agy shim
+  // imports it directly — so a throw would escape uncaught and the
+  // process-level fail-open would let the command run unchecked. That is
+  // strictly worse than any spelling bypass, since it needs nothing hidden.
+  // The raw text still runs through every rule, so a literally-spelled
+  // destructive command still blocks. normalizeShellText() is a single linear
+  // scan with no recursion, so this should be unreachable — but "should be
+  // unreachable" is exactly the reasoning that failed twice on this branch,
+  // and the guard costs nothing.
+  let normalized;
+  try {
+    normalized = normalizeShellText(command);
+  } catch {
+    normalized = command;
+  }
+  const segs = segments(normalized);
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
     // that segments() splits on); all others test each split sub-command.
-    const hit = rule.scope === 'full' ? rule.test(command) : segs.some((seg) => rule.test(seg));
+    const hit = rule.scope === 'full' ? rule.test(normalized) : segs.some((seg) => rule.test(seg));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
