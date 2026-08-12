@@ -93,21 +93,26 @@ The forbidden pattern above (§ Orchestration) is a *briefing* rule; this is its
 
 ## Permissions — required for a continuous run
 
-Autopilot is autonomous, so its **outward commands must be pre-authorized** — otherwise `gh pr merge`, `git push`, `gh issue close`, etc. each raise a permission prompt and the loop stalls (it is *not* continuous). Print the exact allowlist and merge it into `.claude/settings.local.json` once:
+Autopilot is autonomous, so its **outward commands must be pre-authorized** — otherwise `gh pr merge`, `git push`, `gh issue close`, etc. each raise a permission prompt and the loop stalls (it is *not* continuous). Pre-authorization works differently per host — follow the one you're running under, not the other:
 
-```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot/perms.mjs"
-```
+- **Claude Code:** run this once. It prints the exact allowlist block plus which local settings file to merge it into and why — read its own output, it's the source of truth (opt-in; forge never writes the file for you; review the block before adding it, since it grants unattended auto-merge/push authority):
 
-This grants unattended **auto-merge and push** authority — review it before adding; it's opt-in and forge never writes it for you. Approving the first prompt as *"always allow"* achieves the same thing incrementally. Without it, autopilot still works but pauses at each outward command for your approval.
+  ```
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot/perms.mjs"
+  ```
 
-**The allowlist alone does NOT authorize unattended merge.** The `.claude/settings.local.json` allowlist (and `features.autopilotAutoMerge: true`) are **necessary but not sufficient**: they do **not** clear the harness's **auto-mode classifier**, which blocks a subagent from unattended-merging its own PR unless the **user names the merge authorization in a genuine in-session message** (a live user turn — e.g. answering the run-start "Merge policy" prompt below). A grant recorded only in `run.json` or in agent narration does **not** count. With the allowlist but no in-session authorization, the loop still **stalls at the first merge** — so confirm the in-session grant at run start (§ Merge-authorization preflight), not just the allowlist.
+  Approving the first prompt as *"always allow"* achieves the same thing incrementally. Without it, autopilot still works but pauses at each outward command for your approval.
+- **Antigravity (agy):** nothing to run or merge — pre-authorization is hook-mediated, not a settings file. The bundled PreToolUse hook checks every outward command against the same allowlist source Claude's script reads and auto-answers `allow` for a known-good command, `ask` for anything else, `deny` on a denylist hit. See `docs/guides/cross-gai.md` ("Permissions: the allow / ask / deny default") for the exact mechanics and honest limits (the hook's own timeout fails open; the classifier caveat just below has no agy analogue — see why there).
 
-## Merge-authorization preflight — REQUIRED before the first delivery
+**On Claude Code, the allowlist alone does NOT authorize unattended merge — this whole caveat, and the preflight after it, is Claude-only.** Unattended auto-merge itself is Claude-only by policy (ADR-0007): an agy-hosted run never calls `autopilot_merge` and always stops at the open green PR (§ Auto-merge item 0) regardless of any allowlist, so there is nothing here for an agy host to clear. On Claude, the local allowlist (and `features.autopilotAutoMerge: true`) are **necessary but not sufficient**: they do **not** clear Claude's harness **auto-mode classifier**, which blocks a subagent from unattended-merging its own PR unless the **user names the merge authorization in a genuine in-session message** (a live user turn — e.g. answering the run-start "Merge policy" prompt below). A grant recorded only in `run.json` or in agent narration does **not** count. With the allowlist but no in-session authorization, the loop still **stalls at the first merge** — so confirm the in-session grant at run start (§ Merge-authorization preflight), not just the allowlist.
+
+## Merge-authorization preflight — REQUIRED before the first delivery (Claude Code only)
+
+**Claude-only:** unattended auto-merge is Claude-only by policy (ADR-0007), so an agy-hosted run never reaches this gate — it always stops at the open green PR (§ Auto-merge item 0). The rest of this section describes the Claude harness's own gate.
 
 Autopilot's loop is orchestrator prose, so this preflight is a **required run-start step**, not a script: **before spawning the first delivery subagent**, the orchestrator must confirm it holds an **in-session user authorization to auto-merge**.
 
-- **Why up front, not mid-run.** Config + allowlist do not clear the harness auto-mode classifier (§ Permissions). If the grant is missing, every ticket delivers fully and then **wedges at its first merge** — you burn a whole delivery only to stall. This is the observed failure mode this preflight prevents.
+- **Why up front, not mid-run.** Config + allowlist do not clear Claude's harness auto-mode classifier (§ Permissions). If the grant is missing, every ticket delivers fully and then **wedges at its first merge** — you burn a whole delivery only to stall. This is the observed failure mode this preflight prevents.
 - **What counts as authorization.** A **live user message naming the merge authorization** — e.g. the user answering a run-start **"Merge policy"** question with an explicit grant. *Not* counted: `features.autopilotAutoMerge: true`, the `gh pr merge` allowlist, a value in `run.json`, or anything the agent narrates to itself.
 - **If it is present** → proceed into the loop; delivery subagents may unattended-merge on a green bar.
 - **If it is absent** → do **not** spawn a delivery that will stall. **Surface it and degrade at run start:** either ask the "Merge policy" question now and obtain the live grant, or run **PR-only / awaiting-human** — each ticket stops at its open green PR and is recorded *awaiting-human* (as with `features.autopilotAutoMerge: false`), and the loop continues. Escalate rather than guess a merge authorization.
@@ -148,7 +153,7 @@ A `backlog` ticket that is already shaped is run through `forge:triage` to becom
 
 A ticket merges **only when every one of these is green**. Any red routes to a fix wave (a fresh `implementer` spawn inside deliver's flow); the *same* gate failing twice is an escalation. **Nothing merges on red — ever.**
 
-0. **In-session merge authorization is present** (§ Merge-authorization preflight). An explicit in-session user grant is what actually clears the harness auto-mode classifier — `features.autopilotAutoMerge: true` + the `gh pr merge` allowlist are necessary but **not sufficient**, and a grant in `run.json`/narration does not count. Absent it, the ticket is parked *awaiting-human* at its open green PR, never merged.
+0. **In-session merge authorization is present** (§ Merge-authorization preflight; **Claude-only** — an agy-hosted run never calls `autopilot_merge` and always stops at the open green PR, so this item is moot there regardless of any allowlist). On Claude, an explicit in-session user grant is what actually clears Claude's harness auto-mode classifier — `features.autopilotAutoMerge: true` + the `gh pr merge` allowlist are necessary but **not sufficient**, and a grant in `run.json`/narration does not count. Absent it, the ticket is parked *awaiting-human* at its open green PR, never merged.
 1. `forge:ship` completed clean: situation gate · conventions lint · rebase + full `verify` green.
 2. All mechanical gates pass: `plandrift` · `testintent` · `depguard` · `acgate` (every AC id in a passing test).
 3. Full-branch `reviewer` **and** `security` subagents return `verdict: pass` with **zero critical/high** findings. A critical is always an escalation, never a merge.
@@ -228,7 +233,7 @@ The loop is prose the orchestrator runs, but its mechanical decisions are real, 
 - `ledger.mjs` — the run ledger (`.forge/autopilot/run.json`): `applyOutcome`/`applyFiled`/`guardTripped`/`nextIteration`/`renderReport`, plus `ledger.mjs report`. `nextIteration(run, boardSize)` is the per-iteration **runaway backstop** the loop calls first each iteration — the real caller for `guardTripped` (halt + escalate on trip; #317). The resume point too.
 - `watchdog.mjs` — `resolveReturnedTicket({outcome,pr,ciGreen,mergeMode})`: the return-then-resume watchdog (§ Return-then-resume watchdog). Pure — the loop runs it on **every** subagent report so an `awaiting-merge` on a green PR is re-driven to the merge bar or surfaced, never silently parked (#319).
 - `newwork.mjs` — `fileWork(ctx,{title,kind,from})`: files a linked follow-up (bug/spike/item) mid-run.
-- `perms.mjs` — prints the `.claude/settings.local.json` allowlist autopilot needs to run continuously (non-destructive; opt-in).
+- `perms.mjs` — **Claude-only**: prints the local Claude settings allowlist autopilot needs to run continuously (non-destructive; opt-in). agy pre-authorizes via a hook instead — see § Permissions.
 - `sessionpause.mjs` — `shouldPause({usedPercentage,thresholdPct})` (§ Session-window self-pause): the pure threshold decision (default 90), plus `evaluateSessionPause(cwd)`, the IO wrapper that reads `.forge/autopilot/usage.json` (written by `statusline.mjs`) + `autopilot.sessionPauseThresholdPct` config and degrades to "don't pause" on any missing/stale/unconfigured input.
 
 Two more supporting pieces, not autopilot-only but load-bearing for #407:

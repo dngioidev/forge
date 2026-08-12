@@ -2,13 +2,15 @@
 description: Check the forge status bar wiring and fix it — diagnose settings, paths, script health, and payload fields, then re-wire if broken.
 ---
 
+**Claude Code only.** The statusline is a Claude-only feature — Antigravity/agy has no statusline API (see `docs/guides/cross-gai.md`'s parity matrix, row "Statusline": Lost). On any other host this command does not apply; do not attempt these steps there.
+
 Diagnose and repair the status line (it fails silent by design — this command makes the failure visible). Run the checks in order, stop at the first failure, apply its fix, then re-verify.
 
 ## 1. Is it wired?
 
-Read `.claude/settings.local.json` and `.claude/settings.json` for a `statusLine` key (local wins). Report which file, and the exact command string.
-- **Missing everywhere** → fix: `node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --project <n> --statusline` (re-init is idempotent; `--statusline` overwrites only the statusLine key in settings.local.json, wiring the **absolute** node binary `process.execPath` — #181).
-- **Present in shared settings.json** → warn: machine-specific paths break teammates; move it to settings.local.json (delete there, re-run the fix above).
+Read Claude's local settings file and shared settings file for a `statusLine` key (local wins). Report which file, and the exact command string.
+- **Missing everywhere** → fix: `node "${CLAUDE_PLUGIN_ROOT}/scripts/init.mjs" --project <n> --statusline` (re-init is idempotent; `--statusline` overwrites only the statusLine key in the local settings file, wiring the **absolute** node binary `process.execPath` — #181).
+- **Present in shared settings.json** → warn: machine-specific paths break teammates; move it to the local settings file (delete there, re-run the fix above).
 
 ## 2. Do the paths exist?
 
