@@ -526,6 +526,32 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
+  it('AC-437.5: a BACKSLASH in the operand slot cannot swallow the terminator either', () => {
+    // The second round of this same bug, and the reason `\c` now consumes
+    // nothing beyond itself. Guarding only `operand === quote` still lost: a
+    // backslash in the operand slot was *protecting* the closing quote, so
+    // eating the backslash closed the region a character early and desynced
+    // state exactly as before. bash resolves the terminator in a pass separate
+    // from decoding, which a single-pass scanner cannot mirror by adding
+    // exceptions — so the fix removes the lookahead rather than guarding it.
+    const cases = [
+      [`git push ${D}${S}${B}c${B}${S}${S} ${B}-${B}-force origin main`, 'force-push'],
+      [`git push ${D}${S}${B}c${B}${S}X${S} ${B}-${B}-force origin main`, 'force-push'],
+      [`git branch ${D}${S}${B}c${B}${S}${S} ${B}-${B}D main`, 'env-branch-delete'],
+      [`git reset ${D}${S}${B}c${B}${S}${S} ${B}-${B}-hard`, 'hard-reset'],
+      [`rm ${D}${S}${B}c${B}${S}${S} ${B}-r${B}f /some/real/path`, 'recursive-delete'],
+      // ...and deeper backslash chaining in the same slot.
+      [`git push ${D}${S}${B}c${B}${B}${S} ${B}-${B}-force origin main`, 'force-push'],
+      [`git push ${D}${S}${B}c${B}${S}${B}${S}${S} ${B}-${B}-force origin main`, 'force-push'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+    for (const cmd of [`${D}${S}${B}c${B}${S}`, `${D}${S}${B}c${B}`, `${D}${S}${B}c${B}${B}`]) {
+      expect(() => check(cmd), cmd).not.toThrow();
+    }
+  });
+
   it('AC-437.5: a swallowed terminator must not desync state for the REST of the line', () => {
     // The damage from eating a terminator was never local: with the region
     // left open, every later character was processed as quoted text, so the

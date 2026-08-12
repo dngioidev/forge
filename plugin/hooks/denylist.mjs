@@ -224,25 +224,31 @@ function normalizeShellText(command) {
           i += oct[0].length;
           continue;
         }
-        // \cX — Control-X, i.e. the operand with its top bits cleared.
-        // The operand slot is NOT unconditionally consumable: when `\c` sits
-        // at the very end of the region, bash has no operand to fold, leaves
-        // the literal two characters, and closes the quote normally
-        // (`$'\c'` is a 2-byte `\c`). Consuming the closing quote as an
-        // operand would leave this scanner think the region is still open,
-        // corrupting quote state for the whole rest of the line — a bypass,
-        // not a cosmetic slip. Hence the explicit terminator check. The
-        // digit-bounded lookaheads above cannot make this mistake, because a
-        // quote character can never match a hex or octal digit class.
+        // \cX — Control-X. This branch consumes NOTHING beyond `\c` itself,
+        // and that is the entire point.
+        //
+        // `\c` is the only escape here taking an ARBITRARY operand, so it is
+        // the only one whose lookahead can reach past this region's
+        // terminator. Two successive review rounds found real bypasses there:
+        // first `\c` eating the closing quote outright, then — after a guard
+        // was added for exactly that — `\c` eating a BACKSLASH that was itself
+        // protecting the closing quote, again closing the region a character
+        // early and desyncing quote state for the whole rest of the line.
+        // Guarding case by case was losing: bash resolves the terminator in a
+        // pass SEPARATE from decoding, and a single-pass scanner cannot mirror
+        // that by accumulating exceptions.
+        //
+        // So this does not look ahead at all. `\cX` always evaluates to a
+        // CONTROL byte, and every control byte is inert here anyway (see
+        // emitCodePoint) — the operand's value cannot change the outcome.
+        // Leaving it unconsumed costs nothing and lets the main loop dispatch
+        // it normally, so the terminator is found by the same audited path as
+        // everywhere else. That removes the bug class rather than enumerating
+        // its instances. The cost is a slight over-match (`$'\cA'` leaves a
+        // stray `A`), which is the safe direction and cannot spell a flag.
         if (next === 'c') {
-          const operand = command[i + 2];
-          if (operand === undefined || operand === quote) {
-            emitCodePoint(0x5c); emitCodePoint(0x63); // literal `\c`
-            i++;
-          } else {
-            emitCodePoint(operand.toUpperCase().codePointAt(0) & 0x1f);
-            i += 2;
-          }
+          emitCodePoint(0x5c); emitCodePoint(0x63); // inert, per emitCodePoint
+          i++;
           continue;
         }
         const simple = ANSI_C_ESCAPES[next];
