@@ -483,6 +483,54 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
   });
 });
 
+describe('recursive-delete honors POSIX -- end-of-options (#450, AC-450.*)', () => {
+  // AC-450.1 — the ticket's exact reproduction: after a bare `--`, every
+  // following token is a filename by POSIX convention even though it starts
+  // with `-`. Pre-fix, the flag-skipping filter dropped `-prod-secrets`
+  // regardless of `--`, leaving only the decoy `dist` to judge, which read as
+  // safe and let the real target vanish from judgement entirely. Verified
+  // against real bash (`argv rm -rf -- -prod-secrets dist`) that `--` and
+  // `-prod-secrets` arrive as their own literal, unmangled argv tokens.
+  it('AC-450.1: a real target named with a leading dash after -- is judged, not filtered as a flag', () => {
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-450.2 — ordinary `--`-free invocations and the existing safe-target
+  // cases are unaffected by the fix. Re-asserted here, by name, so a
+  // regression in this exact set is never mistaken for an unrelated failure.
+  it('AC-450.2: --free invocations and pre-existing safe-target cases are unaffected', () => {
+    expect(check('rm -rf dist').blocked).toBe(false);
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    expect(check('rm -rf "$TMP/forge-test"').blocked).toBe(false);
+  });
+
+  // AC-450.2 — a safe target named AFTER `--` is still recognised as safe: the
+  // fix only stops treating a leading `-` as a flag signal past the marker,
+  // it does not change the safe-word judgement itself.
+  it('AC-450.2: a safe-named target after -- stays allowed', () => {
+    expect(check('rm -rf -- dist').blocked).toBe(false);
+    expect(check('rm -rf dist -- build').blocked).toBe(false);
+  });
+
+  // AC-450.3 — a token that legitimately starts with `-` but comes BEFORE
+  // `--` is still treated as a flag, not a target: no regression on flag
+  // parsing generally. The unsafe case pairs a filtered pre-`--` flag with a
+  // real dash-named target after the marker, so the block can only be coming
+  // from the post-`--` token.
+  it('AC-450.3: a dash-leading token before -- is still filtered as a flag, not a target', () => {
+    expect(check('rm -rf -x -- dist').blocked).toBe(false);
+    expect(check('rm -rf -x -- -prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-450.4 (regression per #446, AC-446.*): the bare-marker edge case —
+  // `--` with nothing following it — leaves no target token to vouch for the
+  // line, which must keep reading as unsafe, exactly like a bare `rm -rf`.
+  it('AC-450.4: a bare -- with no targets left stays blocked, same as a bare rm -rf', () => {
+    expect(check('rm -rf --')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
   // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
   // and `--hard`, in either order, and regardless of a global git flag before

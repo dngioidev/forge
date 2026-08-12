@@ -94,6 +94,19 @@ const SAFE_RM_TARGET =
  * is treated as unsafe — that keeps the old outcome for a bare `rm -rf`, and
  * "nothing recognisable to vouch for" should never read as "safe".
  *
+ * POSIX `--` end-of-options (#450, AC-450.*): a bare `--` token tells the
+ * shell/utility that every token AFTER it is a filename, never a flag, even
+ * one that starts with `-`. Verified against real bash (`argv rm -rf --
+ * -prod-secrets dist`, printed with one arg per line): `--` and
+ * `-prod-secrets` both arrive as their own literal argv entries, unmangled.
+ * The pre-fix filter here did not know that — it dropped every `-`-leading
+ * token regardless of position, so `-prod-secrets` vanished from judgement
+ * and the decoy `dist` sitting after it vouched for the whole line. The `--`
+ * token itself is dropped (it is punctuation, not a path); once seen, every
+ * later token is a target unconditionally, while tokens BEFORE it are still
+ * flag-filtered exactly as before (AC-450.3) — this only changes what counts
+ * as a target after the marker, nothing about flag parsing ahead of it.
+ *
  * The split is on bash's OWN default IFS — space, tab, newline — and
  * deliberately not on JavaScript's `\s`, which is a strictly wider class. That
  * gap is not cosmetic: `\s` also matches NBSP, vertical tab, form feed and the
@@ -108,7 +121,19 @@ const SAFE_RM_TARGET =
  * strips them before any rule runs.
  */
 function safeRmTarget(rest) {
-  const targets = rest.split(/[ \t\n]+/).slice(1).filter((t) => t && !t.startsWith('-'));
+  let endOfOptions = false;
+  const targets = rest
+    .split(/[ \t\n]+/)
+    .slice(1)
+    .filter((t) => {
+      if (!t) return false;
+      if (endOfOptions) return true;
+      if (t === '--') {
+        endOfOptions = true;
+        return false;
+      }
+      return !t.startsWith('-');
+    });
   if (targets.length === 0) return false;
   return targets.every((t) => SAFE_RM_TARGET.test(t));
 }
