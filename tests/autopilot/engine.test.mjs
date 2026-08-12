@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,7 @@ import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autop
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
+import { ALLOWED_COMMAND_PREFIXES } from '../../plugin/scripts/lib/allowed-commands.mjs';
 import {
   shouldPause, isFresh, configuredThresholdPct, loadUsage, evaluateSessionPause,
   DEFAULT_THRESHOLD_PCT, USAGE_RELPATH,
@@ -830,6 +831,43 @@ describe('autopilot permissions helper (#156, AC-3)', () => {
     expect(b).toHaveProperty('permissions.allow');
     expect(Array.isArray(b.permissions.allow)).toBe(true);
     expect(b.permissions.allow).toEqual(ALLOW);
+  });
+});
+
+describe('#432 — AC.1/AC.2 re-verification against the live ALLOW (already delivered by #429)', () => {
+  it('AC-432.1: ALLOW covers every command #432 asked for — pnpm verify, gh pr diff, gh pr list, git fetch, and the read-only git inspection commands', () => {
+    for (const cmd of [
+      'Bash(pnpm verify:*)',
+      'Bash(gh pr diff:*)',
+      'Bash(gh pr list:*)',
+      'Bash(git fetch:*)',
+      'Bash(git status:*)',
+      'Bash(git diff:*)',
+      'Bash(git log:*)',
+      'Bash(git rev-parse:*)',
+    ]) {
+      expect(ALLOW, `allowlist missing ${cmd}`).toContain(cmd);
+    }
+  });
+
+  it('AC-432.2: ALLOW is a pure map over the single-sourced ALLOWED_COMMAND_PREFIXES — no independently-maintained copy', () => {
+    expect(ALLOW).toHaveLength(ALLOWED_COMMAND_PREFIXES.length);
+    expect(ALLOW).toEqual(ALLOWED_COMMAND_PREFIXES.map((p) => `Bash(${p}:*)`));
+    // every ALLOW entry traces back to a real prefix, and nothing extra snuck in
+    for (const entry of ALLOW) {
+      const prefix = entry.slice('Bash('.length, -':*)'.length);
+      expect(ALLOWED_COMMAND_PREFIXES, `${entry} has no source prefix`).toContain(prefix);
+    }
+  });
+
+  it('AC-432.4: perms.mjs prints the allowlist block and never writes a file (spawned as a real subprocess in a fresh cwd)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-perms-'));
+    const PERMS_CLI = fileURLToPath(new URL('../../plugin/scripts/autopilot/perms.mjs', import.meta.url));
+    const out = execFileSync(process.execPath, [PERMS_CLI], { cwd, encoding: 'utf8' });
+    expect(out).toContain('"permissions"');
+    expect(out).toContain('Bash(pnpm verify:*)');
+    // no settings file, no stray file at all — this command is read-only by design
+    expect(await readdir(cwd)).toEqual([]);
   });
 });
 
