@@ -183,6 +183,18 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     ),
   },
   {
+    prefix: 'git fetch',
+    // `git fetch --upload-pack=<program>` (and its unambiguous abbreviations,
+    // e.g. `--up=`) overrides the remote helper and EXECUTES that program for
+    // local/file transports — arbitrary execution behind an ordinary-looking
+    // fetch, again with no shell metacharacter needed. `git push`'s mirror-image
+    // trick, `--receive-pack=`, is already excluded by that verb's safe-flag set.
+    argsOk: flagsAndOperands(
+      '--all', '--tags', '--no-tags', '--prune', '-p',
+      '-q', '--quiet', '-v', '--verbose',
+    ),
+  },
+  {
     prefix: 'git rebase',
     // `git rebase -x/--exec "<cmd>"` runs an ARBITRARY SHELL COMMAND after every
     // replayed commit — full command execution behind an ordinary-looking rebase,

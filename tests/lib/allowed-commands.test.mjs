@@ -29,7 +29,7 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     // The guard's whole point: an unrecognised flag may be an abbreviation of a
     // destructive one (`--mir` IS `--mirror`), so unknown means ask, per verb.
     expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual([
-      'node', 'pnpm verify', 'git push', 'git rebase', 'git checkout', 'gh pr merge',
+      'node', 'pnpm verify', 'git push', 'git fetch', 'git rebase', 'git checkout', 'gh pr merge',
     ]);
     for (const prefix of ARGUMENT_SENSITIVE_COMMANDS) {
       expect(isAllowedCommand(`${prefix} --some-unknown-flag`, { segments: splitSegments }), prefix).toBe(false);
@@ -71,6 +71,24 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
       'node scripts/x.mjs',
       'node bin/forge.mjs board status',
     ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
+  it('AC-429.3: `git fetch --upload-pack=<program>` executes that program and asks; ordinary fetches still allow', () => {
+    // --upload-pack overrides the remote helper and runs the named program for
+    // local/file transports. Like `git rebase -x`, it needs no shell
+    // metacharacter, so only the argument guard catches it. Abbreviations too.
+    for (const cmd of [
+      'git fetch --upload-pack=/tmp/evil.sh origin',
+      'git fetch --up=/tmp/evil.sh origin',
+      'git fetch --upload-pack /tmp/evil.sh origin',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+    // The mirror image on push is closed by that verb's own safe-flag set.
+    expect(isAllowedCommand('git push --receive-pack=/tmp/evil.sh origin', { segments: splitSegments })).toBe(false);
+    for (const cmd of ['git fetch', 'git fetch origin', 'git fetch origin main', 'git fetch --all', 'git fetch --prune']) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
     }
   });

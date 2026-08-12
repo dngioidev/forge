@@ -358,6 +358,7 @@ arguments that are safe, not the ones that are dangerous.
 | `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
 | `pnpm verify` | the bare command, nothing else | any argument — pnpm forwards them to `vitest`, whose `--reporter=<path>` / `--config=<path>` `import()`s that module at startup |
 | `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
+| `git fetch` | plain refs/remotes and inert flags (`--all`, `--tags`, `--prune`, `-q`, `-v`) | `--upload-pack=<program>` and its abbreviations — overrides the remote helper and executes that program |
 | `git rebase` | plain refs and flow control (`--continue`, `--abort`, `--skip`, `--onto`, `-q`, `--autostash`) | `-x` / `--exec` (runs arbitrary shell after every replayed commit), `-i` |
 | `git checkout` | branch **creation** only — `-b <name>`, optionally from a start point | everything else, including plain `git checkout main` (see below) |
 | `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |

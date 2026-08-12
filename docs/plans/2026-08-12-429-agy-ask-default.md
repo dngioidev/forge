@@ -145,6 +145,13 @@ known-safe:
   metacharacter to do it (`git rebase -x "touch pwned" main` is plain text), so
   the metacharacter guard did not catch it. Flow-control flags and plain refs
   only.
+- **`git fetch`** (critical, round 5) — `--upload-pack=<program>` (and
+  abbreviations like `--up=`) overrides the remote helper and executes that
+  program for local/file transports; empirically confirmed by the reviewer.
+  Inert flags and plain remotes/refs only. `git push`'s mirror image,
+  `--receive-pack=`, was already excluded by that verb's safe-flag set — the
+  positive model catching a vector nobody had specifically thought about is
+  the argument for it.
 - **`pnpm verify`** (critical, round 4) — pnpm forwards trailing args to
   `vitest run`, and vitest `import()`s a `--reporter=<path>` /
   `--config=<path>` module at startup, before any test runs: arbitrary code
