@@ -147,7 +147,39 @@ Malformed values are rejected by `/forge:doctor` and any config load (e.g. `shar
 
 Everything is ticket-first: `/forge:ticket` for quick triage, then the lane skills (ideate → brainstorm → design → plan → execute → ship → release; hotfix/respond/maintain for care). `forge board status` (or the status line) is the one-glance catch-up. The owner merges every PR — agents never do.
 
-## 6. Migrating from superpowers
+## 6. Pre-authorizing outward commands (optional)
+
+Running `/forge:deliver` — or any lane skill that ships a PR — drives outward
+commands: `git push`, `gh pr create`, `gh pr merge`, `pnpm verify`, and more.
+By default, each one prompts you before it runs; that is the safe default and
+nothing here changes it unless you opt in.
+
+forge ships a known-good command allowlist, single-sourced in
+`plugin/scripts/lib/allowed-commands.mjs`. Pre-authorizing it lets those
+commands run without a prompt — **it grants unattended push/merge authority**.
+This step is entirely **opt-in**: nothing in this guide adds it for you, and
+treat adding it yourself as a deliberate, reviewed choice, not a default step:
+
+- **Claude Code:** run `node "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot/perms.mjs"`.
+  It **prints** the exact block to merge into `.claude/settings.local.json`
+  and never writes the file for you — read its own output, it's the source of
+  truth. Approving the first prompt as *"always allow"* achieves the same
+  thing incrementally instead.
+- **Antigravity (agy):** nothing to run or merge. Pre-authorization is
+  hook-mediated: the bundled PreToolUse hook checks every outward command
+  against the same allowlist source the Claude script reads and auto-answers
+  `allow` for a known-good command, `ask` for anything else, `deny` on a
+  denylist hit. See [cross-gai.md](cross-gai.md)'s "Permissions: the allow /
+  ask / deny default" section for the exact mechanics and honest limits.
+
+This is **necessary but not sufficient** for autopilot's unattended merges on
+Claude Code: the allowlist does not clear the harness's own auto-mode
+classifier, which still requires a live in-session merge authorization at run
+start. See `plugin/skills/autopilot/SKILL.md`'s "Permissions" and
+"Merge-authorization preflight" sections for that full caveat — widening this
+allowlist is not the same as authorizing autopilot to merge unattended.
+
+## 7. Migrating from superpowers
 
 forge replaces ship / plan+execute / brainstorm one-for-one. Once installed and init'd: `claude plugin uninstall superpowers` from the consumer repo's checkout. Keep both during a transition if you like — the skills don't collide, but two ship rituals is one too many.
 
