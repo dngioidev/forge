@@ -357,7 +357,7 @@ arguments that are safe, not the ones that are dangerous.
 | --- | --- | --- |
 | `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
 | `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
-| `git checkout` | switching refs, and `-b <name>` | `-- .`, `.`, `src/`, `-f`, `-B` — anything that discards uncommitted work |
+| `git checkout` | branch **creation** only — `-b <name>`, optionally from a start point | everything else, including plain `git checkout main` (see below) |
 | `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |
 
 That direction is not stylistic. git's parse-options accepts **unambiguous
@@ -371,8 +371,25 @@ destructive action. It also means `--force-with-lease` asks: permitted by the
 denylist as the sanctioned safe alternative, but still a force operation, so a
 human sees it.
 
+`git checkout` is the strictest of the four, and deliberately so:
+`git checkout <name>` is **ambiguous** — git resolves `<name>` as a ref if one
+exists and otherwise as a *path*, and the path form discards that path's
+uncommitted changes irrecoverably. Nothing in the command string separates the
+two: `main` is a ref, `package.json` is a file, `src` could be either, and no
+heuristic on dots, slashes or extensions distinguishes them reliably. Rather
+than guess, only branch creation auto-approves. Plain `git checkout main` asks
+— about one extra prompt per ticket, in exchange for closing the whole class
+instead of half-closing it.
+
 Everything else on the allowlist is safe with any argument (`git status`,
 `gh issue view`, `pnpm verify`, …) and is deliberately not guarded.
+
+Note the guards are **agy-side only**. Claude's `.claude/settings.local.json`
+grammar expresses `Bash(git checkout:*)` — a prefix glob with no way to
+constrain arguments — so the Claude host still grants the broader form. The
+*command set* is single-sourced (`ALLOWED_COMMAND_PREFIXES`); the argument
+guards are an additional narrowing the agy hook can enforce and Claude's
+permission grammar cannot.
 
 **A residual gap this fix cannot close from forge's side.** The spike verified
 that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)

@@ -133,8 +133,12 @@ known-safe:
 - **`git push`** — inert flags (`-u`/`--set-upstream`, `-q`, `-v`,
   `--dry-run`, `--porcelain`, `--progress`) or a plain remote/ref token.
 - **`git checkout`** (major, round 3) — `git checkout -- .` / `.` / `src/` /
-  `-f` silently discard uncommitted work. Now ref-switching and `-b <name>`
-  only.
+  `-f` silently discard uncommitted work. `git checkout <name>` is genuinely
+  ambiguous (git resolves a ref if one exists, else a path; the path form
+  discards changes) and no syntactic heuristic separates `main` from
+  `package.json` from `src`. So only branch **creation** (`-b <name>`)
+  auto-approves; plain `git checkout main` asks. Closes the class rather than
+  half-closing it, for ~1 extra prompt per ticket.
 - **`gh pr merge`** (major, round 3) — `--admin` bypasses branch protection.
 
 Anything else asks, including abbreviations and any flag a tool adds in

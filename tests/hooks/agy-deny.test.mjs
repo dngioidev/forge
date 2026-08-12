@@ -133,7 +133,9 @@ describe('agy-deny default flip: allow -> ask (#429)', () => {
       'gh issue comment 429 --body-file note.md',
       'git push origin fix/429-agy-ask-default',
       'git commit -m "msg"',
-      'git checkout main',
+      // branch creation; plain `git checkout <name>` deliberately asks, because
+      // git resolves <name> as a ref OR a path and the path form discards work
+      'git checkout -b feat/x',
       'git rebase main',
       'git fetch origin',
       'git status',

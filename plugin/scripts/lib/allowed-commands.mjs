@@ -148,14 +148,17 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
   },
   {
     prefix: 'git checkout',
-    // Switching to a ref is routine; touching PATHS is what destroys work.
-    // `git checkout -- .`, `git checkout .` and `git checkout src/` all discard
-    // uncommitted changes irrecoverably, and `-f` does the same while switching.
-    // So: at most `-b <name>`, and operands must be ref-shaped — not `.`, not
-    // the `--` path separator, not a trailing-slash directory.
-    argsOk: (args) => args.every(
-      (a) => a === '-b' || (PLAIN_OPERAND.test(a) && a !== '.' && !a.endsWith('/')),
-    ),
+    // `git checkout <name>` is genuinely AMBIGUOUS: git resolves <name> as a ref
+    // if one exists and otherwise as a path, and `git checkout <path>` discards
+    // that path's uncommitted changes irrecoverably. Nothing in the string tells
+    // the two apart — `main` is a ref, `package.json` is a file, `src` could be
+    // either, and no heuristic (dots, slashes, extensions) separates them
+    // reliably. So rather than guess, only the unambiguously non-destructive
+    // form auto-approves: branch CREATION (`-b <name>`, optionally from a start
+    // point). Every other checkout — including the common, harmless
+    // `git checkout main` — asks. That costs about one prompt per ticket and
+    // closes the whole ref-or-path class instead of heuristically half-closing it.
+    argsOk: (args) => args.includes('-b') && args.every((a) => a === '-b' || PLAIN_OPERAND.test(a)),
   },
   {
     prefix: 'gh pr merge',

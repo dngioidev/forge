@@ -57,17 +57,26 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     }
   });
 
-  it('AC-429.3: `git checkout` auto-allows switching refs, never discarding local work', () => {
+  it('AC-429.3: `git checkout` auto-allows only branch CREATION, because ref-vs-path is ambiguous', () => {
+    // `git checkout <name>` resolves <name> as a ref if one exists and otherwise
+    // as a PATH — and the path form discards that path's uncommitted changes
+    // irrecoverably. Nothing in the string distinguishes them (`main` is a ref,
+    // `package.json` is a file, `src` could be either), so only the
+    // unambiguously non-destructive form (`-b`, branch creation) auto-approves.
     for (const cmd of [
-      'git checkout -- .',   // discards ALL uncommitted changes
-      'git checkout .',      // same
-      'git checkout src/',   // discards changes under a path
-      'git checkout -f main',// force-switch, discarding conflicting changes
-      'git checkout -B main',// force-reset a branch pointer
+      'git checkout -- .',                      // discards ALL uncommitted changes
+      'git checkout .',                         // same
+      'git checkout src/',                      // discards changes under a directory
+      'git checkout src',                       // ...and without the trailing slash
+      'git checkout package.json',              // discards one file's changes
+      'git checkout plugin/hooks/denylist.mjs', // ditto, nested
+      'git checkout -f main',                   // force-switch, discarding conflicts
+      'git checkout -B main',                   // force-reset a branch pointer
+      'git checkout main',                      // safe, but indistinguishable from a path
     ]) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
     }
-    for (const cmd of ['git checkout main', 'git checkout -b feat/x', 'git checkout fix/429-agy-ask-default']) {
+    for (const cmd of ['git checkout -b feat/x', 'git checkout -b feat/x origin/main']) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
     }
   });
