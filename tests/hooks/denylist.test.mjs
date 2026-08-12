@@ -435,6 +435,42 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
+  it('AC-437.5: an ESCAPED QUOTE earlier in the line cannot flip quote parity and reopen fragmentation', () => {
+    // Regression test for a bug the review caught in the fix itself: dropping a
+    // backslash WITHOUT consuming the character it escapes let an unquoted `\"`
+    // open a phantom quote region. A later genuine quote then read as its close,
+    // flipping parity for the rest of the line, so a real quoted separator went
+    // un-neutralised and fragmented the command again. The escape must consume
+    // its escapee. Each case pairs an escaped-quote decoy with a later real
+    // quoted separator — the two mechanisms that were only ever tested apart.
+    const cases = [
+      [`x${B}${Q} ; git branch ${Q};${Q} -D main`, 'env-branch-delete'],
+      [`y${B}${Q} ; git push ${Q};${Q} -f origin main`, 'force-push'],
+      [`a${B}${S} ; git branch ${Q};${Q} -D main`, 'env-branch-delete'],
+      [`a${B}${Q} b${B}${Q} ; git reset ${Q};${Q} --hard`, 'hard-reset'],
+      [`x${B}${Q} ; rm ${Q};${Q} -rf /real/path`, 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+  });
+
+  it('AC-437.5: bash escaping rules are followed, so args a real shell renders INERT are not blocked', () => {
+    // The normaliser must not over-correct either. In a real shell `-\"f\"`
+    // yields the literal argument `-"f"`, which git rejects outright, and
+    // inside SINGLE quotes a backslash has no special meaning at all, so
+    // `'-\D'` is one inert literal argument — neither is a destructive command,
+    // so neither should be blocked.
+    expect(check(`git push -${B}${Q}f${B}${Q} origin main`).blocked).toBe(false);
+    expect(check(`git branch ${S}-${B}D${S} main`).blocked).toBe(false);
+  });
+
+  it('AC-437.5: unterminated or degenerate quoting never throws (fail-open guard preserved)', () => {
+    for (const cmd of [`git push -${Q}f origin main`, `git push ${S}`, `x${B}`, B, Q, S, `${D}${Q}`]) {
+      expect(() => check(cmd), cmd).not.toThrow();
+    }
+  });
+
   it('AC-437.5: separators OUTSIDE quotes still split, so #85\'s chained-command fixes survive', () => {
     // Only separators INSIDE a quoted region are neutralised. Real chained
     // commands must still split, or the #85 false positives come straight back.

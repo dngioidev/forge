@@ -113,33 +113,57 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  * Backticks are deliberately PRESERVED throughout: `eval-exec`'s SUBSTITUTION
  * test matches on them, so stripping those would trade one bypass for another.
  *
- * Direction of the trade: this can only ever make a rule match MORE text. The
- * over-match it can produce (a destructive spelling quoted inside some
- * unrelated string) is precisely the documented, deliberately fail-closed
- * false positive this file already accepts for quoted mentions — the model is
- * told to rephrase. That is the cheap failure mode; a silently-executed
- * force-push is not.
+ * An escape MUST consume the character it escapes. Dropping a backslash while
+ * letting the next character be re-read independently is not a harmless
+ * simplification: an unquoted `\"` would then open a PHANTOM quote region, a
+ * later genuine quote would be misread as closing it, and the flipped parity
+ * would leave a real quoted separator un-neutralised — silently reopening the
+ * very fragmentation bypass (3) closes. That regression was caught in review;
+ * the lookahead below is what prevents it, so keep the two-character step.
+ *
+ * Bash's own escaping rules are followed rather than approximated, because
+ * both directions of error are costly here: outside quotes a backslash escapes
+ * the next character; inside DOUBLE quotes it is special only before
+ * `$ ` + "`" + ` " \` or a newline; inside SINGLE quotes it has no special
+ * meaning at all and is a literal character. Treating it as an escape
+ * everywhere would over-match (`'-\D'` is one inert literal argument to git,
+ * not a branch delete).
  */
 function normalizeShellText(command) {
   let out = '';
   let quote = null;
-  for (const ch of command) {
+  // A separator that survived escaping/quoting is inert as a separator, so
+  // emit a space rather than the character itself — splitSegments() is blind
+  // to quoting and would otherwise split the command around it.
+  const emit = (ch) => { out += SEPARATOR_CHARS.test(ch) ? ' ' : ch; };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const next = command[i + 1];
     if (quote === null) {
+      if (ch === '\\') {
+        // Drop the backslash, consume AND emit what it escaped, so an escaped
+        // quote can never be mistaken for a quoting delimiter.
+        if (next !== undefined) { emit(next); i++; }
+        continue;
+      }
       if (ch === '"' || ch === "'") {
         // `$'…'` / `$"…"`: the `$` is part of the quoting syntax, not the value.
         if (out.endsWith('$')) out = out.slice(0, -1);
         quote = ch;
         continue;
       }
-      if (ch === '\\') continue; // escape char: drop it, keep what it escaped
       out += ch;
       continue;
     }
     if (ch === quote) { quote = null; continue; }
-    if (ch === '\\') continue;
-    // Inside quotes a separator cannot actually separate anything, so blunt it
-    // rather than letting the (quote-blind) splitter act on it.
-    out += SEPARATOR_CHARS.test(ch) ? ' ' : ch;
+    // Inside double quotes a backslash is an escape only for this small set;
+    // anywhere else (and everywhere inside single quotes) it is literal.
+    if (quote === '"' && ch === '\\' && next !== undefined && /["$`\\\n]/.test(next)) {
+      emit(next);
+      i++;
+      continue;
+    }
+    emit(ch);
   }
   return out;
 }
