@@ -422,6 +422,33 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
     }
   });
 
+  // AC-446.6 — the same splice one layer lower, as a RAW byte rather than an
+  // escape. The case above only ever exercised the `$'…\x00…'` spelling, and
+  // the inert-space guarantee it relies on lives in emitCodePoint(), which
+  // DECODED escapes reach and a literal byte does not. So a NUL already present
+  // in the command text sailed straight through as ordinary data, and the
+  // checker judged one opaque token spanning a byte that exec treats as a hard
+  // string terminator: the real deletion is the truncated head, while the safe
+  // word hiding behind the NUL vouched for the whole line. Reachable without
+  // any shell quoting at all — `\u0000` is legal JSON, and check() is handed
+  // the parsed string unsanitised. (Found by the adversarial security review of
+  // the anchoring fix; the escape form alone was NOT enough.)
+  it('AC-446.6: a RAW NUL byte splice is neutralised exactly like the escape form', () => {
+    const NUL = String.fromCharCode(0);
+    for (const cmd of [
+      `rm -rf /prod-secrets${NUL}/scratchpad`,
+      `rm -rf "/prod-secrets${NUL}/scratchpad"`,
+      `rm -rf '/prod-secrets${NUL}/scratchpad'`,
+      `rm -rf important-secret-data${NUL}dist`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // The head is what actually gets deleted, so when the head is genuinely
+    // safe the line stays exempt — the byte must not become a blunt "block
+    // anything containing a NUL" rule.
+    expect(check(`rm -rf dist${NUL}build`).blocked).toBe(false);
+  });
+
   // AC-446.6 — the per-argument split must use bash's OWN default IFS (space,
   // tab, newline), not JavaScript's `\s`, which is a strictly wider class.
   // Splitting on a character bash does NOT word-split on cuts one real argument

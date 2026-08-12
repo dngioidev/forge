@@ -193,7 +193,7 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  *  1. **Quote characters are removed** (`-"f"` -> `-f`).
  *  2. **Backslashes are removed** (`-\f` -> `-f`, `-\-hard` -> `--hard`), and
  *     the `$` introducing ANSI-C/locale quoting is dropped so `$'-f'` -> `-f`.
- *     A `$` anywhere else is untouched, so `$TMP` still matches SAFE_RM_TARGETS
+ *     A `$` anywhere else is untouched, so `$TMP` still matches SAFE_RM_TARGET
  *     and `$(` still trips `eval-exec`.
  *  3. **Shell separators found INSIDE a quoted region become spaces.**
  *     `splitSegments()` is not quote-aware, so a separator hidden in a quoted
@@ -274,7 +274,33 @@ function normalizeShellText(rawCommand) {
   // A Linux bash keeps a literal CR instead. Stripping it there can only JOIN
   // tokens the shell would have kept apart, i.e. match more, never less — the
   // safe direction — and a CR cannot spell part of a flag either way.
-  const command = rawCommand.replace(/\r/g, '');
+  //
+  // A RAW NUL goes next, and for a different reason than the CR above.
+  // emitCodePoint() already turns a DECODED control byte into an inert space,
+  // which is what closes the `$'…\x00scratchpad'` splice (#446) — but that
+  // guarantee only ever covered NUL spelled as an ESCAPE. A NUL byte sitting
+  // literally in the command text never reaches emitCodePoint(): it flows
+  // through the plain push()/emit() paths untouched (emit() neutralises only
+  // `;|&\n`), so the checker saw ONE opaque token spanning a byte that the
+  // exec layer treats as a hard C-string terminator. That divergence reopened
+  // the very class the escape form had closed —
+  // `rm -rf /prod-secrets<NUL>/scratchpad` read as a single path ending in the
+  // safe component `scratchpad`, while the kernel truncates at the NUL and
+  // deletes `/prod-secrets`. It is reachable input, not a curiosity: `\u0000`
+  // is a legal JSON string escape and main()'s JSON.parse hands it straight to
+  // check() with no sanitisation, as does agy-deny.mjs (#446, adversarial
+  // security review of the anchoring fix).
+  //
+  // Mapping it to the same inert SPACE the decoded form already gets makes the
+  // two spellings agree, and blocks under BOTH readings of a NUL: if the
+  // consumer truncates (real exec), the surviving head `/prod-secrets` is now
+  // judged on its own; if it instead ignores the byte, the head is still
+  // judged on its own. Either way the dangerous component stops being vouched
+  // for by a safe word on the far side of the byte. Deliberately NUL ONLY, not
+  // control bytes generally: VT/FF are real in-token data that bash does not
+  // word-split on, and splitting there is exactly the non-IFS bypass the IFS
+  // split above exists to prevent.
+  const command = rawCommand.replace(/\r/g, '').replace(/\0/g, ' ');
   // Output is accumulated as single-character CHUNKS and joined once at the
   // end, rather than appended onto a growing string.
   //
