@@ -8,24 +8,15 @@
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ALLOWED_COMMAND_PREFIXES } from '../lib/allowed-commands.mjs';
 
-/** The commands autopilot + its delivery subagents run unattended. */
-export const ALLOW = [
-  'Bash(gh pr create:*)',
-  'Bash(gh pr merge:*)',
-  'Bash(gh pr view:*)',
-  'Bash(gh pr checks:*)',
-  'Bash(gh issue create:*)',
-  'Bash(gh issue edit:*)',
-  'Bash(gh issue close:*)',
-  'Bash(gh issue comment:*)',
-  'Bash(gh issue view:*)',
-  'Bash(git push:*)',
-  'Bash(git commit:*)',
-  'Bash(git checkout:*)',
-  'Bash(git rebase:*)',
-  'Bash(node:*)',
-];
+/**
+ * The commands autopilot + its delivery subagents run unattended, derived
+ * from the single-sourced prefix list (#429 AC.4) shared with the agy
+ * PreToolUse hook (`plugin/hooks/agy-deny.mjs`) — extend the prefixes there,
+ * not this array, so the two hosts cannot drift.
+ */
+export const ALLOW = ALLOWED_COMMAND_PREFIXES.map((prefix) => `Bash(${prefix}:*)`);
 
 /** The exact object to merge into .claude/settings.local.json. */
 export function permsBlock(allow = ALLOW) {

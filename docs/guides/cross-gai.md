@@ -265,9 +265,10 @@ the emitted package includes two thin shims:
 - **`hooks/agy-deny.mjs`** (PreToolUse) — reads agy's stdin
   (`toolCall.args.CommandLine`), calls forge's host-agnostic `check()` from
   `denylist.mjs`, and emits agy's decision shape:
-  `{ "decision": "deny", "reason": "..." }` on a block, `{ "decision": "allow" }`
-  otherwise. It **fails open** (allow) on any internal error — a safety hook must
-  never wedge the loop.
+  `{ "decision": "deny", "reason": "..." }` on a denylist hit,
+  `{ "decision": "allow" }` for a known-good command (see permissions section
+  below), `{ "decision": "ask" }` for everything else. It **fails open**
+  (allow) on any internal error — a safety hook must never wedge the loop.
 - **`hooks/agy-capture.mjs`** (PostToolUse) — appends a **metadata-only** journal
   line (timestamp, host, step index, a bounded error string — never raw command
   output) to `<workspace>/.forge/agy-journal.jsonl`, then emits `{}`. It is
@@ -282,6 +283,63 @@ its stdin. AC-289.3 anchored the guard to the basename
 (`/(^|[\\/])denylist\.mjs$/`), but the shim is deliberately kept named
 `agy-deny.mjs` as belt-and-braces so `check()` can be imported with zero side
 effects.
+
+### Permissions: the allow / ask / deny default (#429)
+
+**Default is `ask`, not `allow`.** Every non-denylisted `run_command` call an
+agy-hosted forge session makes now prompts the human unless it matches a
+known-good command prefix. This was **not** always true: prior to #429,
+`agy-deny.mjs` returned `{ "decision": "allow" }` for anything that wasn't an
+explicit denylist hit. Per agy's own shipped hook-contract doc (v1.1.7,
+`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`),
+`"allow"` **automatically allows the tool execution and suppresses agy's own
+prompt** — it does not mean "no objection, agy still asks." So that old
+default was a live, silent blanket pre-authorization of every shell command a
+human would otherwise be asked about
+([spike](../spikes/2026-08-12-agy-approval-semantics.md), finding
+[#434](https://github.com/dngioidev/forge/issues/434)).
+
+**This is a deliberate behaviour change: existing agy sessions get *more*
+prompting, never less.** A session that was silent before #429 will start
+asking about anything not on the allowlist below. That is the fix working as
+intended, not a regression.
+
+**The known-good allowlist** is single-sourced in
+`plugin/scripts/lib/allowed-commands.mjs` and shared, unforked, with the
+Claude host's own `.claude/settings.local.json` allowlist
+(`plugin/scripts/autopilot/perms.mjs`) — extend the prefixes there, not in
+either host-specific file. It covers the base `node` script-dispatcher tier,
+`pnpm verify`, and the `gh`/`git` verbs forge agents type directly (PR/issue
+CRUD, push/commit/checkout/rebase/fetch, and read-only `git status`/`diff`/
+`log`/`rev-parse`). A command with **any** shell-separated segment that isn't
+on the list falls back to `ask`, not `allow`.
+
+**The denylist always outranks the allowlist.** `agy-deny.mjs` checks the
+denylist first, unconditionally, before ever consulting the allowlist — a
+command that is both allowlisted (e.g. `git push`) and denylisted (e.g. a
+force-push) is **denied**. This precedence is pinned by a dedicated test
+(`tests/hooks/agy-deny.test.mjs`, "the denylist strictly outranks the
+allowlist").
+
+**A residual gap this fix cannot close from forge's side.** The spike verified
+that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)
+**fails open at the host level**: if `agy-deny.mjs` doesn't answer within 10
+seconds, agy proceeds as if it had said `allow`, regardless of what the script
+would actually have returned. `agy-deny.mjs` stays a synchronous, cheap regex
+check specifically so 10 seconds is never a realistic ceiling in normal
+operation, but a sufficiently slow or hung Node startup (system load, a
+transient stall) could still hit it. There is nothing forge can configure on
+its own side to make agy's host-level timeout fail closed instead — this is
+stated here plainly rather than implying the denylist is airtight when it
+isn't.
+
+**Only `run_command` is hooked today.** agy's hook matcher supports arbitrary
+tool-name patterns (the spike confirmed a `"*"` matcher also gates
+`write_to_file`), but forge's `hooks.json` scopes both hooks to `run_command`
+only — file writes/edits are unhooked. Widening the matcher is tracked as a
+follow-up rather than folded into this fix, because a `"*"` matcher runs the
+hook on **every** tool call, which raises the stakes of the timeout finding
+above (more calls now depend on staying under the 10s ceiling).
 
 ---
 
@@ -372,12 +430,21 @@ only the Claude and Antigravity columns are proven.
 | Autopilot unattended auto-merge on green | Full | Stops at green PR (policy) | **Stops at green PR** (policy) |
 | Background monitors (ci-watch/decisions-watch) | Full | Partial (session events / cron) | **Partial** |
 | Statusline | Full | Lost (no API) | **Lost** (no API) |
+| Command pre-authorization (allowlist) | Full (`.claude/settings.local.json`, opt-in print-only) | — | **Partial** (hook-mediated `ask`/`allow`/`deny`, single-sourced with Claude's list; host-level hook timeout fails open — [#429](https://github.com/dngioidev/forge/issues/429)) |
 
 ### What actually differs, honestly
 
-Everything **load-bearing** reaches Full parity on agy: board law, all seven
-gates, graph RAG, release readiness, the safety denylist, journal capture,
-parallel subagent fan-out, and slash-command UX. The only differences are:
+Board law, all seven gates, graph RAG, release readiness, the safety
+denylist, journal capture, parallel subagent fan-out, and slash-command UX
+reach Full parity on agy. **Command pre-authorization does not** — this used
+to be claimed as Full-parity-by-omission (the matrix simply didn't have a row
+for it) while forge shipped an agy hook that was actually strictly *more*
+permissive than the Claude host ([#429](https://github.com/dngioidev/forge/issues/429),
+[#434](https://github.com/dngioidev/forge/issues/434)). See the
+[permissions section](#permissions-the-allow--ask--deny-default-429) above for
+the current default, the shared allowlist, and the honest gap that fix could
+not close (agy's host-level hook timeout fails open, independent of anything
+`agy-deny.mjs` returns). The remaining differences:
 
 1. **Auto-merge is deliberately Claude-only** — a policy line, not an engine
    limit. `autopilot_merge_bar` computes the merge decision on every host (a host
