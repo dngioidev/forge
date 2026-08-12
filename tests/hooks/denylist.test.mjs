@@ -526,6 +526,27 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
+  it('AC-437.5: a swallowed terminator must not desync state for the REST of the line', () => {
+    // The damage from eating a terminator was never local: with the region
+    // left open, every later character was processed as quoted text, so the
+    // ordinary backslash-unescape rule stopped firing for the remainder of the
+    // command — including across a real separator, which meant an entirely
+    // UNRELATED later command was missed too. These cases put the payload
+    // after the trigger, so they fail if state does not resync.
+    const cases = [
+      [`git push ${D}${S}${B}c${S} ${B}-f origin main`, 'force-push'],
+      [`git branch ${D}${S}${B}c${S} ${B}-${B}D main`, 'env-branch-delete'],
+      [`rm ${D}${S}${B}c${S} ${B}-r${B}f /some/real/path`, 'recursive-delete'],
+      // ...and a genuinely separate command after a real `;` is still seen.
+      [`git push ${D}${S}${B}c${S} ; git push ${B}-${B}-force origin main`, 'force-push'],
+      [`echo hi ${D}${S}${B}c${S} && git branch ${B}-${B}D main`, 'env-branch-delete'],
+      [`${D}${S}${B}c${S} ${D}${S}${B}c${S} git push ${B}-f origin main`, 'force-push'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+  });
+
   it('AC-437.5: an ESCAPED dollar does not introduce ANSI-C quoting', () => {
     // In real bash `\$'\n'` is the literal 3-char `$\n` — the `$` is data, so
     // the quotes after it are ordinary and nothing is decoded (verified by
