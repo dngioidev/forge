@@ -451,6 +451,61 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     expect(check(`rm -rf te${KC}mp/x`).blocked).toBe(false);
   });
 
+  it('AC-437.7: brace expansion can COMPLETE a flag the literal text never spells', () => {
+    // Found by sweeping for further divergence between this file's view of a
+    // command and the argv the shell actually delivers — the question that
+    // produced the last several findings. Verified against both shells on this
+    // machine: `--forc{e,}` really does hand git `--force`, and `-r{f,}` hands
+    // rm `-rf`, while neither string appears literally in the command.
+    const cases = [
+      ['git push --forc{e,} origin main', 'force-push'],
+      ['git push --forc{e,x} origin main', 'force-push'],
+      ['git push -{f,} origin main', 'force-push'],
+      ['git push {--force,} origin main', 'force-push'],
+      ['git push --mirro{r,} origin', 'force-push'],
+      ['git reset --har{d,}', 'hard-reset'],
+      ['git branch -{D,} main', 'env-branch-delete'],
+      ['rm -r{f,} /opt/danger', 'recursive-delete'],
+      ['rm -{rf,} /opt/danger', 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+  });
+
+  it('AC-437.7: a brace group without a comma is literal, so ordinary brace use is untouched', () => {
+    // bash only expands a group containing a comma. Requiring one is what keeps
+    // `-f query='mutation{...}'` — an ordinary `gh api` argument that #85
+    // already pins — from being treated as an expansion.
+    for (const cmd of [
+      'git push --for{ce} origin main',                                    // no comma: literal, git rejects
+      `gh api graphql -f query=${S}mutation{...}${S}`,
+      `git push origin my-branch && gh api graphql -f query=${S}mutation{...}${S}`,
+      'git push origin feat/{a,b}',                                        // real expansion, but only branch names
+      'rm -rf node_modules/{a,b}',                                         // still a safe target
+      'echo {1,2,3}',
+      `git commit -m ${Q}pick {a,b}${Q}`,
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
+
+  it('AC-437.7: hostile brace nesting is bounded — no hang, no throw', () => {
+    // `{a,b}` repeated is 2^n expansions if expanded naively. The budget caps
+    // generated words, and exhaustion returns what it has, which can only
+    // under-generate — so a hostile input costs nothing rather than hanging a
+    // hook that sits on the hot path of every Bash call.
+    for (const cmd of [
+      `git push ${'{a,b}'.repeat(40)} origin main`,
+      `rm -rf ${'{a,b,c,d}'.repeat(30)}`,
+      `git push ${'{a,b}'.repeat(200)}`,
+    ]) {
+      const started = Date.now();
+      expect(() => check(cmd)).not.toThrow();
+      expect(Date.now() - started, 'brace expansion must stay fast').toBeLessThan(1000);
+    }
+  });
+
   it('AC-437.5: a quoted flag token still blocks, across every affected rule', () => {
     const cases = [
       [`git push -${Q}f${Q} origin main`, 'force-push'],

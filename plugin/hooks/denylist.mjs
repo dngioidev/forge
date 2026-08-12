@@ -307,6 +307,64 @@ function normalizeShellText(rawCommand) {
   return out;
 }
 
+/**
+ * A brace group that can actually expand: it must contain a COMMA, and no
+ * nested braces (so the innermost group matches first and recursion handles
+ * the rest). Requiring the comma is what keeps `-f query='mutation{...}'` —
+ * an ordinary `gh api` argument, and a case #85 already pins — from being
+ * treated as an expansion, exactly as bash leaves it alone.
+ */
+const BRACE_GROUP = /\{([^{}]*,[^{}]*)\}/;
+/** Hard cap on generated words, so a nested `{a,b}{a,b}…` cannot blow up. */
+const BRACE_BUDGET = 32;
+
+/**
+ * Expand ONE word's brace groups into every word bash would produce, e.g.
+ * `--forc{e,}` -> `--force --forc`. Bounded and non-recursive past the budget;
+ * on exhaustion it returns what it has, which can only under-generate, so the
+ * caller never sees a hang or a memory spike from hostile input.
+ */
+function expandBraces(word, budget = BRACE_BUDGET) {
+  const m = BRACE_GROUP.exec(word);
+  if (!m || budget <= 1) return [word];
+  const pre = word.slice(0, m.index);
+  const post = word.slice(m.index + m[0].length);
+  const out = [];
+  for (const alt of m[1].split(',')) {
+    if (out.length >= budget) break;
+    out.push(...expandBraces(pre + alt + post, budget - out.length));
+  }
+  return out.length > 0 ? out : [word];
+}
+
+/**
+ * Apply brace expansion across a normalised command (#437, found while
+ * sweeping for further places this file's view of a command diverges from the
+ * argv the shell really delivers — the question that produced the last several
+ * findings).
+ *
+ * Why it is needed: brace expansion can COMPLETE a flag the text never spells.
+ * `git push --forc{e,} origin main` hands git a real `--force`, and
+ * `rm -r{f,} /opt/danger` a real `-rf`, while the literal text contains
+ * neither — verified against both shells on this machine.
+ *
+ * Why it is a SEPARATE pass, deliberately: every previous bug on this branch
+ * came from adding cases to the quote/escape state machine, where a mistake
+ * desynchronises everything after it. This runs afterwards, over the finished
+ * text, and cannot affect that machine at all. The cost of that choice is that
+ * it no longer knows what was quoted, so a QUOTED brace group — literal to
+ * bash — is expanded here too. That over-matches, which is the safe direction
+ * and consistent with how this file already treats quoted mentions.
+ *
+ * `\S+` preserves every whitespace character exactly, including the newlines
+ * and separators splitSegments() relies on; only the non-whitespace runs are
+ * rewritten.
+ */
+function expandBraceWords(text) {
+  if (!text.includes('{')) return text; // the overwhelmingly common case
+  return text.replace(/\S+/g, (word) => expandBraces(word).join(' '));
+}
+
 export const RULES = [
   {
     name: 'force-push',
@@ -491,7 +549,11 @@ export function check(command) {
   // once (#437). This runs ahead of the split on purpose: it also neutralises
   // separators sitting inside quotes, which is what stops a quoted `;` from
   // fragmenting a command away from its own flag.
-  const normalized = normalizeShellText(command);
+  // Then expand brace groups, which can COMPLETE a flag the literal text never
+  // spells (`--forc{e,}` reaches git as `--force`). Deliberately a separate,
+  // later pass over the finished text rather than another case inside the
+  // state machine above — see expandBraceWords().
+  const normalized = expandBraceWords(normalizeShellText(command));
   const segs = segments(normalized);
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
