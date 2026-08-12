@@ -285,6 +285,204 @@ describe('recursive-delete long flags (#312, AC-312.*)', () => {
   });
 });
 
+describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)', () => {
+  // AC-446.1 — a safe word only exempts a delete when it occupies a WHOLE path
+  // component (bounded by `/`, whitespace, `\`, or start/end of the argument),
+  // not merely appears as a substring. `dist` and `dist/` are safe; a longer
+  // name that merely CONTAINS `dist` is not.
+  it('AC-446.1: dist and dist/ (trailing slash) are safe; distribution-of-secrets is not', () => {
+    expect(check('rm -rf dist').blocked).toBe(false);
+    expect(check('rm -rf dist/').blocked).toBe(false);
+    expect(check('rm -rf dist/sub').blocked).toBe(false);
+    expect(check('rm -rf distribution-of-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-446.1 — a nested safe-named directory is still safe regardless of its
+  // parent's name: anchoring is per-COMPONENT, not top-level-only, matching
+  // how `packages/app/dist` was already treated as safe pre-fix.
+  it('AC-446.1: a safe word nested under an unrelated parent directory is still safe', () => {
+    expect(check('rm -rf packages/app/dist').blocked).toBe(false);
+    expect(check('rm -rf ~/project/node_modules').blocked).toBe(false);
+  });
+
+  // AC-446.2 — non-negotiable per the ticket: every existing safe-target case
+  // (AC-312.2, plus the ticket's own quoted-$TMP example) must keep passing
+  // completely unchanged after anchoring. Re-asserted here, by name, so a
+  // regression in this exact set is never mistaken for an unrelated failure.
+  it('AC-446.2: pre-existing safe-target cases are UNCHANGED by anchoring', () => {
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    expect(check('rm -rf "$TMP/forge-test"').blocked).toBe(false);
+    expect(check('rm --recursive --force node_modules').blocked).toBe(false);
+    expect(check('rm --force --recursive dist build coverage').blocked).toBe(false);
+  });
+
+  // AC-446.3 — the substring-lookalike paths from the ticket (and the widest
+  // alternative, `te?mp`, against every word it used to leak through) are
+  // pinned as BLOCKED, in the style of AC-429.3 / AC-437.3.
+  it('AC-446.3: substring-lookalike dangerous paths are blocked, not exempted', () => {
+    for (const cmd of [
+      'rm -rf /important-template-configs',            // "temp" inside "template"
+      'rm -rf ~/my-distribution-of-prod-secrets',       // "dist" inside "distribution"
+      'rm -rf ./coverage-notes-prod-db',                // "coverage" abutting "-notes"
+      'rm -rf /srv/scratchpad-lookalike-prod',          // "scratchpad" abutting "-lookalike"
+      'rm -rf /srv/temporary-prod-data',                // "temp" inside "temporary"
+      'rm -rf /srv/attempt-to-delete-prod',             // "temp" inside "attempt"
+      'rm -rf /srv/contemplate-prod-migration',         // "temp" inside "contemplate"
+      'rm -rf buildings-and-infra',                     // "build" inside "buildings"
+      'rm -rf node_modules_backup_of_prod',             // "node_modules" abutting "_backup"
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-446.4 — decision: `$TMP`/`$TEMP` get NO special-casing beyond the same
+  // component anchor every other alternative uses. That already produces the
+  // bash-correct outcome: `$TMPDIR` is a DIFFERENT (here, unset) variable to
+  // real bash, not `$TMP` + literal `DIR` — env-var-name expansion consumes
+  // maximal `[A-Za-z0-9_]*` after the `$` — so treating `$TMPDIR` as exempt
+  // would itself have been a bypass, not just an inconsistency.
+  it('AC-446.4: $TMP/$TEMP are exempt only as a whole component, not as a prefix of a longer name', () => {
+    expect(check('rm -rf $TMP/forge-test').blocked).toBe(false);
+    expect(check('rm -rf $TEMP/forge-test').blocked).toBe(false);
+    expect(check('rm -rf $TMPDIR/prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('rm -rf $TEMPORARY_CREDENTIALS_DIR')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-446.5 — the boundary is `/` ALONE, deliberately NOT a backslash. An
+  // earlier draft of this fix included `\` in the boundary class; the
+  // adversarial review killed it on two independent grounds. First, on bash —
+  // the shell every rule in this file is written against — a backslash is not
+  // a path separator at all but an ordinary filename byte, so honouring it
+  // carves a fake "component" out of one arbitrary filename. Second, the
+  // premise that a literal backslash only survives normalizeShellText() when
+  // the source doubled it is false: inside single quotes a backslash is
+  // literal and passes through untouched (the AC-437.5 cases below already
+  // depend on exactly that), so a quoted `temp\prod-secrets` — one filename,
+  // not a path under a `temp/` directory — was being waved through as safe.
+  it('AC-446.5: a backslash is NOT a component boundary and cannot carve a fake safe component', () => {
+    const B = String.fromCharCode(92); // backslash
+    const S = String.fromCharCode(39); // '
+    const Q = String.fromCharCode(34); // "
+    for (const cmd of [
+      `rm -rf ${S}temp${B}prod-secrets${S}`,     // single-quoted: backslash survives verbatim
+      `rm -rf ${Q}temp${B}prod-secrets${Q}`,     // double-quoted, backslash before a non-escape char
+      `rm -rf customer-database${B}${B}temp`,     // unquoted, doubled -> one literal backslash
+      `rm -rf .ssh${B}${B}build`,
+      `rm -rf dist${B}${B}production-secrets`,    // safe word on the LEFT of the fake boundary
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-446.6 — anchoring the words was only HALF the fix. The exemption used to
+  // be one boolean test against the whole command tail, so a single safe-looking
+  // token anywhere in the argument list vouched for every other argument on the
+  // line. Anchoring alone does not touch that: `dist` is a perfectly legitimate
+  // whole component, it just is not the argument that matters. Both classes here
+  // predate this ticket (verified against `main`), but they are the same "a safe
+  // word somewhere exempts the whole command" class #446 exists to close, so
+  // leaving them behind an apparently-complete fix would be worse than not
+  // having fixed anything.
+  it('AC-446.6: one safe decoy argument does NOT exempt unsafe siblings (per-argument, not whole-line)', () => {
+    for (const cmd of [
+      'rm -rf /secret/data dist',                        // decoy last
+      'rm -rf tmp /home/user/photos',                    // decoy first
+      'rm -rf /var/lib/db /home/user/.ssh node_modules', // decoy buried among several real targets
+      'rm --recursive --force /secret/data dist',        // long-flag spelling of the same
+      'rm -rf $TMP /etc/important-config',               // env-var form as the decoy
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // ...while an all-safe argument list stays exempt, which is exactly what
+    // keeping AC.2 intact means: `dist build coverage` is three safe targets,
+    // not one safe target vouching for two unknowns.
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    // A line with NO target left to judge stays blocked — "nothing recognisable
+    // to vouch for" must never read as "safe".
+    expect(check('rm -rf')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-446.6 — the sharpest reported variant of the decoy, needing no visible
+  // second argument at all. normalizeShellText() emits an inert SPACE for any
+  // decoded control byte, so a NUL escape splices a hidden safe word onto the
+  // single real target. A persistent bash session drops the embedded NUL byte
+  // and fuses the surrounding text into ONE quoted argument rather than
+  // truncating anything away — the trailing word is not discarded, it stays
+  // part of the same real target, existing purely to fool a whole-line match
+  // and invisible without hex inspection. Splitting per token judges the real
+  // target on its own merits regardless of how a shell would actually resolve
+  // the byte.
+  it('AC-446.6: a NUL-escape hidden decoy cannot exempt the real target', () => {
+    const B = String.fromCharCode(92);
+    const S = String.fromCharCode(39);
+    const D = String.fromCharCode(36);
+    for (const cmd of [
+      `rm -rf ${D}${S}/etc/shadow-backup${B}x00scratchpad${S}`,
+      `rm -rf ${D}${S}important-secret-data${B}x00dist${S}`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-446.6 — the same splice one layer lower, as a RAW byte rather than an
+  // escape. The case above only ever exercised the `$'…\x00…'` spelling, and
+  // the inert-space guarantee it relies on lives in emitCodePoint(), which
+  // DECODED escapes reach and a literal byte does not. So a NUL already present
+  // in the command text sailed straight through as ordinary data, and the
+  // checker judged one opaque token spanning the byte, with the safe word on
+  // the far side vouching for the whole line. This is NOT a truncation bug:
+  // Node's child_process throws on an embedded NUL before the command ever
+  // runs, and a bash session drops the byte and fuses the text around it into
+  // one argument rather than cutting anything off — either way, nothing here
+  // relies on which of those happens. Reachable without any shell quoting at
+  // all — `\u0000` is legal JSON, and check() is handed
+  // the parsed string unsanitised. (Found by the adversarial security review of
+  // the anchoring fix; the escape form alone was NOT enough.)
+  it('AC-446.6: a RAW NUL byte splice is neutralised exactly like the escape form', () => {
+    const NUL = String.fromCharCode(0);
+    for (const cmd of [
+      `rm -rf /prod-secrets${NUL}/scratchpad`,
+      `rm -rf "/prod-secrets${NUL}/scratchpad"`,
+      `rm -rf '/prod-secrets${NUL}/scratchpad'`,
+      `rm -rf important-secret-data${NUL}dist`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // Neither runtime turns this into a "block anything containing a NUL"
+    // rule: the substitution judges each side of the byte on its own merits,
+    // so when both sides are genuinely safe words the line stays exempt.
+    expect(check(`rm -rf dist${NUL}build`).blocked).toBe(false);
+  });
+
+  // AC-446.6 — the per-argument split must use bash's OWN default IFS (space,
+  // tab, newline), not JavaScript's `\s`, which is a strictly wider class.
+  // Splitting on a character bash does NOT word-split on cuts one real argument
+  // into several, and if each fragment looks like a safe word the actual target
+  // escapes judgement — the decoy problem again, arriving from the opposite
+  // direction. Verified against this platform's bash by printing the expanded
+  // argv: NBSP, vertical tab and form feed all arrive INSIDE a single argument,
+  // so `dist<NBSP>build` names one file that is neither `dist` nor `build`.
+  it('AC-446.6: token splitting follows bash IFS, so a non-IFS space cannot fake two safe components', () => {
+    for (const [sep, label] of [
+      [' ', 'NBSP'],
+      ['\v', 'vertical tab'],
+      ['\f', 'form feed'],
+      [' ', 'narrow NBSP'],
+      ['　', 'ideographic space'],
+    ]) {
+      const cmd = `rm -rf dist${sep}build`;
+      expect(check(cmd), label).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // ...while a raw TAB, which bash DOES word-split on, still separates two
+    // safe targets, so a genuinely all-safe list stays exempt. (Newline is not
+    // exercised here: segments() splits the command on it upstream, so it never
+    // reaches the target split at all.)
+    expect(check('rm -rf dist\tbuild').blocked).toBe(false);
+    expect(check('rm -rf dist\t/etc/secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
   // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
   // and `--hard`, in either order, and regardless of a global git flag before

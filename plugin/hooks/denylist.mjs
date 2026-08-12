@@ -15,7 +15,103 @@
  * for a few known-catastrophic commands, not a security boundary.
  */
 
-const SAFE_RM_TARGETS = /(node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)/i;
+// Component-anchored, and matched against ONE argument at a time (#446).
+//
+// Two halves of the same fix, because either alone leaves the other's bypass
+// open — see safeRmTarget() below for the per-argument half.
+//
+// ANCHORING: each alternative must occupy a WHOLE path component of the
+// argument, not merely appear as a substring of it. `dist` and `dist/` are
+// safe; `distribution-of-secrets` is not, because "dist" there abuts "r"
+// rather than a component boundary. Deliberately NOT `\b`/word-boundary: a
+// hyphen is a non-word character, so a plain `\b` would still read "coverage"
+// inside `coverage-notes-prod-db` as a whole word and let the exact bypass
+// this ticket closes straight back in.
+//
+// The boundary is `/` ALONE, plus the argument's own start/end. Notably it is
+// NOT a backslash, which an earlier draft of this fix included and the
+// adversarial review rejected on two independent grounds, both correct:
+// (1) on bash — the shell every rule in this file is written against — `\` is
+// not a path separator at all, it is an ordinary filename byte, so treating
+// it as component punctuation carves a fake "component" out of a single
+// arbitrary filename (`customer-database\temp`, `.ssh\build`); and (2) the
+// premise that a literal `\` only survives normalizeShellText() when the
+// source doubled it is simply false — inside single quotes a backslash is
+// literal and passes through untouched (this file's own AC-437.5 cases
+// already depend on that), so `'temp\prod-secrets'` would have been waved
+// through as safe. Excluding `\` costs only over-blocking an unquoted
+// Windows-style path whose backslashes normalizeShellText() eats as escapes
+// anyway (`C:\repo\dist` normalises to `C:repodist`) — the safe direction,
+// and pinned by AC-446.5 so the choice is a decision rather than an accident.
+//
+// `$TMP`/`$TEMP` get no special-casing (AC.4): they are matched by the same
+// component-anchored rule as every literal directory name, which already
+// produces the right outcome for the one case that matters — bash itself
+// resolves `$TMPDIR` to a DIFFERENT (and here, unset) variable than `$TMP`
+// followed by a literal `DIR`, because env-var-name expansion consumes the
+// maximal `[A-Za-z0-9_]*` run after the `$`. The component boundary here is a
+// STRICTER right edge than bash's own variable-name boundary (it also rejects
+// a same-token `-` suffix bash would resolve as literal data, e.g.
+// `$TMP-backup`), which only ever narrows the safe set — and the one case
+// AC.2 requires, `"$TMP/forge-test"`, has a `/` straight after `$TMP` and
+// keeps matching.
+const SAFE_RM_TARGET =
+  /(?:^|\/)(?:node_modules|\.forge|dist|build|coverage|te?mp|\$TMP|\$TEMP|scratchpad)(?=$|\/)/i;
+
+/**
+ * Is EVERY delete target on this `rm` line a safe build/temp path?
+ *
+ * Anchoring the words was only half of #446. The exemption used to be one
+ * boolean test of SAFE_RM_TARGETS against the whole command tail, so a single
+ * safe-looking token ANYWHERE in the argument list exempted the entire
+ * command — `rm -rf /secret/data dist` and `rm -rf /var/lib/db ~/.ssh
+ * node_modules` both passed, with the real targets sitting right there in
+ * plain sight. Anchoring alone does not touch that: `dist` is a perfectly
+ * legitimate whole component, it just is not the argument that matters. The
+ * decoy has to be defeated by asking the question PER ARGUMENT, so one safe
+ * target can never vouch for an unsafe sibling. (Both were found by the
+ * adversarial security review of the anchoring-only fix; both predate this
+ * ticket — verified against `main` — but they are the same "a safe word
+ * somewhere exempts the whole command" class #446 exists to close, so they
+ * are closed here rather than left behind a fix that appears to have handled
+ * them.)
+ *
+ * Splitting on whitespace also closes the sharpest reported variant, which
+ * needed no visible second argument at all: normalizeShellText() emits an
+ * inert SPACE for any decoded control byte, so `$'/etc/shadow-backup\x00
+ * scratchpad'` — one single-quoted argument, in which a real bash session
+ * drops the embedded NUL byte and fuses everything around it into that SAME
+ * one argument, rather than truncating anything away — normalises to two
+ * tokens here. Under the old whole-string test the hidden `scratchpad`
+ * exempted the line; split per token, `/etc/shadow-backup` is judged on its
+ * own and blocks. Treating the decoded NUL's stand-in space as a token
+ * separator over-approximates (real bash keeps the whole quoted string as
+ * ONE argument, byte dropped, rest fused) in the BLOCKING direction, which is
+ * the right way to be wrong about a byte no legitimate path contains.
+ *
+ * Flag tokens are skipped, not judged: they are not delete targets, and
+ * `--force` must not be mistaken for a path. A line with NO target token left
+ * is treated as unsafe — that keeps the old outcome for a bare `rm -rf`, and
+ * "nothing recognisable to vouch for" should never read as "safe".
+ *
+ * The split is on bash's OWN default IFS — space, tab, newline — and
+ * deliberately not on JavaScript's `\s`, which is a strictly wider class. That
+ * gap is not cosmetic: `\s` also matches NBSP, vertical tab, form feed and the
+ * Unicode spaces, none of which bash word-splits on. Splitting a token there
+ * cuts ONE bash argument into several, and if each fragment happens to look
+ * like a safe word the real target escapes judgement entirely — `rm -rf
+ * dist<NBSP>build` deletes a single file named `dist<NBSP>build`, which is
+ * neither `dist` nor `build`, yet `\s` splitting saw two safe components and
+ * exempted the line. Verified against this platform's bash by printing the
+ * expanded argv: NBSP, VT and FF all arrive INSIDE one argument, while a raw
+ * tab does separate. Carriage returns need no case here — normalizeShellText()
+ * strips them before any rule runs.
+ */
+function safeRmTarget(rest) {
+  const targets = rest.split(/[ \t\n]+/).slice(1).filter((t) => t && !t.startsWith('-'));
+  if (targets.length === 0) return false;
+  return targets.every((t) => SAFE_RM_TARGET.test(t));
+}
 const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 
 /**
@@ -99,7 +195,7 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  *  1. **Quote characters are removed** (`-"f"` -> `-f`).
  *  2. **Backslashes are removed** (`-\f` -> `-f`, `-\-hard` -> `--hard`), and
  *     the `$` introducing ANSI-C/locale quoting is dropped so `$'-f'` -> `-f`.
- *     A `$` anywhere else is untouched, so `$TMP` still matches SAFE_RM_TARGETS
+ *     A `$` anywhere else is untouched, so `$TMP` still matches SAFE_RM_TARGET
  *     and `$(` still trips `eval-exec`.
  *  3. **Shell separators found INSIDE a quoted region become spaces.**
  *     `splitSegments()` is not quote-aware, so a separator hidden in a quoted
@@ -180,7 +276,34 @@ function normalizeShellText(rawCommand) {
   // A Linux bash keeps a literal CR instead. Stripping it there can only JOIN
   // tokens the shell would have kept apart, i.e. match more, never less — the
   // safe direction — and a CR cannot spell part of a flag either way.
-  const command = rawCommand.replace(/\r/g, '');
+  //
+  // A RAW NUL goes next, and for a different reason than the CR above.
+  // emitCodePoint() already turns a DECODED control byte into an inert space,
+  // which is what closes the `$'…\x00scratchpad'` splice (#446) — but that
+  // guarantee only ever covered NUL spelled as an ESCAPE. A NUL byte sitting
+  // literally in the command text never reaches emitCodePoint(): it flows
+  // through the plain push()/emit() paths untouched (emit() neutralises only
+  // `;|&\n`), so the checker saw ONE opaque token spanning the byte —
+  // `rm -rf /prod-secrets<NUL>/scratchpad` read as a single path ending in the
+  // safe component `scratchpad`, exempting the whole line. It is reachable
+  // input, not a curiosity: `\u0000`
+  // is a legal JSON string escape and main()'s JSON.parse hands it straight to
+  // check() with no sanitisation, as does agy-deny.mjs (#446, adversarial
+  // security review of the anchoring fix).
+  //
+  // Mapping it to the same inert SPACE the decoded form already gets makes the
+  // two spellings agree, and blocks regardless of how a downstream consumer
+  // actually handles the byte — which is NOT truncation under either concrete
+  // path checked: Node's child_process throws on an embedded NUL before the
+  // command ever runs, and a persistent bash session silently drops the byte
+  // and fuses the surrounding text into ONE argument rather than cutting
+  // anything off. This fix does not need to match either of those; it
+  // deliberately over-blocks by splitting the token at the byte, so
+  // `/prod-secrets` is judged on its own merits either way. Deliberately NUL
+  // ONLY, not control bytes generally: VT/FF are real in-token data that bash
+  // does not word-split on, and splitting there is exactly the non-IFS bypass
+  // the IFS split above exists to prevent.
+  const command = rawCommand.replace(/\r/g, '').replace(/\0/g, ' ');
   // Output is accumulated as single-character CHUNKS and joined once at the
   // end, rather than appended onto a growing string.
   //
@@ -489,7 +612,10 @@ export const RULES = [
       const force = /f/.test(shortFlags) || /\B--force\b/.test(c);
       if (!recursive || !force) return false;
       const rest = c.slice(c.indexOf('rm'));
-      return !SAFE_RM_TARGETS.test(rest);
+      // EVERY target must be safe, not merely one of them (#446) — see
+      // safeRmTarget(): a single safe-looking decoy argument used to exempt
+      // the whole command, however many real targets sat beside it.
+      return !safeRmTarget(rest);
     },
     msg: 'rm -rf (incl. --recursive --force) outside build/temp dirs',
   },
