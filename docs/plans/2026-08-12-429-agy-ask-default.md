@@ -140,9 +140,25 @@ known-safe:
   auto-approves; plain `git checkout main` asks. Closes the class rather than
   half-closing it, for ~1 extra prompt per ticket.
 - **`gh pr merge`** (major, round 3) — `--admin` bypasses branch protection.
+- **`pnpm verify`** (critical, round 4) — pnpm forwards trailing args to
+  `vitest run`, and vitest `import()`s a `--reporter=<path>` /
+  `--config=<path>` module at startup, before any test runs: arbitrary code
+  execution, the same class as `node -e`. Only the bare command — the sole
+  form forge ever runs — auto-approves.
 
 Anything else asks, including abbreviations and any flag a tool adds in
-future. Deliberately redundant with the denylist; the tests are written to
+future.
+
+**Host scope, stated explicitly** (raised by `forge:reviewer`): these argument
+guards are enforced by `isAllowedCommand()`, whose only consumer is the agy
+hook. Claude's permission grammar is a prefix glob (`Bash(node:*)`) with no way
+to constrain arguments, so the Claude host still grants the broader form. The
+*command set* is single-sourced per AC-429.4; the guards are an extra narrowing
+only the hook can enforce. Not a silent asymmetry — documented in
+`allowed-commands.mjs`'s header and in `cross-gai.md`. Closing it on the Claude
+side would mean either new denylist rules that over-block legitimate use
+(`node -e` is a normal thing to type) or dropping `node` from the grant, which
+would break the entire script tier; neither belongs in this ticket. Deliberately redundant with the denylist; the tests are written to
 keep passing even if a denylist rule regressed. Two intended side effects:
 `--force-with-lease` asks (permitted, but a human sees it), and a bare `node`
 asks (an unattended session must not silently enter a REPL).

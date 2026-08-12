@@ -80,6 +80,10 @@ export const RULES = [
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) — the `(?:^|\s)-`
       // anchor keeps GNU `--recursive`/`--force` (double dash) and mid-word dashes
       // (`file-r.txt`) out of this bucket so they can't spoof a short flag.
+      // Deliberately `[a-zA-Z]` where force-push above uses `[a-zA-Z0-9]`: git
+      // has numeric short flags (`-4`) that can bundle with `-f`, `rm` has none,
+      // so widening here would buy nothing. Not an oversight — #437 tracks
+      // extracting one shared flag-cluster helper for both rules.
       const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.

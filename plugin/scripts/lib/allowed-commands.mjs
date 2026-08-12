@@ -117,8 +117,26 @@ const SHELL_METACHARACTERS = /[$`<>&;|]|[\x00-\x1f]/;
  * `gh issue view`, …) or are read-only.
  */
 
+/**
+ * HOST SCOPE — these guards are enforced by `isAllowedCommand()`, whose only
+ * consumer is the agy PreToolUse hook. The Claude host consumes only the raw
+ * prefix list above, because `.claude/settings.local.json`'s grammar is a
+ * prefix glob (`Bash(node:*)`) with no way to constrain arguments. So the
+ * command SET is single-sourced across hosts, but this argument narrowing is
+ * agy-only. Stated here rather than left implicit: closing it Claude-side would
+ * need either denylist rules that over-block legitimate use (`node -e` is a
+ * normal thing to type) or dropping `node` from the grant, which would break
+ * the whole script tier.
+ */
+
 /** A bare operand: a ref, remote, path or number — never a flag (`-`) or force refspec (`+`). */
 const PLAIN_OPERAND = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+
+/** argsOk for "a fixed set of inert flags, plus any number of plain operands". */
+const flagsAndOperands = (...safeFlags) => {
+  const allowed = new Set(safeFlags);
+  return (args) => args.every((a) => allowed.has(a) || PLAIN_OPERAND.test(a));
+};
 
 const ARGUMENT_SENSITIVE_PREFIXES = [
   {
@@ -127,10 +145,28 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     // "the first argument is a plain script path" is sufficient: everything
     // after it belongs to the script, not to node. This is what stops
     // `node -e "<code>"` / `--eval` / `-p` / `-` (read program from stdin) —
-    // unrestricted code execution with full fs/child_process/network reach —
-    // while leaving the entire forge script tier (`node scripts/x.mjs --flag`)
-    // auto-approved, which is the whole reason `node` is on the allowlist.
+    // unrestricted INLINE code execution — while leaving the forge script tier
+    // (`node scripts/x.mjs --flag`) auto-approved, which is the whole reason
+    // `node` is on the allowlist.
+    //
+    // Honest scope limit: this validates that a SCRIPT PATH was given, not
+    // WHICH script. `node <any-on-disk-path>` still auto-approves, including
+    // one outside the repo. Running an arbitrary on-disk script is the
+    // capability this allowlist entry deliberately grants; narrowing it to
+    // forge's own script tree is tracked separately (see #438), not silently
+    // implied here.
     argsOk: (args) => args.length > 0 && PLAIN_OPERAND.test(args[0]),
+  },
+  {
+    prefix: 'pnpm verify',
+    // `conventions.verify` is the literal string `pnpm verify`, and pnpm
+    // forwards any trailing arguments straight through to the underlying
+    // script (`vitest run`). vitest's `--reporter=<path>` and `--config=<path>`
+    // dynamically import() that module at startup, BEFORE any test runs — so an
+    // unguarded trailing argument is arbitrary code execution, the same class
+    // just closed for `node -e`. Agents only ever run the bare command, so the
+    // bare command is all that auto-approves.
+    argsOk: (args) => args.length === 0,
   },
   {
     prefix: 'git push',
@@ -138,13 +174,13 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     // is deliberately NOT here: it is permitted by the denylist as the sanctioned
     // safe alternative, but it is still a force operation, so a human should see
     // it rather than have it auto-approved.
-    argsOk: (args) => args.every((a) => new Set([
+    argsOk: flagsAndOperands(
       '-u', '--set-upstream',
       '-q', '--quiet',
       '-v', '--verbose',
       '--progress', '--no-progress',
       '--porcelain', '--dry-run',
-    ]).has(a) || PLAIN_OPERAND.test(a)),
+    ),
   },
   {
     prefix: 'git checkout',
@@ -164,10 +200,10 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     prefix: 'gh pr merge',
     // `--admin` bypasses branch-protection requirements — the one gh flag here
     // that defeats a repo's own safety configuration.
-    argsOk: (args) => args.every((a) => new Set([
+    argsOk: flagsAndOperands(
       '--squash', '-s', '--merge', '-m', '--rebase', '-r',
       '--delete-branch', '-d', '--auto',
-    ]).has(a) || PLAIN_OPERAND.test(a)),
+    ),
   },
 ];
 

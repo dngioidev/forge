@@ -28,10 +28,26 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
   it('AC-429.3: every argument-sensitive prefix REFUSES an arbitrary unknown flag', () => {
     // The guard's whole point: an unrecognised flag may be an abbreviation of a
     // destructive one (`--mir` IS `--mirror`), so unknown means ask, per verb.
-    expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual(['node', 'git push', 'git checkout', 'gh pr merge']);
+    expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual(['node', 'pnpm verify', 'git push', 'git checkout', 'gh pr merge']);
     for (const prefix of ARGUMENT_SENSITIVE_COMMANDS) {
       expect(isAllowedCommand(`${prefix} --some-unknown-flag`, { segments: splitSegments }), prefix).toBe(false);
     }
+  });
+
+  it('AC-429.3: `pnpm verify` takes no arguments — pnpm forwards them to vitest, whose --reporter/--config import arbitrary code', () => {
+    // pnpm passes trailing args through to the script (`vitest run`), and vitest
+    // dynamically import()s a --reporter=<path> / --config=<path> module at
+    // startup, before any test runs. An unguarded trailing arg is therefore
+    // arbitrary code execution — the same class as `node -e`.
+    for (const cmd of [
+      'pnpm verify --reporter=./evil.mjs',
+      'pnpm verify --reporter ./evil.mjs',
+      'pnpm verify --config=./evil.mjs',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+    // The bare command — the only form forge itself ever runs — still allows.
+    expect(isAllowedCommand('pnpm verify', { segments: splitSegments })).toBe(true);
   });
 
   it('AC-429.3: `node` auto-allows only a script path — inline code execution asks', () => {
