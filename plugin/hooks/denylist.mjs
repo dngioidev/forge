@@ -151,8 +151,10 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  * far each escape's lookahead may CONSUME. Getting the value right is easy;
  * getting the terminator right is where the bugs were. The hex/octal forms are
  * bounded by digit classes, which can never match a quote character, so they
- * cannot run past the end of their region. `\c` takes an arbitrary operand and
- * therefore needs its own explicit terminator check — see below.
+ * cannot run past the end of their region. `\c` takes an ARBITRARY operand, so
+ * it has no such natural bound — and guarding it case by case lost twice. It
+ * is fixed below by not looking ahead at all, which is why no branch in this
+ * function now has an unbounded lookahead.
  */
 
 /** Single-character ANSI-C escapes bash decodes inside `$'…'`. */
