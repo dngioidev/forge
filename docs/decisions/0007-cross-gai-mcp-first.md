@@ -179,3 +179,15 @@ Scope narrowed to **Antigravity (`agy`) only** because it is the host the owner 
 - **#292 - Codex adapter** [Backlog, p2, L] - DEFERRED; mirrors the agy work once proven, after live-verifying Codex's config schemas.
 
 **Spike status:** AC1 delivered and **verified on live agy v1.1.5**. Owner decisions locked (full-parity bar; Claude-only merge; agy-first). Ready to graduate this ADR to **Accepted** on main on the owner's word; the build proceeds via #289 + #288.
+
+---
+
+## Addendum (2026-08-12, #428): hook `allow` decision confirmed to auto-approve
+
+This ADR records at `:37` and `:54` that agy's `PreToolUse` hook protocol accepts `allow`/`deny`/`ask`/`force_ask`, but never states what each decision does to agy's own approval prompt — that gap was resolved by [`docs/spikes/2026-08-12-agy-approval-semantics.md`](../spikes/2026-08-12-agy-approval-semantics.md), re-verified live on **agy v1.1.7** (no version drift found from v1.1.5). Confirmed against the CLI's own shipped hook-contract docs plus empirical headless testing:
+
+- **`allow` suppresses agy's own approval prompt** ("automatically allow the tool execution" — agy's own documented wording). `agy-deny.mjs`'s current default of `allow` for every non-denylisted `run_command` therefore **auto-approves every shell command in an interactive agy session today**, with no allowlist and no operator visibility — filed as **p0 bug #434**, tracked separately from the allowlist implementation ticket (#429).
+- agy also has a second, independent, native command-permission gate (headless mode fails closed there without `--dangerously-skip-permissions` or a `permissions.allow` grant in the operator's global `settings.json`) — a real pre-authorization surface, but global-scoped and only partially schema-confirmed. The spike recommends the fix stay **hook-mediated** (flip the default to `ask`, allow selectively) rather than emitting into that global file. See the spike doc for the full reasoning.
+- The hook's `timeout: 10` (`plugin/scripts/agy/emit.mjs:126,129`) was confirmed to **fail open** at the agy host level (independent of `agy-deny.mjs`'s own fail-open catch) — a hung or slow hook silently degrades to `allow`, not `deny`.
+
+This does not change any decision this ADR already locked (the parity bar, the MCP tool cut line, the agy-first build order) — it fills in a behavioral detail the ADR left unresolved, now that #429 needs it.
