@@ -161,6 +161,22 @@ describe('runDoctor — runner health (AC-225.4)', () => {
     expect(res.ok).toBe(false);
   });
 
+  it('AC-426.1, AC-426.2: this repo\'s own committed forge.json runner block matches hosted-CI reality — disabled on the PUBLIC repo it actually is, so doctor stays silent (no misleading FAIL)', async () => {
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    // Pin: this repo's CI runs entirely on GitHub-hosted runners (.github/workflows/verify.yml) —
+    // the `runner` block must never silently drift back to "enabled" here (that's what caused
+    // doctor to FAIL with a false fork-PR-RCE alarm before #426).
+    expect(committed.runner?.enabled).not.toBe(true);
+    const cwd = await tmpCwd();
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+    const { gh } = fakeGh(runnerRoutes({ view: PUBLIC_VIEW }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner')).toEqual([]);
+    expect(byName(res, 'runner-secret')).toEqual([]);
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('runner');
+  });
+
   it('secret store TRACKED in git → FAIL', async () => {
     // runner.env committed (not ignored) → tracked → fail
     const cwd = await gitRepo({ gitignore: '.forge/\n', files: { 'runner.env': 'FORGE_RUNNER_PAT=redacted\n' } });
