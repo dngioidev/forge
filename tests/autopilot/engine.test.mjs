@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -867,7 +867,6 @@ describe('#432 — AC.1/AC.2 re-verification against the live ALLOW (already del
     expect(out).toContain('"permissions"');
     expect(out).toContain('Bash(pnpm verify:*)');
     // no settings file, no stray file at all — this command is read-only by design
-    const { readdir } = await import('node:fs/promises');
     expect(await readdir(cwd)).toEqual([]);
   });
 });

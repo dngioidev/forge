@@ -110,12 +110,13 @@ superpowers" renumbers to "7."
 
 **Files:** docs/guides/install.md
 
-## Task 2 (test): AC.1/AC.2 verification, extending the existing import (AC-432.1, AC-432.2)
+## Task 2 (test): AC.1/AC.2 verification, reusing the existing import (AC-432.1, AC-432.2)
 
-Extend `tests/autopilot/engine.test.mjs`'s "autopilot permissions helper"
-describe block — already imports `ALLOW`/`permsBlock` — with the AC.1 command
-list and an AC.2 structural-derivation assertion. No new fixture, per the
-ticket's explicit instruction.
+Add a new describe block to `tests/autopilot/engine.test.mjs`, alongside the
+existing "autopilot permissions helper" one, reusing its `ALLOW`/`permsBlock`
+import plus a new `ALLOWED_COMMAND_PREFIXES` import for the AC.1 command list
+and the AC.2 structural-derivation assertion. No new fixture, no re-typed
+copy of the list — per the ticket's explicit instruction.
 
 **Files:** tests/autopilot/engine.test.mjs
 
