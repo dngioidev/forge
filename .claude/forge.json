@@ -52,7 +52,7 @@
     "plansDir": "docs/plans"
   },
   "runner": {
-    "enabled": true,
+    "enabled": false,
     "labels": ["self-hosted", "linux", "forge-local"],
     "sharing": "repo",
     "windows": "native"

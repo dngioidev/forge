@@ -120,6 +120,25 @@ describe('runCheck — adoption readiness (#245)', () => {
     expect(byName(res, 'private-repo')[0].msg).toMatch(/public|fork/i);
   });
 
+  it('AC-426.1, AC-426.2: this repo\'s own committed forge.json runner block, run against its real PUBLIC topology → honest NOT READY (never a false READY for an inactive, unsafe-to-adopt config)', async () => {
+    const cwd = await gitRepo();
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    // Pin: the committed block must not claim "enabled" on this public repo (#426) —
+    // CI here runs entirely on GitHub-hosted runners (.github/workflows/verify.yml).
+    expect(committed.runner?.enabled).not.toBe(true);
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+    await writeScaffold(cwd);
+    const { gh } = fakeGh(routes({ view: PUBLIC_VIEW, runners: runnersResponse([{ id: 1, status: 'online', labels: FORGE_LINUX }]) }));
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec() });
+    // Never a false READY for a config that is both disabled and unsafe to enable here.
+    expect(res.ready).toBe(false);
+    expect(byName(res, 'runner-block')[0].level).toBe('fail');
+    expect(byName(res, 'runner-block')[0].msg).toMatch(/disabled/i);
+    expect(byName(res, 'private-repo')[0].level).toBe('fail');
+    expect(byName(res, 'private-repo')[0].msg).toMatch(/public|fork/i);
+  });
+
   it('runner block missing/disabled → NOT READY (runner-block fail)', async () => {
     const cwd = await gitRepo();
     await writeCfg(cwd, { enabled: false });
