@@ -417,6 +417,40 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     expect(check(`git status${String.fromCharCode(10)}git push --force origin main`).rule).toBe('force-push');
   });
 
+  it('AC-437.5: a CRLF line continuation joins too — the Windows-default line ending', () => {
+    // The same construct via the line ending Windows editors write by default,
+    // which makes it the LEAST adversarial input on this branch. Verified on
+    // this platform's own bash (both the Cygwin and Git-for-Windows builds):
+    // a bare CR is stripped mid-token (`a<CR>b` arrives as `ab`), so
+    // `\<CR><LF>` continues a line exactly as `\<LF>` does. Handling only LF
+    // left the entire class open through the platform's default.
+    const CR = String.fromCharCode(13);
+    const LF = String.fromCharCode(10);
+    const KC = B + CR + LF; // backslash + CRLF
+    const cases = [
+      [`git push --for${KC}ce origin main`, 'force-push'],
+      [`git push -${KC}f origin main`, 'force-push'],
+      [`git push --mir${KC}ror origin`, 'force-push'],
+      [`rm -r${KC}f /opt/danger`, 'recursive-delete'],
+      [`git reset --${KC}hard`, 'hard-reset'],
+      [`git branch -${KC}D main`, 'env-branch-delete'],
+      [`git push ${Q}--for${KC}ce${Q} origin main`, 'force-push'],
+      // ...and a bare CR joins mid-token on its own, no backslash needed.
+      [`git push --for${CR}ce origin main`, 'force-push'],
+      [`rm -r${CR}f /opt/danger`, 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+    // Single quotes still do not continue; a CRLF that is an ordinary line
+    // break still separates commands rather than joining them; and a safe rm
+    // target reassembled across a continuation is still safe.
+    expect(check(`git push ${S}--for${KC}ce${S} origin main`).blocked).toBe(false);
+    expect(check(`git status${CR}${LF}git push origin feat/x`).blocked).toBe(false);
+    expect(check(`git status${CR}${LF}git push --force origin main`).rule).toBe('force-push');
+    expect(check(`rm -rf te${KC}mp/x`).blocked).toBe(false);
+  });
+
   it('AC-437.5: a quoted flag token still blocks, across every affected rule', () => {
     const cases = [
       [`git push -${Q}f${Q} origin main`, 'force-push'],

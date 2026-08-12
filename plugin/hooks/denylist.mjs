@@ -163,7 +163,22 @@ const ANSI_C_ESCAPES = {
   r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
 };
 
-function normalizeShellText(command) {
+function normalizeShellText(rawCommand) {
+  // Carriage returns go FIRST, before any other rule looks at the text.
+  // Verified on this platform's own bash (both the Cygwin and the
+  // Git-for-Windows/MSYS2 builds): a bare CR is stripped mid-token (`a\rb`
+  // arrives as `ab`), and consequently `\<CR><LF>` is a line continuation
+  // exactly as `\<LF>` is. Windows editors write CRLF by default, so a command
+  // wrapped over two lines and saved normally hit this — the same
+  // split-instead-of-join miss the newline rule below exists to prevent, via
+  // the platform's default line ending. Handling it here rather than adding a
+  // CRLF case to every rule keeps it to one line and cannot be forgotten by
+  // the next branch someone adds.
+  //
+  // A Linux bash keeps a literal CR instead. Stripping it there can only JOIN
+  // tokens the shell would have kept apart, i.e. match more, never less — the
+  // safe direction — and a CR cannot spell part of a flag either way.
+  const command = rawCommand.replace(/\r/g, '');
   let out = '';
   let quote = null;    // the active quote character, or null
   let ansiC = false;   // the active single-quote region was opened as `$'…'`
