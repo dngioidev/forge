@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ALLOWED_COMMAND_PREFIXES, isAllowedCommand } from '../../plugin/scripts/lib/allowed-commands.mjs';
+import { ALLOWED_COMMAND_PREFIXES, ARGUMENT_SENSITIVE_COMMANDS, isAllowedCommand } from '../../plugin/scripts/lib/allowed-commands.mjs';
 import { ALLOW } from '../../plugin/scripts/autopilot/perms.mjs';
 import { splitSegments } from '../../plugin/scripts/lib/shell-split.mjs';
 
@@ -19,6 +19,13 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
   it('AC-429.2: isAllowedCommand() allows every listed prefix used bare or with trailing args', () => {
     for (const prefix of ALLOWED_COMMAND_PREFIXES) {
       expect(isAllowedCommand(prefix, { segments: splitSegments }), prefix).toBe(true);
+      if (ARGUMENT_SENSITIVE_COMMANDS.includes(prefix)) {
+        // Argument-sensitive prefixes deliberately do NOT accept an arbitrary
+        // flag — that is the whole point of the guard (an unknown flag could be
+        // an abbreviation of a destructive one). Covered by its own tests below.
+        expect(isAllowedCommand(`${prefix} --flag value`, { segments: splitSegments }), prefix).toBe(false);
+        continue;
+      }
       expect(isAllowedCommand(`${prefix} --flag value`, { segments: splitSegments }), prefix).toBe(true);
     }
   });
@@ -79,6 +86,24 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
       'git push --delete origin some-branch',
       'git push origin :some-branch',              // the colon-deletion form
       'git push --force-with-lease origin feat/x', // a force op: a human should see it
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
+  it('AC-429.3: an ABBREVIATED destructive flag cannot reach allow — the guard enumerates safe args, not dangerous ones', () => {
+    // The decisive reason the guard is a positive model. git's parse-options
+    // accepts unambiguous long-option abbreviations, so `--mir` IS `--mirror`
+    // and `--del` IS `--delete`. Any deny-list of dangerous spellings would
+    // need an entry per abbreviation (--mir, --mirr, --mirro, ...) and could
+    // never be complete; enumerating the safe arguments is finite and closed.
+    for (const cmd of [
+      'git push --mir origin',
+      'git push --mirr origin',
+      'git push --mirro origin',
+      'git push --del origin some-branch',
+      'git push --dele origin some-branch',
+      'git push --recurse-submodules=on-demand origin main', // simply unknown-to-us
     ]) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
     }

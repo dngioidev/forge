@@ -113,14 +113,23 @@ Three of those spellings were found missing across two successive review
 rounds. The *pattern* is the real finding: `denylist.mjs` self-describes as "a
 tripwire ... not a security boundary", and an allowlist layered on top
 converts every one of its gaps into a **silent** approve rather than a prompt.
-So `allowed-commands.mjs` now treats `git push` as argument-sensitive: only a
-plain push (`git push`, `git push origin <branch>`, `-u`/`--set-upstream`) is
-auto-allowed; force / refspec / deletion syntax falls to `ask` even when the
-denylist did not recognise that spelling. Deliberately redundant with the
-denylist — if a fifth spelling appears, the failure mode is a prompt, not a
-silent history rewrite. Its test is written to keep passing even if a denylist
-rule regressed. Side effect: `--force-with-lease` now asks (permitted, but a
-human sees it).
+Decisively, enumerating dangerous spellings cannot work here at all: git's
+parse-options accepts **unambiguous long-option abbreviations**, so
+`git push --mir` is `--mirror` and `git push --del` is `--delete`. Verified
+against the branch — both reached `allow` under the first, deny-shaped version
+of this guard. A dangerous-flag list would need `--mir`, `--mirr`, `--mirro`,
+… and still never be complete.
+
+So `allowed-commands.mjs` treats `git push` as argument-sensitive with a
+**positive** guard: auto-allow only when every argument is a known-safe flag
+(`-u`/`--set-upstream`, `-q`/`--quiet`, `-v`/`--verbose`, `--dry-run`,
+`--porcelain`, `--progress`/`--no-progress`) or a plain remote/ref token (no
+leading `-` or `+`, no `:`). Anything else asks — abbreviations, and any flag
+git adds in future. Deliberately redundant with the denylist; the test is
+written to keep passing even if a denylist rule regressed. Side effect:
+`--force-with-lease` asks — permitted, but a human sees it.
+`ARGUMENT_SENSITIVE_COMMANDS` is exported so tests reason about the set rather
+than hardcoding it twice.
 
 **Files:** plugin/scripts/lib/allowed-commands.mjs, tests/lib/allowed-commands.test.mjs
 

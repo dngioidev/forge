@@ -348,14 +348,24 @@ a plain `--force`.
 those spellings were found missing across successive review rounds — and
 because `denylist.mjs` describes itself as *"a tripwire for a few
 known-catastrophic commands, not a security boundary"* — an allowlist layered
-on top would turn every remaining denylist gap into a silent approve. So
-`git push` is treated as **argument-sensitive**: only a plain push
-(`git push`, `git push origin <branch>`, `-u`/`--set-upstream`) is
-auto-approved, and anything carrying force, refspec, or deletion syntax falls
-to `ask` **even if the denylist did not recognise that particular spelling**.
-This is deliberately redundant with the denylist: if a fifth force-push
-spelling turns up, the failure mode is a prompt, not a silent history rewrite.
-It also means `--force-with-lease` asks — permitted, but a human sees it.
+on top would turn every remaining denylist gap into a silent approve rather
+than a prompt. So `git push` is treated as **argument-sensitive**, and the
+guard is a **positive** model: it enumerates the arguments that are safe, not
+the ones that are dangerous. Only a plain push auto-approves — `git push`,
+`git push <remote> <branch>`, and a short list of inert flags
+(`-u`/`--set-upstream`, `-q`/`--quiet`, `-v`/`--verbose`, `--dry-run`,
+`--porcelain`, `--progress`/`--no-progress`). **Any** other argument falls to
+`ask`.
+
+That direction is not stylistic. git's parse-options accepts **unambiguous
+long-option abbreviations**, so `git push --mir` *is* `--mirror` and
+`git push --del` *is* `--delete`. A deny-list of dangerous spellings would need
+a separate entry for `--mir`, `--mirr`, `--mirro`, … and could never be
+complete; the set of *safe* arguments is finite and closed. The practical
+guarantee: an unrecognised flag — an abbreviation, or a flag git adds in some
+future version — costs a prompt, never a silent history rewrite. It also means
+`--force-with-lease` asks: permitted by the denylist as the sanctioned safe
+alternative, but still a force operation, so a human sees it.
 
 **A residual gap this fix cannot close from forge's side.** The spike verified
 that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)

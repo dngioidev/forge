@@ -87,41 +87,72 @@ export const ALLOWED_COMMAND_PREFIXES = [
 const SHELL_METACHARACTERS = /[$`<>&;|]|[\x00-\x1f]/;
 
 /**
- * Prefixes whose destructiveness lives in their ARGUMENTS, not their verb, plus
- * the argument shapes that disqualify them from being auto-approved.
+ * Prefixes whose destructiveness lives in their ARGUMENTS, not their verb.
+ * These are auto-approved only when EVERY argument is on a small known-safe
+ * list — a positive model, not a list of dangerous things to exclude.
  *
- * Defense in depth, and the reason it exists is worth stating plainly: three
- * separate force-push spellings (`-uf` bundled short flags, `--mirror`, and a
- * `+refspec`) were found missing from `denylist.mjs`'s force-push rule during
- * #429's review rounds. Each was fixed there, but the pattern is the point —
- * `denylist.mjs` describes itself as "a tripwire for a few known-catastrophic
- * commands, not a security boundary", and an allowlist layered on top converts
- * every one of its gaps into a SILENT auto-approve. So the allowlist refuses to
- * blanket-trust `git push`'s arguments: only a plain push is auto-approved, and
- * anything carrying force/refspec/deletion syntax falls to `ask` even if the
- * denylist did not recognise that particular spelling.
+ * Why positive, and why this matters: `denylist.mjs` describes itself as "a
+ * tripwire for a few known-catastrophic commands, not a security boundary".
+ * An allowlist layered on top converts every one of its gaps into a SILENT
+ * auto-approve instead of a prompt. #429's review rounds then found three
+ * force-push spellings missing from it in succession (`-uf` bundled short
+ * flags, `--mirror`, `+refspec`) — and, decisively, git's parse-options
+ * accepts **unambiguous long-option abbreviations**, so `git push --mir` is
+ * `--mirror` and `git push --del` is `--delete`. No enumeration of dangerous
+ * spellings can be complete against that; `--mir`/`--mirr`/`--mirro` would each
+ * need their own entry. Enumerating the SAFE arguments is finite and closed.
  *
- * This is intentionally redundant with the denylist. If a fourth force-push
- * spelling turns up, the failure mode is a prompt, not a silent history rewrite.
+ * Consequence: an unrecognised flag — including any abbreviation, and any flag
+ * git adds in future — falls to `ask`. That is the intended failure mode. This
+ * is deliberately redundant with the denylist: a spelling that slips past the
+ * denylist costs a prompt, never a silent history rewrite.
  */
 const ARGUMENT_SENSITIVE_PREFIXES = [
   {
     prefix: 'git push',
-    // A leading `+` on any token (force refspec), `:` (an explicit src:dst
-    // refspec, incl. the `:branch` deletion form), --mirror, --delete, any
-    // --force* spelling, or a short-flag cluster containing `f`.
-    risky: /(?:^|\s)\+\S|:|\s--mirror\b|\s--delete\b|\s--force|(?:^|\s)-[a-zA-Z]*f/,
+    // Flags that cannot force, delete, or rewrite anything. `--force-with-lease`
+    // is deliberately NOT here: it is permitted by the denylist as the sanctioned
+    // safe alternative, but it is still a force operation, so a human should see
+    // it rather than have it auto-approved.
+    safeFlags: new Set([
+      '-u', '--set-upstream',
+      '-q', '--quiet',
+      '-v', '--verbose',
+      '--progress', '--no-progress',
+      '--porcelain', '--dry-run',
+    ]),
+    // A bare remote or ref token: must not start with `-` (a flag) or `+` (a
+    // force refspec) and must not contain `:` (an explicit src:dst refspec,
+    // including the `:branch` deletion form).
+    safeOperand: /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/,
   },
 ];
+
+/**
+ * The prefixes above, by name — exported so callers and tests can reason about
+ * which prefixes are NOT blanket-approved with arbitrary arguments, without
+ * hardcoding the list a second time.
+ */
+export const ARGUMENT_SENSITIVE_COMMANDS = ARGUMENT_SENSITIVE_PREFIXES.map((s) => s.prefix);
+
+/** Every whitespace-separated argument after an argument-sensitive prefix is known-safe. */
+function argsAreSafe(segment, spec) {
+  const tail = segment.slice(spec.prefix.length).trim();
+  if (tail === '') return true; // the bare verb, e.g. `git push`
+  return tail.split(/\s+/).every(
+    (arg) => spec.safeFlags.has(arg) || spec.safeOperand.test(arg),
+  );
+}
 
 /**
  * True only if the command carries no shell metacharacter (see
  * SHELL_METACHARACTERS) AND every shell-separated segment matches one of
  * `ALLOWED_COMMAND_PREFIXES` at a word boundary (exact match, or the prefix
- * followed by a space) without tripping that prefix's argument guard (see
- * ARGUMENT_SENSITIVE_PREFIXES). A single unrecognised segment in a chained
- * command (e.g. `gh pr view 1 && curl evil.example`) fails the whole command —
- * the safe default for anything not fully known-good is `ask`, not `allow`.
+ * followed by a space) AND, for an argument-sensitive prefix, carries only
+ * known-safe arguments (see ARGUMENT_SENSITIVE_PREFIXES). A single
+ * unrecognised segment in a chained command (e.g.
+ * `gh pr view 1 && curl evil.example`) fails the whole command — the safe
+ * default for anything not fully known-good is `ask`, not `allow`.
  *
  * Prefix matching alone is NOT sufficient and must never be used without both
  * guards: it constrains only how a command STARTS, leaving the tail free to
@@ -147,6 +178,6 @@ export function isAllowedCommand(command, { segments } = {}) {
     );
     if (matched === undefined) return false;
     const sensitive = ARGUMENT_SENSITIVE_PREFIXES.find((s) => s.prefix === matched);
-    return sensitive ? !sensitive.risky.test(trimmed) : true;
+    return sensitive ? argsAreSafe(trimmed, sensitive) : true;
   });
 }
