@@ -590,13 +590,46 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     expect(check('git push --forc{x..x} origin main').blocked).toBe(false);
   });
 
-  it('AC-437.7: the long-word cost bound does not become a hiding place', () => {
-    // A very long word drops to a share of one to keep expansion linear. That
-    // must not turn into a bypass: every alternative is still represented, so
-    // padding a group with hundreds of kilobytes of junk to buy the cheap path
-    // does not hide the dangerous alternative sitting beside it.
+  it('AC-437.7: the cost bound does not become a hiding place', () => {
+    // Two earlier bounds each turned into one, so this pins the shapes that
+    // broke them. A padding group followed by a COMPLETING group is the case
+    // that killed the "you cannot glue a flag onto padding and still have a
+    // clean token" reasoning — the padding alternative can expand to EMPTY,
+    // leaving the completing group forming the flag on its own.
+    const pad = 'X'.repeat(9000);
+    expect(check(`git push --forc{${pad},}{e,} origin main`).rule).toBe('force-push');
+    expect(check(`rm -r{${pad},}{f,} /opt/danger`).rule).toBe('recursive-delete');
+    expect(check(`git branch -{${pad},}{D,} main`).rule).toBe('env-branch-delete');
+    expect(check(`git reset --{${pad},}{hard,}`).rule).toBe('hard-reset');
+    // ...and a single group padded with junk beside the dangerous alternative.
     expect(check(`git push {${'j'.repeat(200000)},--force} origin main`).rule).toBe('force-push');
     expect(check(`rm -{${'k'.repeat(20000)},rf} /opt/danger`).rule).toBe('recursive-delete');
+  });
+
+  it('AC-437.7: a flag spelled across MANY sequential groups in a short word is caught', () => {
+    // A word-COUNT budget covered only log2(budget) sequential two-way groups,
+    // so a 47-character argument spelling a flag across nine of them expanded
+    // fine in bash and was never generated here. Counting generated CHARACTERS
+    // instead makes a short word cheap to expand fully however many groups it
+    // has, which is the property this pins.
+    expect(check('rm --{r,Z}{e,Z}{c,Z}{u,Z}{r,Z}{s,Z}{i,Z}{v,Z}{e,Z} -f /opt/danger').rule).toBe('recursive-delete');
+    expect(check('git push --{f,Z}{o,Z}{r,Z}{c,Z}{e,Z} origin main').rule).toBe('force-push');
+    expect(check('git push --{m,Z}{i,Z}{r,Z}{r,Z}{o,Z}{r,Z} origin').rule).toBe('force-push');
+  });
+
+  it('AC-437.7: an oversized command neither throws nor skips the rules', () => {
+    // Per-word budgets let a few hundred separately-affordable words add up to
+    // more generated text than the engine will hold in one string. The throw
+    // escaped check() — documented never to throw, and imported directly by
+    // the agy shim — and the process-level fail-open then let the command run
+    // UNCHECKED. Worse than any spelling bypass: it needs no cleverness, and
+    // the destructive command need not be hidden at all. Pinned here with that
+    // command spelled completely literally.
+    const pad = Array.from({ length: 320 }, () => `${'y'.repeat(8000)}${'{a,b}'.repeat(8)}`).join(' ');
+    expect(() => check(`echo ${pad}`)).not.toThrow();
+    expect(check(`git push --force origin main ; echo ${pad}`).rule).toBe('force-push');
+    expect(check(`rm -rf /opt/danger ; echo ${pad}`).rule).toBe('recursive-delete');
+    expect(check(`echo ${pad}`).blocked).toBe(false);
   });
 
   it('AC-437.5: a quoted flag token still blocks, across every affected rule', () => {
