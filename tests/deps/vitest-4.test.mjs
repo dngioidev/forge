@@ -32,18 +32,20 @@ describe('AC-339.1: vitest is on the 4.x major, and the Windows agy-emit slowdow
   });
 
   it('AC-339.1: the spawn-heavy agy-deny emit case fires its independent child processes concurrently, not serially', async () => {
-    // The root-cause fix for the ~3x Windows slowdown (six sequential `node` spawns,
-    // each paying Windows' expensive CreateProcess cost on the critical path):
-    // run the six independent spawns concurrently. This guards against someone
-    // reverting to sequential awaits and silently reintroducing the timeout risk.
+    // The root-cause fix for the ~3x Windows slowdown (originally six sequential
+    // `node` spawns, each paying Windows' expensive CreateProcess cost on the
+    // critical path; #429 added a seventh independent case for the new
+    // allow/ask default): run the independent spawns concurrently. This guards
+    // against someone reverting to sequential awaits and silently reintroducing
+    // the timeout risk.
     const test = await readFile(join(repoRoot, 'tests', 'agy', 'emit.test.mjs'), 'utf8');
     const caseText = test.slice(
       test.indexOf("it('AC-289.2: denies force-push"),
       test.indexOf("it('AC-289.2: fails OPEN"),
     );
     expect(caseText).toContain('Promise.all([');
-    // exactly one `await` drives all six runNode() spawns (the Promise.all), not six.
+    // exactly one `await` drives all runNode() spawns (the Promise.all), not one per spawn.
     expect((caseText.match(/await runNode\(/g) ?? []).length).toBe(0);
-    expect((caseText.match(/runNode\(/g) ?? []).length).toBe(6);
+    expect((caseText.match(/runNode\(/g) ?? []).length).toBe(7);
   });
 });

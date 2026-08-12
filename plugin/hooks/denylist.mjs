@@ -21,8 +21,37 @@ const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 export const RULES = [
   {
     name: 'force-push',
-    test: (c) => /\bgit\b[^\n]*\bpush\b/.test(c) && /(\s--force\b(?!-with-lease)|\s-f\b)/.test(c),
-    msg: 'git push --force/-f rewrites published history',
+    // git has FOUR documented ways to force-update a published ref, and this
+    // rule historically matched only the first two spellings (#429). Each of
+    // the others was a real forced push that slipped through — and, once the
+    // #429 allowlist began granting `allow` to anything starting `git push `,
+    // slipped through *silently*. All four:
+    //   1. long   `--force`      (but NOT --force-with-lease/--force-if-includes,
+    //                             the sanctioned safer idioms)
+    //   2. short  `-f`, INCLUDING bundled clusters — git's parse-options bundles
+    //             short booleans the way `git commit -am` does, so `git push -uf`
+    //             forces just as much as `-f`
+    //   3. `--mirror` — force-updates EVERY ref under refs/ and DELETES remote
+    //             refs absent locally; strictly worse than a single --force
+    //   4. a leading `+` on the refspec (`git push origin +main`, `+src:dst`) —
+    //             documented force syntax, previously caught only by accident
+    //             when a protected-branch name happened to appear (env-branch-
+    //             delete's `:` + PROTECTED_BRANCHES), so `+trunk:trunk` sailed past
+    // Short-flag collection uses the same technique as recursive-delete below:
+    // the `(?:^|\s)-` anchor keeps long `--force-*` flags and mid-word dashes
+    // (`feat-f`) out of the cluster so neither can spoof (or dodge) a short flag.
+    test: (c) => {
+      if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
+      if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
+      if (/\s--mirror\b/.test(c)) return true;
+      if (/(?:^|\s)\+\S/.test(c)) return true;
+      // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
+      // -f and really does force-update (verified against live git), but an
+      // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
+      const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z0-9]+)/g) || []).join('');
+      return /f/.test(shortFlags);
+    },
+    msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
   {
     name: 'env-branch-delete',
@@ -51,6 +80,10 @@ export const RULES = [
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) — the `(?:^|\s)-`
       // anchor keeps GNU `--recursive`/`--force` (double dash) and mid-word dashes
       // (`file-r.txt`) out of this bucket so they can't spoof a short flag.
+      // Deliberately `[a-zA-Z]` where force-push above uses `[a-zA-Z0-9]`: git
+      // has numeric short flags (`-4`) that can bundle with `-f`, `rm` has none,
+      // so widening here would buy nothing. Not an oversight — #437 tracks
+      // extracting one shared flag-cluster helper for both rules.
       const shortFlags = (c.match(/(?:^|\s)-([a-zA-Z]+)/g) || []).join('');
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.

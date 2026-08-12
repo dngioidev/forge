@@ -265,9 +265,10 @@ the emitted package includes two thin shims:
 - **`hooks/agy-deny.mjs`** (PreToolUse) — reads agy's stdin
   (`toolCall.args.CommandLine`), calls forge's host-agnostic `check()` from
   `denylist.mjs`, and emits agy's decision shape:
-  `{ "decision": "deny", "reason": "..." }` on a block, `{ "decision": "allow" }`
-  otherwise. It **fails open** (allow) on any internal error — a safety hook must
-  never wedge the loop.
+  `{ "decision": "deny", "reason": "..." }` on a denylist hit,
+  `{ "decision": "allow" }` for a known-good command (see permissions section
+  below), `{ "decision": "ask" }` for everything else. It **fails open**
+  (allow) on any internal error — a safety hook must never wedge the loop.
 - **`hooks/agy-capture.mjs`** (PostToolUse) — appends a **metadata-only** journal
   line (timestamp, host, step index, a bounded error string — never raw command
   output) to `<workspace>/.forge/agy-journal.jsonl`, then emits `{}`. It is
@@ -282,6 +283,161 @@ its stdin. AC-289.3 anchored the guard to the basename
 (`/(^|[\\/])denylist\.mjs$/`), but the shim is deliberately kept named
 `agy-deny.mjs` as belt-and-braces so `check()` can be imported with zero side
 effects.
+
+### Permissions: the allow / ask / deny default (#429)
+
+**Default is `ask`, not `allow`.** Every non-denylisted `run_command` call an
+agy-hosted forge session makes now prompts the human unless it matches a
+known-good command prefix. This was **not** always true: prior to #429,
+`agy-deny.mjs` returned `{ "decision": "allow" }` for anything that wasn't an
+explicit denylist hit. Per agy's own shipped hook-contract doc (v1.1.7,
+`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`),
+`"allow"` **automatically allows the tool execution and suppresses agy's own
+prompt** — it does not mean "no objection, agy still asks." So that old
+default was a live, silent blanket pre-authorization of every shell command a
+human would otherwise be asked about
+([spike](../spikes/2026-08-12-agy-approval-semantics.md), finding
+[#434](https://github.com/dngioidev/forge/issues/434)).
+
+**This is a deliberate behaviour change: existing agy sessions get *more*
+prompting, never less.** A session that was silent before #429 will start
+asking about anything not on the allowlist below. That is the fix working as
+intended, not a regression.
+
+**The known-good allowlist** is single-sourced in
+`plugin/scripts/lib/allowed-commands.mjs` and shared, unforked, with the
+Claude host's own `.claude/settings.local.json` allowlist
+(`plugin/scripts/autopilot/perms.mjs`) — extend the prefixes there, not in
+either host-specific file. It covers the base `node` script-dispatcher tier,
+`pnpm verify`, and the `gh`/`git` verbs forge agents type directly (PR/issue
+CRUD, push/commit/checkout/rebase/fetch, and read-only `git status`/`diff`/
+`log`/`rev-parse`). A command with **any** shell-separated segment that isn't
+on the list falls back to `ask`, not `allow`.
+
+Matching a prefix is necessary but **not sufficient**. A prefix constrains only
+how a command *starts*, so the allowlist additionally rejects any command
+carrying shell syntax that would let it do something other than run that verb —
+command substitution (`$(…)`, backticks), redirection (`>`, `<`), `&`, and the
+other separators. Without that guard `git status > important.txt` would turn an
+explicitly read-only verb into an arbitrary-file overwrite, and
+`git push $(…)` into arbitrary code execution — both silently pre-authorized.
+Anything carrying a metacharacter asks, including a chain of individually
+allowlisted verbs such as `git fetch && git rebase`: deliberately conservative,
+because one extra prompt is far cheaper than one missed execution vector.
+
+**The denylist always outranks the allowlist.** `agy-deny.mjs` checks the
+denylist first, unconditionally, before ever consulting the allowlist — a
+command that is both allowlisted (e.g. `git push`) and denylisted (e.g. a
+force-push) is **denied**. This precedence is pinned by a dedicated test
+(`tests/hooks/agy-deny.test.mjs`, "the denylist strictly outranks the
+allowlist").
+
+Precedence is only as good as the denylist's own coverage, and review of this
+fix found the force-push rule was matching only two of git's **four**
+documented force-update spellings. All four now block: `--force`; a bundled
+short `-f` (git bundles short booleans as in `git commit -am`, so `git push
+-uf` forces); `--mirror` (force-updates every ref and deletes remote refs
+absent locally); and a leading `+` on the refspec (`git push origin +trunk`).
+Each was harmless while the hook allowed everything anyway — and each became a
+silent auto-approved history rewrite the moment the allowlist began granting
+`allow` to anything beginning `git push `. The safe idioms
+`--force-with-lease` and `--force-if-includes` are correctly **not** treated as
+a plain `--force`.
+
+**The allowlist does not blanket-trust arguments either.** Because three of
+those spellings were found missing across successive review rounds — and
+because `denylist.mjs` describes itself as *"a tripwire for a few
+known-catastrophic commands, not a security boundary"* — an allowlist layered
+on top would turn every remaining denylist gap into a silent approve rather
+than a prompt. So the seven verbs whose danger lives in their **arguments**
+carry a guard, and the guard is a **positive** model: it enumerates the
+arguments that are safe, not the ones that are dangerous.
+
+Four of the seven are arbitrary **code execution** behind an innocuous-looking
+verb — `node -e`, `pnpm verify --reporter=<path>`, `git rebase -x`,
+`git fetch --upload-pack=<program>` — and **none of them needs a shell
+metacharacter**, so the guard above cannot see them. Each was found by a
+separate adversarial review round of this very fix. That is the argument for
+the positive model, and the question to ask before adding any verb to the
+allowlist: not *"is this verb safe"* but *"can any argument make it run
+something else, read or write an arbitrary path, or rewrite published
+history"*.
+
+| verb | auto-approved | asks |
+| --- | --- | --- |
+| `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
+| `pnpm verify` | the bare command, nothing else | any argument — pnpm forwards them to `vitest`, whose `--reporter=<path>` / `--config=<path>` `import()`s that module at startup |
+| `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
+| `git fetch` | plain refs/remotes and inert flags (`--all`, `--tags`, `--prune`, `-q`, `-v`) | `--upload-pack=<program>` and its abbreviations — overrides the remote helper and executes that program |
+| `git rebase` | plain refs and flow control (`--continue`, `--abort`, `--skip`, `--onto`, `-q`, `--autostash`) | `-x` / `--exec` (runs arbitrary shell after every replayed commit), `-i` |
+| `git checkout` | branch **creation** only — `-b <name>`, optionally from a start point | everything else, including plain `git checkout main` (see below) |
+| `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |
+
+That direction is not stylistic. git's parse-options accepts **unambiguous
+long-option abbreviations**, so `git push --mir` *is* `--mirror` and
+`git push --del` *is* `--delete` — both verified against live git. A deny-list
+of dangerous spellings would need a separate entry for `--mir`, `--mirr`,
+`--mirro`, … and could never be complete; the set of *safe* arguments is finite
+and closed. The practical guarantee: an unrecognised flag — an abbreviation, or
+a flag a tool adds in some future version — costs a prompt, never a silent
+destructive action. It also means `--force-with-lease` asks: permitted by the
+denylist as the sanctioned safe alternative, but still a force operation, so a
+human sees it.
+
+`git checkout` is the strictest of the seven, and deliberately so:
+`git checkout <name>` is **ambiguous** — git resolves `<name>` as a ref if one
+exists and otherwise as a *path*, and the path form discards that path's
+uncommitted changes irrecoverably. Nothing in the command string separates the
+two: `main` is a ref, `package.json` is a file, `src` could be either, and no
+heuristic on dots, slashes or extensions distinguishes them reliably. Rather
+than guess, only branch creation auto-approves. Plain `git checkout main` asks
+— about one extra prompt per ticket, in exchange for closing the whole class
+instead of half-closing it.
+
+Everything else on the allowlist is safe with any argument (`git status`,
+`gh issue view`, `gh pr create`, …) and is deliberately not guarded.
+
+Two accepted limits, recorded rather than glossed. `gh pr create --body-file`
+and `gh issue comment --body-file` take an arbitrary local path and publish its
+contents — that is the mechanism forge uses for every PR body and trail
+comment, so it stays unguarded by design; treat it as "this session can publish
+any file it can read", not as an oversight.
+
+And the `node` guard checks that a **script path** was given, not *which*
+script, so `node <any-on-disk-path>` still auto-approves. Executing an arbitrary on-disk script is the capability that
+allowlist entry exists to grant — it is the single entry covering forge's whole
+script tier — so narrowing it to forge's own tree is tracked as
+[#438](https://github.com/dngioidev/forge/issues/438) rather than quietly
+implied here. It compounds with
+[#436](https://github.com/dngioidev/forge/issues/436) (file writes are unhooked
+on agy): fixing either weakens the write-then-execute chain.
+
+Note the guards are **agy-side only**. Claude's `.claude/settings.local.json`
+grammar expresses `Bash(git checkout:*)` — a prefix glob with no way to
+constrain arguments — so the Claude host still grants the broader form. The
+*command set* is single-sourced (`ALLOWED_COMMAND_PREFIXES`); the argument
+guards are an additional narrowing the agy hook can enforce and Claude's
+permission grammar cannot.
+
+**A residual gap this fix cannot close from forge's side.** The spike verified
+that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)
+**fails open at the host level**: if `agy-deny.mjs` doesn't answer within 10
+seconds, agy proceeds as if it had said `allow`, regardless of what the script
+would actually have returned. `agy-deny.mjs` stays a synchronous, cheap regex
+check specifically so 10 seconds is never a realistic ceiling in normal
+operation, but a sufficiently slow or hung Node startup (system load, a
+transient stall) could still hit it. There is nothing forge can configure on
+its own side to make agy's host-level timeout fail closed instead — this is
+stated here plainly rather than implying the denylist is airtight when it
+isn't.
+
+**Only `run_command` is hooked today.** agy's hook matcher supports arbitrary
+tool-name patterns (the spike confirmed a `"*"` matcher also gates
+`write_to_file`), but forge's `hooks.json` scopes both hooks to `run_command`
+only — file writes/edits are unhooked. Widening the matcher is tracked as a
+follow-up rather than folded into this fix, because a `"*"` matcher runs the
+hook on **every** tool call, which raises the stakes of the timeout finding
+above (more calls now depend on staying under the 10s ceiling).
 
 ---
 
@@ -372,12 +528,21 @@ only the Claude and Antigravity columns are proven.
 | Autopilot unattended auto-merge on green | Full | Stops at green PR (policy) | **Stops at green PR** (policy) |
 | Background monitors (ci-watch/decisions-watch) | Full | Partial (session events / cron) | **Partial** |
 | Statusline | Full | Lost (no API) | **Lost** (no API) |
+| Command pre-authorization (allowlist) | Full (`.claude/settings.local.json`, opt-in print-only) | — | **Partial** (hook-mediated `ask`/`allow`/`deny`, single-sourced with Claude's list; host-level hook timeout fails open — [#429](https://github.com/dngioidev/forge/issues/429)) |
 
 ### What actually differs, honestly
 
-Everything **load-bearing** reaches Full parity on agy: board law, all seven
-gates, graph RAG, release readiness, the safety denylist, journal capture,
-parallel subagent fan-out, and slash-command UX. The only differences are:
+Board law, all seven gates, graph RAG, release readiness, the safety
+denylist, journal capture, parallel subagent fan-out, and slash-command UX
+reach Full parity on agy. **Command pre-authorization does not** — this used
+to be claimed as Full-parity-by-omission (the matrix simply didn't have a row
+for it) while forge shipped an agy hook that was actually strictly *more*
+permissive than the Claude host ([#429](https://github.com/dngioidev/forge/issues/429),
+[#434](https://github.com/dngioidev/forge/issues/434)). See the
+[permissions section](#permissions-the-allow--ask--deny-default-429) above for
+the current default, the shared allowlist, and the honest gap that fix could
+not close (agy's host-level hook timeout fails open, independent of anything
+`agy-deny.mjs` returns). The remaining differences:
 
 1. **Auto-merge is deliberately Claude-only** — a policy line, not an engine
    limit. `autopilot_merge_bar` computes the merge decision on every host (a host

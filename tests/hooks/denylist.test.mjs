@@ -15,6 +15,79 @@ describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () =>
     expect(check('git push --force-with-lease origin feat/1-x').blocked).toBe(false); // still allowed
   });
 
+  it('AC-429.3: a force-push spelled as a BUNDLED short flag blocks too (-uf / -fu, not just standalone -f)', () => {
+    // git's parse-options bundles short boolean options (the same mechanism as
+    // `git commit -am`), so these are real forced non-fast-forward updates. The
+    // old standalone-`\s-f\b` regex missed them, which mattered once #429's
+    // allowlist began granting a bare `allow` to anything starting `git push `.
+    for (const cmd of [
+      'git push -uf origin main',
+      'git push -fu origin main',
+      'git push -uf origin main --tags',
+      // Digit-interposed: `-4` is git's IPv4 flag, and bundling it with -f still
+      // forces. An [a-zA-Z]-only cluster scan misses it (verified on live git).
+      'git push -4f origin main',
+      'git push -6f origin main',
+    ]) {
+      expect(check(cmd).rule, cmd).toBe('force-push');
+    }
+    // and still blocks when buried in a chain
+    expect(check('git status && git push -uf origin main').rule).toBe('force-push');
+    // ...without false-positiving on the digit flags alone
+    expect(check('git push -4 origin main').blocked).toBe(false);
+  });
+
+  it('AC-429.3: --mirror is a force-update of every ref (and deletes remote refs absent locally) and blocks', () => {
+    expect(check('git push --mirror origin').rule).toBe('force-push');
+    expect(check('git push --mirror https://github.com/o/r.git').rule).toBe('force-push');
+  });
+
+  it('AC-429.3: a leading + on the refspec is documented force-push syntax and blocks on ANY branch name', () => {
+    // Previously caught only by ACCIDENT, and only when a protected-branch name
+    // happened to appear in the string (env-branch-delete's `:` +
+    // PROTECTED_BRANCHES). A +refspec to an ordinarily-named branch sailed past.
+    for (const cmd of [
+      'git push origin +main:main',            // was caught, but incidentally
+      'git push origin +trunk:trunk',          // was NOT caught
+      'git push origin +feature-x:feature-y',  // was NOT caught
+      'git push origin +develop',              // was NOT caught (no colon at all)
+      'git push origin +refs/heads/x:refs/heads/y',
+    ]) {
+      expect(check(cmd).rule, cmd).toBe('force-push');
+    }
+  });
+
+  it('AC-429.3: --force-if-includes is a SAFE companion idiom, not a plain --force', () => {
+    // git recommends `--force-with-lease --force-if-includes` together as the
+    // safe force-push. The old lookahead excluded only -with-lease, so the
+    // recommended pairing was denied as though it were a bare --force.
+    expect(check('git push --force-with-lease --force-if-includes origin feat/x').blocked).toBe(false);
+    expect(check('git push --force-if-includes origin feat/x').blocked).toBe(false);
+    // ...but a real --force alongside them is still a real force-push.
+    expect(check('git push --force --force-if-includes origin main').rule).toBe('force-push');
+  });
+
+  it('AC-429.3: the force-push widening does not false-positive on ordinary pushes', () => {
+    for (const cmd of [
+      'git push -u origin feat/x',           // -u alone, no force
+      'git push origin feature-f',           // mid-word dash in a branch name
+      'git push --set-upstream origin x',
+      'git push --follow-tags origin main',
+      'git push --quiet origin main',
+      'git push --force-with-lease origin x', // the sanctioned safe alternative
+      'git push origin HEAD:feat-x',          // a plain (non-+) refspec is not a force
+      'git push --tags origin',
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+    // Pre-existing, unrelated to the force-push rule: a refspec naming a
+    // protected branch trips env-branch-delete (its test is `:` + a protected
+    // name), so `git push origin HEAD:main` blocks under THAT rule. Asserted
+    // here so the distinction stays visible and this test isn't read as
+    // claiming every plain refspec passes.
+    expect(check('git push origin HEAD:main').rule).toBe('env-branch-delete');
+  });
+
   it('AC-B85.3: destructive command in one segment still blocks; benign chained segments do not', () => {
     expect(check('npm test && git reset --hard HEAD~1').rule).toBe('hard-reset');
     expect(check('git add -A && git clean -fdx').rule).toBe('git-clean-force');
