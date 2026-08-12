@@ -505,6 +505,15 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     const head = Array.from({ length: 20 }, (_, i) => `q${i}`).join(',');
     const tail = Array.from({ length: 20 }, (_, i) => `z${i}`).join(',');
     expect(check(`git push {${head},--force,${tail}} origin main`).rule).toBe('force-push');
+    // Padding far beyond the cap must not help either: the split is
+    // proportional, so every alternative keeps a representative.
+    const big = Array.from({ length: 200 }, (_, i) => `w${i}`).join(',');
+    expect(check(`git push --f{${big},orce} origin main`).rule).toBe('force-push');
+    expect(check(`rm -{${big},rf} /opt/danger`).rule).toBe('recursive-delete');
+    // ...including where TWO groups must BOTH take a non-first alternative,
+    // the case a per-branch share of one used to cut short.
+    const p30 = Array.from({ length: 30 }, (_, i) => `p${i}`).join(',');
+    expect(check(`git push --f{${p30},orc}{e,} origin main`).rule).toBe('force-push');
   });
 
   it('AC-437.7: a brace group that is neither a list nor a range is literal', () => {

@@ -312,8 +312,21 @@ const INNER_BRACE_GROUP = /\{([^{}]*)\}/g;
 /** `{a..e}` / `{1..9}`: bash expands a SEQUENCE with no comma anywhere. */
 const CHAR_RANGE = /^([A-Za-z])\.\.([A-Za-z])$/;
 const NUM_RANGE = /^(-?\d{1,7})\.\.(-?\d{1,7})$/;
-/** Hard cap on generated words, so a nested `{a,b}{a,b}…` cannot blow up. */
-const BRACE_BUDGET = 32;
+/**
+ * Cap on generated words, so a nested `{a,b}{a,b}…` cannot blow up.
+ *
+ * Sized honestly rather than minimally. Full brace coverage is exponential in
+ * the number of groups, so ANY finite bound can be exhausted by a deep enough
+ * construction — that is a property of the problem, not of this cap, and no
+ * value here makes it false. What the value does buy is that every realistic
+ * multi-group case is covered with room to spare: the budget is split across a
+ * group's alternatives, so a word needs several nested groups AND many
+ * alternatives each before a branch's share reaches one and stops expanding.
+ * Even the worst input costs about a millisecond, so the cap is set for
+ * coverage, not for speed. The residual gap is stated plainly in the PR rather
+ * than implied away.
+ */
+const BRACE_BUDGET = 256;
 /** Cap on one range's length; `{1..100000}` must not materialise. */
 const RANGE_CAP = 64;
 
