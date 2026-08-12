@@ -172,6 +172,17 @@ function normalizeShellText(command) {
   // emit a space rather than the character itself — splitSegments() is blind
   // to quoting and would otherwise split the command around it.
   const emit = (ch) => { out += SEPARATOR_CHARS.test(ch) ? ' ' : ch; };
+  // An ESCAPED character, i.e. one that appeared after a backslash. Almost all
+  // of them are just data and go through emit() — but a backslash-NEWLINE is
+  // bash's LINE CONTINUATION, and bash deletes BOTH bytes with no replacement,
+  // joining the words on either side into ONE token. Substituting a space (as
+  // emit() does for every other separator, correctly, since bash keeps those as
+  // literal data) would SPLIT that token instead, so `--for\<newline>ce` would
+  // normalise to `--for ce` while bash hands git a clean `--force`. That is a
+  // silent miss on an entirely mundane construct — a long command wrapped over
+  // several lines — not an adversarial one, which is what makes it worth the
+  // special case.
+  const emitEscaped = (ch) => { if (ch !== '\n') emit(ch); };
   // Every DECODED escape lands here. Anything that isn't printable ASCII
   // becomes an inert space: it cannot spell a flag, and it keeps this total —
   // String.fromCodePoint throws above U+10FFFF and `$'\UFFFFFFFF'` is
@@ -187,7 +198,7 @@ function normalizeShellText(command) {
       if (ch === '\\') {
         // Drop the backslash, consume AND emit what it escaped, so an escaped
         // quote can never be mistaken for a quoting delimiter.
-        if (next !== undefined) { emit(next); litDollar = next === '$'; i++; } else litDollar = false;
+        if (next !== undefined) { emitEscaped(next); litDollar = next === '$'; i++; } else litDollar = false;
         continue;
       }
       if (ch === '"' || ch === "'") {
@@ -267,9 +278,11 @@ function normalizeShellText(command) {
         continue;
       }
       // Inside double quotes a backslash is an escape only for this small set;
-      // inside ordinary single quotes it is always literal.
+      // inside ordinary single quotes it is always literal. Note the newline is
+      // IN that set: line continuation is honoured inside double quotes too, so
+      // this needs the same word-joining treatment as the unquoted branch.
       if (quote === '"' && /["$`\\\n]/.test(next)) {
-        emit(next);
+        emitEscaped(next);
         i++;
         continue;
       }

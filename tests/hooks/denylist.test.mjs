@@ -378,6 +378,44 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
   const S = String.fromCharCode(39); // '
   const B = String.fromCharCode(92); // \
   const D = String.fromCharCode(36); // $
+  const K = B + String.fromCharCode(10); // backslash + real newline: line continuation
+
+  it('AC-437.5: a LINE CONTINUATION joins the words it splits, rather than separating them', () => {
+    // The one escaped character bash does not keep as data. `\<newline>` is a
+    // line continuation: bash deletes BOTH bytes with no replacement and joins
+    // the flanking words into ONE token, so `--for\<newline>ce` reaches git as
+    // a clean `--force` (verified by printing the expanded argv). Substituting
+    // a space — right for every other escaped separator, since bash keeps
+    // those as literal data — split the token instead and the rule stopped
+    // matching. What makes this one worth its own case is that it needs no
+    // adversarial intent at all: it is just a long command wrapped over
+    // several lines.
+    const cases = [
+      [`git push --for${K}ce origin main`, 'force-push'],
+      [`git push --${K}force origin main`, 'force-push'],
+      [`git push -${K}f origin main`, 'force-push'],
+      [`git push --mir${K}ror origin`, 'force-push'],
+      [`rm -r${K}f /opt/danger`, 'recursive-delete'],
+      [`rm -${K}rf /opt/danger`, 'recursive-delete'],
+      [`git reset --${K}hard`, 'hard-reset'],
+      [`git branch -${K}D main`, 'env-branch-delete'],
+      // bash honours continuation inside DOUBLE quotes too.
+      [`git push ${Q}--for${K}ce${Q} origin main`, 'force-push'],
+      [`rm ${Q}-r${K}f${Q} /opt/danger`, 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+    // Inside SINGLE quotes a backslash is literal, so bash does NOT join —
+    // the argument stays a nonsense token git rejects, and must not block.
+    expect(check(`git push ${S}--for${K}ce${S} origin main`).blocked).toBe(false);
+    // Other escaped separators are still literal DATA, so they stay inert.
+    expect(check(`echo a${B};b`).blocked).toBe(false);
+    expect(check(`echo a${B}|b`).blocked).toBe(false);
+    // ...and a bare newline still separates commands, so a dangerous one on a
+    // later line is still seen.
+    expect(check(`git status${String.fromCharCode(10)}git push --force origin main`).rule).toBe('force-push');
+  });
 
   it('AC-437.5: a quoted flag token still blocks, across every affected rule', () => {
     const cases = [
