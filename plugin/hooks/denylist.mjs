@@ -307,34 +307,86 @@ function normalizeShellText(rawCommand) {
   return out;
 }
 
-/**
- * A brace group that can actually expand: it must contain a COMMA, and no
- * nested braces (so the innermost group matches first and recursion handles
- * the rest). Requiring the comma is what keeps `-f query='mutation{...}'` —
- * an ordinary `gh api` argument, and a case #85 already pins — from being
- * treated as an expansion, exactly as bash leaves it alone.
- */
-const BRACE_GROUP = /\{([^{}]*,[^{}]*)\}/;
+/** An INNERMOST brace group — no nested braces, so recursion handles the rest. */
+const INNER_BRACE_GROUP = /\{([^{}]*)\}/g;
+/** `{a..e}` / `{1..9}`: bash expands a SEQUENCE with no comma anywhere. */
+const CHAR_RANGE = /^([A-Za-z])\.\.([A-Za-z])$/;
+const NUM_RANGE = /^(-?\d{1,7})\.\.(-?\d{1,7})$/;
 /** Hard cap on generated words, so a nested `{a,b}{a,b}…` cannot blow up. */
 const BRACE_BUDGET = 32;
+/** Cap on one range's length; `{1..100000}` must not materialise. */
+const RANGE_CAP = 64;
 
 /**
- * Expand ONE word's brace groups into every word bash would produce, e.g.
- * `--forc{e,}` -> `--force --forc`. Bounded and non-recursive past the budget;
- * on exhaustion it returns what it has, which can only under-generate, so the
- * caller never sees a hang or a memory spike from hostile input.
+ * The alternatives a brace group expands to, or null if bash would leave it
+ * alone. Comma form OR range form — the range form matters because it needs no
+ * comma at all, so a comma-only check misses it entirely: `--forc{d..e}` really
+ * does hand git `--force` (verified against both shells here), and `-{e..f}`
+ * really does hand it `-f`.
+ *
+ * Returning null for everything else is what keeps `-f query='mutation{...}'`
+ * — an ordinary `gh api` argument that #85 already pins — literal, exactly as
+ * bash leaves it.
+ */
+function braceAlternatives(body) {
+  if (body.includes(',')) return body.split(',');
+  const chars = CHAR_RANGE.exec(body);
+  if (chars) {
+    const from = chars[1].codePointAt(0);
+    const to = chars[2].codePointAt(0);
+    const step = from <= to ? 1 : -1;
+    const out = [];
+    for (let c = from; out.length < RANGE_CAP; c += step) {
+      out.push(String.fromCharCode(c));
+      if (c === to) break;
+    }
+    return out;
+  }
+  const nums = NUM_RANGE.exec(body);
+  if (nums) {
+    const from = Number(nums[1]);
+    const to = Number(nums[2]);
+    const step = from <= to ? 1 : -1;
+    const out = [];
+    for (let n = from; out.length < RANGE_CAP; n += step) {
+      out.push(String(n));
+      if (n === to) break;
+    }
+    return out;
+  }
+  return null;
+}
+
+/**
+ * Expand ONE word's brace groups into the words bash would produce, e.g.
+ * `--forc{e,}` -> `--force --forc`.
+ *
+ * The budget is divided EVENLY across a group's alternatives rather than
+ * consumed first-come-first-served, and that detail is load-bearing: a
+ * first-come budget lets an attacker starve the expander deliberately. Pad a
+ * group with cheap alternatives ahead of the dangerous one — bash still
+ * delivers the dangerous one as a real standalone argument — and a
+ * first-come budget runs out before generating it. Splitting the budget
+ * guarantees every alternative is represented by at least one word, so no
+ * alternative's text can be dropped no matter where it sits or how many
+ * precede it. Depth is bounded implicitly: each level divides the budget, so
+ * nesting stops expanding once a branch's share reaches one.
  */
 function expandBraces(word, budget = BRACE_BUDGET) {
-  const m = BRACE_GROUP.exec(word);
-  if (!m || budget <= 1) return [word];
-  const pre = word.slice(0, m.index);
-  const post = word.slice(m.index + m[0].length);
-  const out = [];
-  for (const alt of m[1].split(',')) {
-    if (out.length >= budget) break;
-    out.push(...expandBraces(pre + alt + post, budget - out.length));
+  if (budget <= 1 || !word.includes('{')) return [word];
+  INNER_BRACE_GROUP.lastIndex = 0;
+  let m;
+  while ((m = INNER_BRACE_GROUP.exec(word)) !== null) {
+    const alts = braceAlternatives(m[1]);
+    if (alts === null) continue; // literal group (e.g. `{...}`), keep scanning
+    const pre = word.slice(0, m.index);
+    const post = word.slice(m.index + m[0].length);
+    const share = Math.max(1, Math.floor(budget / alts.length));
+    const out = [];
+    for (const alt of alts) out.push(...expandBraces(pre + alt + post, share));
+    return out.length > 0 ? out : [word];
   }
-  return out.length > 0 ? out : [word];
+  return [word];
 }
 
 /**

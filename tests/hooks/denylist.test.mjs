@@ -473,10 +473,44 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
-  it('AC-437.7: a brace group without a comma is literal, so ordinary brace use is untouched', () => {
-    // bash only expands a group containing a comma. Requiring one is what keeps
-    // `-f query='mutation{...}'` — an ordinary `gh api` argument that #85
-    // already pins — from being treated as an expansion.
+  it('AC-437.7: a brace RANGE expands too, and needs no comma at all', () => {
+    // The gap a comma-only check misses entirely. bash expands `{a..e}` and
+    // `{1..9}` as sequences with no comma anywhere, so a range can complete a
+    // flag just as a comma list can — verified against both shells here:
+    // `--forc{d..e}` really does hand git `--force`, `-{e..f}` a real `-f`.
+    const cases = [
+      ['git push --forc{d..e} origin main', 'force-push'],
+      ['git push -{e..f} origin main', 'force-push'],
+      ['git push --mirro{q..r} origin', 'force-push'],
+      ['git reset --har{c..d}', 'hard-reset'],
+      ['git branch -{C..D} main', 'env-branch-delete'],
+      ['rm -r{e..f} /opt/danger', 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+  });
+
+  it('AC-437.7: the expansion budget cannot be starved to hide an alternative', () => {
+    // The obvious attack on a capped expander: pad a group with cheap
+    // alternatives ahead of the dangerous one so the cap is reached before it
+    // is generated — while bash still delivers it as a real standalone
+    // argument. The budget is therefore split EVENLY across a group's
+    // alternatives rather than consumed first-come, so every alternative is
+    // represented no matter where it sits or how many precede it.
+    const many = Array.from({ length: 35 }, (_, i) => `q${i}`).join(',');
+    expect(check(`git push {${many},--force} origin main`).rule).toBe('force-push');
+    expect(check(`rm {${many},-rf} /opt/danger`).rule).toBe('recursive-delete');
+    // ...and the same with the dangerous alternative buried in the middle.
+    const head = Array.from({ length: 20 }, (_, i) => `q${i}`).join(',');
+    const tail = Array.from({ length: 20 }, (_, i) => `z${i}`).join(',');
+    expect(check(`git push {${head},--force,${tail}} origin main`).rule).toBe('force-push');
+  });
+
+  it('AC-437.7: a brace group that is neither a list nor a range is literal', () => {
+    // bash only expands a group containing a comma or forming a range.
+    // Recognising nothing else is what keeps `-f query='mutation{...}'` — an
+    // ordinary `gh api` argument that #85 already pins — from being expanded.
     for (const cmd of [
       'git push --for{ce} origin main',                                    // no comma: literal, git rejects
       `gh api graphql -f query=${S}mutation{...}${S}`,
@@ -484,6 +518,7 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
       'git push origin feat/{a,b}',                                        // real expansion, but only branch names
       'rm -rf node_modules/{a,b}',                                         // still a safe target
       'echo {1,2,3}',
+      'echo {1..5}',                                                       // a range, but harmless content
       `git commit -m ${Q}pick {a,b}${Q}`,
     ]) {
       expect(check(cmd).blocked, cmd).toBe(false);
@@ -499,6 +534,8 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
       `git push ${'{a,b}'.repeat(40)} origin main`,
       `rm -rf ${'{a,b,c,d}'.repeat(30)}`,
       `git push ${'{a,b}'.repeat(200)}`,
+      `git push {1..100000} origin main`,      // a range cap, not a list cap
+      `git push ${'{a..z}'.repeat(10)} origin main`,
     ]) {
       const started = Date.now();
       expect(() => check(cmd)).not.toThrow();
