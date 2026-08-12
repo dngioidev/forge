@@ -36,6 +36,72 @@ function shortFlagCluster(command, { alnum = false } = {}) {
   return (command.match(new RegExp(`(?:^|\\s)-(${charClass}+)`, 'g')) || []).join('');
 }
 
+/**
+ * Build the regex source for a long flag AND every unambiguous abbreviation of
+ * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
+ * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
+ * --mirror. `minLen` is the SHORTEST prefix that is unambiguous for that flag
+ * on that specific git subcommand. Every value used below was determined
+ * empirically against real git 2.55, not guessed: git refuses a prefix that
+ * could mean two options ("error: ambiguous option"), so the boundary differs
+ * per verb depending on which sibling flags that verb happens to have.
+ */
+function abbrev(word, minLen) {
+  let tail = '';
+  for (let i = word.length - 1; i >= minLen; i--) tail = `(?:${word[i]}${tail})?`;
+  return word.slice(0, minLen) + tail;
+}
+
+/**
+ * A long flag as a whole token: `--<flag-or-unambiguous-abbreviation>` at a
+ * token start, not followed by further word characters or a hyphen. That
+ * trailing `(?![\w-])` is what stops an abbreviation pattern from firing on a
+ * LONGER, different flag that merely shares its prefix — `--m…` must not match
+ * `--max-count`, and a `--force` pattern must not match `--force-with-lease`.
+ */
+const longFlag = (word, minLen) => new RegExp(`(?:^|\\s)--${abbrev(word, minLen)}(?![\\w-])`);
+
+// Empirically-verified shortest unambiguous prefixes (git 2.55):
+//   git push --mirror   -> `--m`    (no other push long option starts with "m")
+//   git push --delete   -> `--de`   (`--d` is ambiguous with --dry-run)
+//   git branch --delete -> `--d`    (the only branch long option starting "d")
+//   git branch --force  -> `--forc` (`--fo` is ambiguous with --format)
+// Deliberately ABSENT, and not an oversight: `git push --force`. Every prefix
+// shorter than the full word is ambiguous with --force-with-lease /
+// --force-if-includes and git rejects it outright, so the existing literal
+// `--force` match is already complete for that flag — and keeps its negative
+// lookahead so the two sanctioned safe idioms stay unblocked (#429).
+const PUSH_MIRROR = longFlag('mirror', 1);
+const PUSH_DELETE = longFlag('delete', 2);
+const BRANCH_DELETE = longFlag('delete', 1);
+const BRANCH_FORCE = longFlag('force', 4);
+
+/**
+ * Strip shell quote characters before matching (#437, found by adversarial
+ * review). Every rule in this file is a TEXT match against the command line,
+ * but a shell removes quotes before the target program ever sees its argv — so
+ * `git push -"f" origin main` and `git branch '-D' main` are byte-identical to
+ * their unquoted forms as far as git is concerned, while defeating every
+ * dash-anchored pattern here. Quoting one character of a flag token was
+ * therefore a universal bypass of the WHOLE denylist, not a gap in any single
+ * rule, and it defeated the two rules #437 set out to harden just as
+ * completely as the rest.
+ *
+ * Only `"` and `'` are removed. Backticks are deliberately PRESERVED, because
+ * `eval-exec`'s SUBSTITUTION test matches on them — stripping those would
+ * trade one bypass for another.
+ *
+ * Direction of the trade: this can only ever make a rule match MORE text. The
+ * over-match it can produce (a destructive spelling quoted inside some
+ * unrelated string) is precisely the documented, deliberately fail-closed
+ * false positive this file already accepts for quoted mentions — the model is
+ * told to rephrase. That is the cheap failure mode; a silently-executed
+ * force-push is not.
+ */
+function stripQuotes(command) {
+  return command.replace(/["']/g, '');
+}
+
 export const RULES = [
   {
     name: 'force-push',
@@ -61,7 +127,12 @@ export const RULES = [
     test: (c) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
       if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
-      if (/\s--mirror\b/.test(c)) return true;
+      // --mirror IS abbreviable (unlike --force above): `git push --mir` really
+      // does mirror — verified against live git, it pushed every branch AND tag
+      // with no refspec given. Matching only the full spelling left the exact
+      // abbreviation class #429 identified as unclosable-by-enumeration wide
+      // open in the very rule #429 hardened (#437, adversarial review).
+      if (PUSH_MIRROR.test(c)) return true;
       if (/(?:^|\s)\+\S/.test(c)) return true;
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
@@ -82,19 +153,21 @@ export const RULES = [
     // short flag like `-Dq`/`-qD`) — verified empirically against git 2.55:
     // `git branch -fd <unmerged>` and `git branch --delete --force <unmerged>`
     // both force-delete exactly like `-D`, and the old regex matched only the
-    // literal, unbundled `-D` token. Abbreviations of the LONG forms (`--del`,
-    // `--forc`, …) remain an accepted, documented gap here — see the note at the
-    // end of RULES; force-push (#429) set the same precedent of not
-    // abbreviation-matching `--force`.
+    // literal, unbundled `-D` token. Long-form ABBREVIATIONS are covered too,
+    // at each verb's own empirically-measured ambiguity boundary (see the
+    // longFlag/abbrev constants above): `git push --de`, `git branch --d`, and
+    // `git branch --forc` are all accepted by real git and now all match.
     test: (c) => {
       if (!PROTECTED_BRANCHES.test(c)) return false;
-      if (/\bgit\b[^\n]*\bpush\b[^\n]*(?:--delete\b|:)/.test(c)) return true;
-      if (/\bgit\b[^\n]*\bpush\b/.test(c) && /d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+      if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
+        if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
+        if (/d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+      }
       if (/\bgit branch\b/.test(c)) {
         const cluster = shortFlagCluster(c, { alnum: true });
         if (/D/.test(cluster)) return true; // -D, incl. bundled (-Dq / -qD), IS delete+force
-        const hasForce = /f/.test(cluster) || /--force\b/.test(c);
-        const hasDelete = /d/.test(cluster) || /--delete\b/.test(c);
+        const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
+        const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
         if (hasForce && hasDelete) return true;
       }
       return false;
@@ -208,11 +281,16 @@ import { escalateMessage } from '../scripts/lib/escalate-msg.mjs';
 
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
-  const segs = segments(command);
+  // Quote-strip BEFORE matching so a quoted flag token can't hide a
+  // destructive spelling from every rule at once (#437). Safe to do ahead of
+  // the split: splitSegments() is not quote-aware either, so removing quotes
+  // cannot change how the command divides into segments.
+  const normalized = stripQuotes(command);
+  const segs = segments(normalized);
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
     // that segments() splits on); all others test each split sub-command.
-    const hit = rule.scope === 'full' ? rule.test(command) : segs.some((seg) => rule.test(seg));
+    const hit = rule.scope === 'full' ? rule.test(normalized) : segs.some((seg) => rule.test(seg));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
