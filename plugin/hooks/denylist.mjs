@@ -383,7 +383,10 @@ function braceAlternatives(body) {
  * guarantees every alternative is represented by at least one word, so no
  * alternative's text can be dropped no matter where it sits or how many
  * precede it. Depth is bounded implicitly: each level divides the budget, so
- * nesting stops expanding once a branch's share reaches one.
+ * nesting stops expanding once a branch's share reaches one — which is also
+ * why no recursion-depth guard is needed: a group always has at least two
+ * alternatives, so the share at least halves every level and bottoms out after
+ * log2(budget) of them.
  */
 function expandBraces(word, budget = BRACE_BUDGET) {
   if (budget <= 1 || !word.includes('{')) return [word];
@@ -421,13 +424,31 @@ function expandBraces(word, budget = BRACE_BUDGET) {
  * bash — is expanded here too. That over-matches, which is the safe direction
  * and consistent with how this file already treats quoted mentions.
  *
- * `\S+` preserves every whitespace character exactly, including the newlines
- * and separators splitSegments() relies on; only the non-whitespace runs are
- * rewritten.
+ * `\S+` leaves every WHITESPACE character exactly where it was, so newlines
+ * still delimit lines. Note that three of the four separators splitSegments()
+ * acts on (`;`, `|`, `&`) are NOT whitespace, so one sitting against a word
+ * (`-{D,}main;rm`) is swept into that word and repeated into each generated
+ * alternative. That is harmless only because splitSegments() splits on
+ * CHARACTERS rather than word tokens, so a repeated separator still separates —
+ * stated explicitly because relying on the neater-sounding "separators are
+ * preserved" would be relying on something that isn't true.
+ *
+ * A very long word gets a deliberately tiny budget instead of the full one.
+ * Expansion copies the whole word once per generated alternative, so a
+ * multi-hundred-kilobyte word with nested groups spends its time in string
+ * building rather than in matching. Dropping to a share of one keeps that
+ * linear: every alternative is still represented — so `{<huge junk>,--force}`
+ * is still caught — while the cross-product, which is what costs, is skipped.
+ * A safety hook runs on every single Bash call and must never be the reason a
+ * session stalls (AC-3.4).
  */
+const BRACE_LONG_WORD = 8192;
+
 function expandBraceWords(text) {
   if (!text.includes('{')) return text; // the overwhelmingly common case
-  return text.replace(/\S+/g, (word) => expandBraces(word).join(' '));
+  return text.replace(/\S+/g, (word) => (
+    expandBraces(word, word.length > BRACE_LONG_WORD ? 2 : BRACE_BUDGET).join(' ')
+  ));
 }
 
 export const RULES = [

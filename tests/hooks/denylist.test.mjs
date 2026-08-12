@@ -534,22 +534,45 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
-  it('AC-437.7: hostile brace nesting is bounded — no hang, no throw', () => {
-    // `{a,b}` repeated is 2^n expansions if expanded naively. The budget caps
-    // generated words, and exhaustion returns what it has, which can only
-    // under-generate — so a hostile input costs nothing rather than hanging a
-    // hook that sits on the hot path of every Bash call.
+  it('AC-437.7: hostile brace input is bounded — no hang, no throw', () => {
+    // This hook runs on the hot path of EVERY Bash call, so a stall here is
+    // the "safety hook takes the session down" scenario AC-3.4 forbids. An
+    // earlier version of this test only repeated well-formed, closed sibling
+    // groups — which were genuinely bounded — so it asserted a property the
+    // code did not yet have for the shapes that actually hurt. The three that
+    // do are covered explicitly below:
+    //   - an UNCLOSED group with many commas (a two-unbounded-run regex
+    //     backtracks quadratically on this; the group regex uses ONE run and
+    //     tests for the comma in JS afterwards, which cannot),
+    //   - deep RIGHT-NESTING (bounded because a group has >= 2 alternatives,
+    //     so the share at least halves per level and bottoms out),
+    //   - a very LONG word, where the cost is copying the word once per
+    //     generated alternative rather than matching.
     for (const cmd of [
       `git push ${'{a,b}'.repeat(40)} origin main`,
       `rm -rf ${'{a,b,c,d}'.repeat(30)}`,
       `git push ${'{a,b}'.repeat(200)}`,
       `git push {1..100000} origin main`,      // a range cap, not a list cap
       `git push ${'{a..z}'.repeat(10)} origin main`,
+      `git status --data={${'a,'.repeat(50000)}b`,        // unclosed, 100KB of commas
+      `git status --data={${'a'.repeat(200000)}`,          // unclosed, no comma
+      `git status ${'{a,'.repeat(20000)}`,                 // many unclosed groups
+      `git push ${'{a,'.repeat(50000)}z${'}'.repeat(50000)} origin main`, // deep nesting
+      `git push ${'x'.repeat(500000)} origin main`,        // one huge word
     ]) {
       const started = Date.now();
       expect(() => check(cmd)).not.toThrow();
       expect(Date.now() - started, 'brace expansion must stay fast').toBeLessThan(1000);
     }
+  });
+
+  it('AC-437.7: the long-word cost bound does not become a hiding place', () => {
+    // A very long word drops to a share of one to keep expansion linear. That
+    // must not turn into a bypass: every alternative is still represented, so
+    // padding a group with hundreds of kilobytes of junk to buy the cheap path
+    // does not hide the dangerous alternative sitting beside it.
+    expect(check(`git push {${'j'.repeat(200000)},--force} origin main`).rule).toBe('force-push');
+    expect(check(`rm -{${'k'.repeat(20000)},rf} /opt/danger`).rule).toBe('recursive-delete');
   });
 
   it('AC-437.5: a quoted flag token still blocks, across every affected rule', () => {
