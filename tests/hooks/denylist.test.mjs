@@ -417,6 +417,36 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     }
   });
 
+  it('AC-437.5: ANSI-C hex/octal escape sequences are DECODED, not just stripped', () => {
+    // The sharpest edge of the three quoting modes, and the one that needed a
+    // third fix. Bash expands `$'\x2df'` to `-f`, `$'\055D'` to `-D` — verified
+    // directly against this machine's bash by printing the resulting argv. So
+    // dropping the backslashes without decoding them closes almost nothing: an
+    // attacker can spell any flag, or any whole word, as hex or octal bytes.
+    const cases = [
+      [`git push ${D}${S}${B}x2df${S} origin main`, 'force-push'],          // \x2d = '-'
+      [`git push ${D}${S}${B}55f${S} origin main`, 'force-push'],           // octal, no leading zero
+      [`git push ${D}${S}${B}u002df${S} origin main`, 'force-push'],        // \uHHHH form
+      [`git push ${D}${S}${B}x2d${B}x2dmirror${S} origin`, 'force-push'],
+      [`git reset ${D}${S}${B}x2d${B}x2dhard${S}`, 'hard-reset'],
+      [`git reset ${D}${S}${B}x2d${B}x2d${B}x68ard${S}`, 'hard-reset'],     // the WORD spelled in hex too
+      [`git branch ${D}${S}${B}055D${S} main`, 'env-branch-delete'],        // octal
+      [`git branch ${D}${S}${B}x2d${B}x44${S} main`, 'env-branch-delete'],
+      [`rm ${D}${S}${B}x2drf${S} /srv/production-data`, 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+  });
+
+  it('AC-437.5: benign ANSI-C quoting is not newly blocked, and a malformed escape never throws', () => {
+    expect(check(`printf ${D}${S}${B}n${S}`).blocked).toBe(false);
+    expect(check(`echo ${D}${S}hello${B}tworld${S}`).blocked).toBe(false);
+    for (const cmd of [`git push ${D}${S}${B}x${S}`, `${D}${S}${B}${S}`, `${D}${S}${B}`]) {
+      expect(() => check(cmd), cmd).not.toThrow();
+    }
+  });
+
   it('AC-437.5: a separator QUOTED between a verb and its flag cannot fragment the command', () => {
     // splitSegments() is not quote-aware, so a `;` hidden inside a quoted
     // argument used to split the verb away from its own flag, leaving neither

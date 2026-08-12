@@ -122,16 +122,32 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  * the lookahead below is what prevents it, so keep the two-character step.
  *
  * Bash's own escaping rules are followed rather than approximated, because
- * both directions of error are costly here: outside quotes a backslash escapes
- * the next character; inside DOUBLE quotes it is special only before
- * `$ ` + "`" + ` " \` or a newline; inside SINGLE quotes it has no special
- * meaning at all and is a literal character. Treating it as an escape
- * everywhere would over-match (`'-\D'` is one inert literal argument to git,
- * not a branch delete).
+ * both directions of error are costly here. Outside quotes a backslash escapes
+ * the next character. Inside DOUBLE quotes it is special only before
+ * `$ ` + "`" + ` " \` or a newline. Inside ordinary SINGLE quotes it has no
+ * special meaning at all and is a literal character — treating it as an escape
+ * there would over-match (`'-\D'` is one inert literal argument to git, not a
+ * branch delete).
+ *
+ * `$'…'` (ANSI-C quoting) is its OWN mode and the sharpest edge of the three.
+ * Dropping its backslashes without DECODING them is not enough: bash expands
+ * `$'\x2df'` to `-f`, `$'\055D'` to `-D`, `$'\x2d\x2dhard'` to `--hard`. An
+ * attacker can spell any flag, or any whole word, as hex or octal bytes, so a
+ * normaliser that only handles `$'-f'` (where the content is already literal)
+ * closes almost none of the surface. Every escape bash decodes there is
+ * decoded here.
  */
+
+/** Single-character ANSI-C escapes bash decodes inside `$'…'`. */
+const ANSI_C_ESCAPES = {
+  a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n',
+  r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
+};
+
 function normalizeShellText(command) {
   let out = '';
-  let quote = null;
+  let quote = null;   // the active quote character, or null
+  let ansiC = false;  // the active single-quote region was opened as `$'…'`
   // A separator that survived escaping/quoting is inert as a separator, so
   // emit a space rather than the character itself — splitSegments() is blind
   // to quoting and would otherwise split the command around it.
@@ -148,6 +164,7 @@ function normalizeShellText(command) {
       }
       if (ch === '"' || ch === "'") {
         // `$'…'` / `$"…"`: the `$` is part of the quoting syntax, not the value.
+        ansiC = out.endsWith('$') && ch === "'";
         if (out.endsWith('$')) out = out.slice(0, -1);
         quote = ch;
         continue;
@@ -155,13 +172,35 @@ function normalizeShellText(command) {
       out += ch;
       continue;
     }
-    if (ch === quote) { quote = null; continue; }
-    // Inside double quotes a backslash is an escape only for this small set;
-    // anywhere else (and everywhere inside single quotes) it is literal.
-    if (quote === '"' && ch === '\\' && next !== undefined && /["$`\\\n]/.test(next)) {
-      emit(next);
-      i++;
-      continue;
+    if (ch === quote) { quote = null; ansiC = false; continue; }
+    if (ch === '\\' && next !== undefined) {
+      if (ansiC) {
+        // \xHH / \uHHHH / \UHHHHHHHH — hex byte or code point.
+        const hex = /^(x)([0-9a-fA-F]{1,2})|^(u)([0-9a-fA-F]{1,4})|^(U)([0-9a-fA-F]{1,8})/.exec(command.slice(i + 1));
+        if (hex) {
+          const digits = hex[2] ?? hex[4] ?? hex[6];
+          emit(String.fromCodePoint(parseInt(digits, 16)));
+          i += 1 + digits.length;
+          continue;
+        }
+        // \NNN — octal byte.
+        const oct = /^[0-7]{1,3}/.exec(command.slice(i + 1));
+        if (oct) {
+          emit(String.fromCharCode(parseInt(oct[0], 8)));
+          i += oct[0].length;
+          continue;
+        }
+        emit(ANSI_C_ESCAPES[next] ?? next);
+        i++;
+        continue;
+      }
+      // Inside double quotes a backslash is an escape only for this small set;
+      // inside ordinary single quotes it is always literal.
+      if (quote === '"' && /["$`\\\n]/.test(next)) {
+        emit(next);
+        i++;
+        continue;
+      }
     }
     emit(ch);
   }
