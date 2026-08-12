@@ -348,6 +348,79 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
     expect(check('rm -rf $TMPDIR/prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
     expect(check('rm -rf $TEMPORARY_CREDENTIALS_DIR')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
   });
+
+  // AC-446.5 — the boundary is `/` ALONE, deliberately NOT a backslash. An
+  // earlier draft of this fix included `\` in the boundary class; the
+  // adversarial review killed it on two independent grounds. First, on bash —
+  // the shell every rule in this file is written against — a backslash is not
+  // a path separator at all but an ordinary filename byte, so honouring it
+  // carves a fake "component" out of one arbitrary filename. Second, the
+  // premise that a literal backslash only survives normalizeShellText() when
+  // the source doubled it is false: inside single quotes a backslash is
+  // literal and passes through untouched (the AC-437.5 cases below already
+  // depend on exactly that), so a quoted `temp\prod-secrets` — one filename,
+  // not a path under a `temp/` directory — was being waved through as safe.
+  it('AC-446.5: a backslash is NOT a component boundary and cannot carve a fake safe component', () => {
+    const B = String.fromCharCode(92); // backslash
+    const S = String.fromCharCode(39); // '
+    const Q = String.fromCharCode(34); // "
+    for (const cmd of [
+      `rm -rf ${S}temp${B}prod-secrets${S}`,     // single-quoted: backslash survives verbatim
+      `rm -rf ${Q}temp${B}prod-secrets${Q}`,     // double-quoted, backslash before a non-escape char
+      `rm -rf customer-database${B}${B}temp`,     // unquoted, doubled -> one literal backslash
+      `rm -rf .ssh${B}${B}build`,
+      `rm -rf dist${B}${B}production-secrets`,    // safe word on the LEFT of the fake boundary
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-446.6 — anchoring the words was only HALF the fix. The exemption used to
+  // be one boolean test against the whole command tail, so a single safe-looking
+  // token anywhere in the argument list vouched for every other argument on the
+  // line. Anchoring alone does not touch that: `dist` is a perfectly legitimate
+  // whole component, it just is not the argument that matters. Both classes here
+  // predate this ticket (verified against `main`), but they are the same "a safe
+  // word somewhere exempts the whole command" class #446 exists to close, so
+  // leaving them behind an apparently-complete fix would be worse than not
+  // having fixed anything.
+  it('AC-446.6: one safe decoy argument does NOT exempt unsafe siblings (per-argument, not whole-line)', () => {
+    for (const cmd of [
+      'rm -rf /secret/data dist',                        // decoy last
+      'rm -rf tmp /home/user/photos',                    // decoy first
+      'rm -rf /var/lib/db /home/user/.ssh node_modules', // decoy buried among several real targets
+      'rm --recursive --force /secret/data dist',        // long-flag spelling of the same
+      'rm -rf $TMP /etc/important-config',               // env-var form as the decoy
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // ...while an all-safe argument list stays exempt, which is exactly what
+    // keeping AC.2 intact means: `dist build coverage` is three safe targets,
+    // not one safe target vouching for two unknowns.
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    // A line with NO target left to judge stays blocked — "nothing recognisable
+    // to vouch for" must never read as "safe".
+    expect(check('rm -rf')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-446.6 — the sharpest reported variant of the decoy, needing no visible
+  // second argument at all. normalizeShellText() emits an inert SPACE for any
+  // decoded control byte, so a NUL escape splices a hidden safe word onto the
+  // single real target. Real bash TRUNCATES `$'…'` at an embedded NUL, so the
+  // command genuinely deletes only the dangerous prefix — the trailing word
+  // exists purely to fool a whole-line match, and is invisible without hex
+  // inspection. Splitting per token judges the real target on its own merits.
+  it('AC-446.6: a NUL-escape hidden decoy cannot exempt the real target', () => {
+    const B = String.fromCharCode(92);
+    const S = String.fromCharCode(39);
+    const D = String.fromCharCode(36);
+    for (const cmd of [
+      `rm -rf ${D}${S}/etc/shadow-backup${B}x00scratchpad${S}`,
+      `rm -rf ${D}${S}important-secret-data${B}x00dist${S}`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
 });
 
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
