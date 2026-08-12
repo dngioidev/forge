@@ -91,9 +91,22 @@ const SAFE_RM_TARGET =
  * `--force` must not be mistaken for a path. A line with NO target token left
  * is treated as unsafe — that keeps the old outcome for a bare `rm -rf`, and
  * "nothing recognisable to vouch for" should never read as "safe".
+ *
+ * The split is on bash's OWN default IFS — space, tab, newline — and
+ * deliberately not on JavaScript's `\s`, which is a strictly wider class. That
+ * gap is not cosmetic: `\s` also matches NBSP, vertical tab, form feed and the
+ * Unicode spaces, none of which bash word-splits on. Splitting a token there
+ * cuts ONE bash argument into several, and if each fragment happens to look
+ * like a safe word the real target escapes judgement entirely — `rm -rf
+ * dist<NBSP>build` deletes a single file named `dist<NBSP>build`, which is
+ * neither `dist` nor `build`, yet `\s` splitting saw two safe components and
+ * exempted the line. Verified against this platform's bash by printing the
+ * expanded argv: NBSP, VT and FF all arrive INSIDE one argument, while a raw
+ * tab does separate. Carriage returns need no case here — normalizeShellText()
+ * strips them before any rule runs.
  */
 function safeRmTarget(rest) {
-  const targets = rest.split(/\s+/).slice(1).filter((t) => t && !t.startsWith('-'));
+  const targets = rest.split(/[ \t\n]+/).slice(1).filter((t) => t && !t.startsWith('-'));
   if (targets.length === 0) return false;
   return targets.every((t) => SAFE_RM_TARGET.test(t));
 }

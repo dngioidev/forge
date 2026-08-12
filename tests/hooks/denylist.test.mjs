@@ -421,6 +421,33 @@ describe('SAFE_RM_TARGETS is component-anchored, not substring (#446, AC-446.*)'
       expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
     }
   });
+
+  // AC-446.6 — the per-argument split must use bash's OWN default IFS (space,
+  // tab, newline), not JavaScript's `\s`, which is a strictly wider class.
+  // Splitting on a character bash does NOT word-split on cuts one real argument
+  // into several, and if each fragment looks like a safe word the actual target
+  // escapes judgement — the decoy problem again, arriving from the opposite
+  // direction. Verified against this platform's bash by printing the expanded
+  // argv: NBSP, vertical tab and form feed all arrive INSIDE a single argument,
+  // so `dist<NBSP>build` names one file that is neither `dist` nor `build`.
+  it('AC-446.6: token splitting follows bash IFS, so a non-IFS space cannot fake two safe components', () => {
+    for (const [sep, label] of [
+      [' ', 'NBSP'],
+      ['\v', 'vertical tab'],
+      ['\f', 'form feed'],
+      [' ', 'narrow NBSP'],
+      ['　', 'ideographic space'],
+    ]) {
+      const cmd = `rm -rf dist${sep}build`;
+      expect(check(cmd), label).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // ...while a raw TAB, which bash DOES word-split on, still separates two
+    // safe targets, so a genuinely all-safe list stays exempt. (Newline is not
+    // exercised here: segments() splits the command on it upstream, so it never
+    // reaches the target split at all.)
+    expect(check('rm -rf dist\tbuild').blocked).toBe(false);
+    expect(check('rm -rf dist\t/etc/secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
 });
 
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
