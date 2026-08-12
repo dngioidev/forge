@@ -137,15 +137,22 @@ const SEPARATOR_CHARS = /[;|&\n]/;
  * closes almost none of the surface.
  *
  * SCOPE OF THE DECODER, stated narrowly because earlier drafts of this comment
- * twice claimed more than the code delivered: the goal is not to reproduce
- * bash. It is to recover the PRINTABLE ASCII a flag could be spelled with.
- * Every decoded escape is therefore funnelled through `emitCodePoint()`, which
- * keeps a character only if it is printable ASCII and emits an inert space
- * otherwise. Control bytes, out-of-range values, and astral code points cannot
- * spell `-`, a letter, or a digit, so collapsing all of them to one inert
- * outcome is both safe and much easier to keep correct — it removes
- * range-checking, `\c` control escapes, and unicode edge cases as separate
- * things to get right, rather than adding a branch per case.
+ * three times claimed more than the code delivered: the goal is not to
+ * reproduce bash. It is to recover the PRINTABLE ASCII a flag could be spelled
+ * with. Every decoded escape — hex, unicode, octal, `\c`, the named single
+ * characters, and the unrecognised passthrough — is emitted only via
+ * `emitCodePoint()`, which keeps a character solely if it is printable ASCII
+ * and emits an inert space otherwise. Control bytes, out-of-range values and
+ * astral code points cannot spell `-`, a letter or a digit, so collapsing them
+ * to one inert outcome is safe and removes range-checking and unicode edge
+ * cases as separate things to get right.
+ *
+ * What that does NOT remove, and what actually bit this file repeatedly: how
+ * far each escape's lookahead may CONSUME. Getting the value right is easy;
+ * getting the terminator right is where the bugs were. The hex/octal forms are
+ * bounded by digit classes, which can never match a quote character, so they
+ * cannot run past the end of their region. `\c` takes an arbitrary operand and
+ * therefore needs its own explicit terminator check — see below.
  */
 
 /** Single-character ANSI-C escapes bash decodes inside `$'…'`. */
@@ -217,14 +224,37 @@ function normalizeShellText(command) {
           i += oct[0].length;
           continue;
         }
-        // \cX — Control-X. Always a control byte, so always inert here.
-        if (next === 'c') { out += ' '; i += command[i + 2] === undefined ? 1 : 2; continue; }
+        // \cX — Control-X, i.e. the operand with its top bits cleared.
+        // The operand slot is NOT unconditionally consumable: when `\c` sits
+        // at the very end of the region, bash has no operand to fold, leaves
+        // the literal two characters, and closes the quote normally
+        // (`$'\c'` is a 2-byte `\c`). Consuming the closing quote as an
+        // operand would leave this scanner think the region is still open,
+        // corrupting quote state for the whole rest of the line — a bypass,
+        // not a cosmetic slip. Hence the explicit terminator check. The
+        // digit-bounded lookaheads above cannot make this mistake, because a
+        // quote character can never match a hex or octal digit class.
+        if (next === 'c') {
+          const operand = command[i + 2];
+          if (operand === undefined || operand === quote) {
+            emitCodePoint(0x5c); emitCodePoint(0x63); // literal `\c`
+            i++;
+          } else {
+            emitCodePoint(operand.toUpperCase().codePointAt(0) & 0x1f);
+            i += 2;
+          }
+          continue;
+        }
         const simple = ANSI_C_ESCAPES[next];
-        // An UNRECOGNISED escape keeps both characters in bash (`$'\z'` is a
-        // literal backslash-z), so preserve rather than silently drop the
-        // backslash — dropping it invents a character the shell never produced.
-        if (simple === undefined) out += '\\';
-        emit(simple ?? next);
+        if (simple === undefined) {
+          // An UNRECOGNISED escape keeps BOTH characters in bash (`$'\z'` is a
+          // literal backslash-z), so preserve rather than silently drop the
+          // backslash — dropping it invents a character the shell never made.
+          emitCodePoint(0x5c);
+          emitCodePoint(next.codePointAt(0));
+        } else {
+          emitCodePoint(simple.codePointAt(0));
+        }
         i++;
         continue;
       }

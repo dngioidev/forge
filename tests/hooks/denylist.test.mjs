@@ -500,6 +500,32 @@ describe('shell quoting/escaping cannot hide a destructive spelling (#437, AC-43
     expect(check(`git push ${D}${S}${B}x2df${S} ${D}${S}${B}cA${S} origin main`).rule).toBe('force-push');
   });
 
+  it('AC-437.5: an escape whose operand slot IS the closing quote cannot swallow the terminator', () => {
+    // `\c` takes an ARBITRARY operand, so unlike the digit-bounded hex/octal
+    // forms its lookahead can reach the region's own closing quote. Real bash
+    // gives `\c` no operand there — `$'\c'` is a literal 2-char `\c` and the
+    // quote closes normally (verified by printing the expanded argv). Eating
+    // that quote as an operand left the scanner believing the region was still
+    // open, corrupting quote state for the rest of the line, so a following
+    // and genuinely dangerous ANSI-C region got parsed as inert text.
+    // Getting an escape's VALUE right is easy; how far it CONSUMES is where
+    // this file's bugs actually lived.
+    const cases = [
+      [`git push ${D}${S}${B}c${S} ${D}${S}${B}x2d${B}x2dforce${S} origin main`, 'force-push'],
+      [`git push ${D}${S}${B}c${S} ${D}${S}${B}x2df${S} origin main`, 'force-push'],
+      [`git push ${D}${S}${B}c${S} -f origin main`, 'force-push'],
+      [`git branch ${D}${S}${B}c${S} ${D}${S}${B}x2dD${S} main`, 'env-branch-delete'],
+      [`git reset ${D}${S}${B}c${S} ${D}${S}${B}x2d${B}x2dhard${S}`, 'hard-reset'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(check(cmd).rule, cmd).toBe(rule);
+    }
+    // ...and a truncated `\c` at end-of-input still never throws.
+    for (const cmd of [`${D}${S}${B}c${S}`, `${D}${S}${B}c`, `${D}${S}${B}cA`]) {
+      expect(() => check(cmd), cmd).not.toThrow();
+    }
+  });
+
   it('AC-437.5: an ESCAPED dollar does not introduce ANSI-C quoting', () => {
     // In real bash `\$'\n'` is the literal 3-char `$\n` — the `$` is data, so
     // the quotes after it are ordinary and nothing is decoded (verified by
