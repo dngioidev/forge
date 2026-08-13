@@ -29,7 +29,7 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     // The guard's whole point: an unrecognised flag may be an abbreviation of a
     // destructive one (`--mir` IS `--mirror`), so unknown means ask, per verb.
     expect(ARGUMENT_SENSITIVE_COMMANDS).toEqual([
-      'node', 'pnpm verify', 'git push', 'git fetch', 'git rebase', 'git checkout', 'gh pr merge',
+      'node', 'pnpm verify', 'git push', 'git add', 'git fetch', 'git rebase', 'git checkout', 'gh pr merge',
     ]);
     for (const prefix of ARGUMENT_SENSITIVE_COMMANDS) {
       expect(isAllowedCommand(`${prefix} --some-unknown-flag`, { segments: splitSegments }), prefix).toBe(false);
@@ -139,6 +139,42 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     expect(isAllowedCommand('gh pr merge 429 --squash --delete-branch', { segments: splitSegments })).toBe(true);
   });
 
+  it('AC-444.2: `git add` argument guard — positive model, `-p`/`-i`/`-e` excluded by omission', () => {
+    // `git add -p`/`-i` are interactive prompt loops; `-e`/`--edit` opens the
+    // patch in $EDITOR — an arbitrary program launch, same class as `node -e`.
+    // Nothing here enumerates those three as unsafe: they simply aren't in the
+    // safe set, so they fall to `ask` the same way any other unrecognised flag
+    // does — the positive-model guarantee, not a special case for them.
+    for (const cmd of [
+      'git add -A',
+      'git add .',
+      'git add src/foo.mjs',
+      'git add -u',
+      'git add --all',
+      'git add -n',
+      'git add -v src/foo.mjs',
+      'git add --force src/foo.mjs',
+      'git add --sparse',
+      'git add --renormalize',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+    for (const cmd of [
+      'git add -e',
+      'git add --edit',
+      'git add -p',
+      'git add --patch',
+      'git add -i',
+      'git add --interactive',
+      'git add --edi',           // abbreviation probe: git 2.55 resolves this to --edit
+                                  // (verified live — no other `git add` long option starts "edi"),
+                                  // and the guard must not let it through either
+      'git add --some-unknown-flag',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
   it('isAllowedCommand() rejects an unrecognised command and a look-alike prefix without the required word boundary', () => {
     expect(isAllowedCommand('curl https://example.com', { segments: splitSegments })).toBe(false);
     // "git pushx" must not be confused with the "git push" prefix.
@@ -159,6 +195,7 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
       'gh pr view 1 $(id)',                     // substitution under a gh verb
       'git status & curl https://evil.example', // `&` alone is NOT a splitSegments separator
       'git fetch ${IFS}evil',                   // brace-form parameter expansion
+      'git add $(touch pwned)',                 // command substitution behind the newly-added verb
     ];
     for (const cmd of smuggled) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);

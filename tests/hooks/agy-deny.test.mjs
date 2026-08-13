@@ -138,6 +138,7 @@ describe('agy-deny default flip: allow -> ask (#429)', () => {
       'git checkout -b feat/x',
       'git rebase main',
       'git fetch origin',
+      'git add -A',
       'git status',
       'git diff',
       'git log -1',
@@ -152,6 +153,18 @@ describe('agy-deny default flip: allow -> ask (#429)', () => {
 
   it('AC-429.3 (load-bearing): the denylist strictly outranks the allowlist — a force-push is a git push (allowlisted verb) but must still be denied', async () => {
     const { out } = await runDeny(call('git push --force origin main'));
+    const decision = JSON.parse(out);
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('force-push');
+  });
+
+  it('AC-444.3: the denylist still outranks the newly-widened allowlist for `git add` — a chained git add + force-push is denied, not silently allowed via the add segment', async () => {
+    // #444 widens the allowlist with an 8th verb. No denylist rule overlaps
+    // `git add` itself, so the meaningful per-verb pin is that adding it did
+    // not weaken precedence for a DIFFERENT, denylisted segment sitting next
+    // to it in a chain — the same "denylist always runs first" guarantee
+    // #429 AC.3 pinned for the original seven, now pinned for this one too.
+    const { out } = await runDeny(call('git add -A && git push --force origin main'));
     const decision = JSON.parse(out);
     expect(decision.decision).toBe('deny');
     expect(decision.reason).toContain('force-push');

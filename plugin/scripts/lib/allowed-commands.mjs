@@ -38,6 +38,7 @@ export const ALLOWED_COMMAND_PREFIXES = [
   // git — mutating verbs forge agents type directly
   'git push',
   'git commit',
+  'git add',
   'git checkout',
   'git rebase',
   'git fetch',
@@ -108,25 +109,29 @@ const SHELL_METACHARACTERS = /[$`<>&;|]|[\x00-\x1f]/;
  * the denylist costs a prompt, never a silent destructive action.
  *
  * A verb belongs here when its ARGUMENTS can make it destructive or can escape
- * the verb entirely. Seven do — keep this list in step with the array below and
+ * the verb entirely. Eight do — keep this list in step with the array below and
  * with the guarded-verbs table in docs/guides/cross-gai.md:
  *   `node`          — `-e`/`--eval`/`-p` is unrestricted code execution
  *   `pnpm verify`   — pnpm forwards args to vitest, whose `--reporter=<path>`
  *                     / `--config=<path>` import()s that module at startup
  *   `git push`      — force / delete / mirror / refspec rewrite published refs
+ *   `git add`       — `-p`/`-i` are interactive prompt loops; `-e`/`--edit`
+ *                     opens the patch in `$EDITOR` — an arbitrary program launch
  *   `git fetch`     — `--upload-pack=<program>` executes that program
  *   `git rebase`    — `-x`/`--exec` runs arbitrary shell per replayed commit
  *   `git checkout`  — `-- .` / `-f` / a bare path silently discards local work
  *   `gh pr merge`   — `--admin` bypasses branch protection
  *
- * Note what four of those seven have in common: `node -e`, `pnpm verify
- * --reporter=`, `git rebase -x` and `git fetch --upload-pack=` are all
- * arbitrary code execution reached through a verb that looks innocuous, and
- * NONE of them needs a shell metacharacter — SHELL_METACHARACTERS cannot see
- * them. Each was found by a separate adversarial review round. When adding a
- * verb to ALLOWED_COMMAND_PREFIXES, the question to ask is not "is this verb
- * safe" but "can any argument make it run something else, read/write an
- * arbitrary path, or rewrite published history".
+ * Note what five of those eight have in common: `node -e`, `pnpm verify
+ * --reporter=`, `git rebase -x`, `git fetch --upload-pack=` and `git add -e`
+ * are all arbitrary code execution reached through a verb that looks
+ * innocuous, and NONE of them needs a shell metacharacter — SHELL_METACHARACTERS
+ * cannot see them. Each of the first four was found by a separate adversarial
+ * review round; `git add -e` was identified by threat-modeling the same class
+ * before it ever reached this file (#444). When adding a verb to
+ * ALLOWED_COMMAND_PREFIXES, the question to ask is not "is this verb safe" but
+ * "can any argument make it run something else, read/write an arbitrary path,
+ * or rewrite published history".
  *
  * The rest of ALLOWED_COMMAND_PREFIXES are safe for any argument (`git status`,
  * `gh issue view`, …) or are read-only.
@@ -195,6 +200,37 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
       '-v', '--verbose',
       '--progress', '--no-progress',
       '--porcelain', '--dry-run',
+    ),
+  },
+  {
+    prefix: 'git add',
+    // `git add` is non-destructive in its common form — it stages, it never
+    // discards. But `-p`/`--patch` and `-i`/`--interactive` are interactive
+    // prompt loops an unattended session must not silently enter, and
+    // `-e`/`--edit` opens the staged diff in `$EDITOR` — an arbitrary program
+    // launch, the same class as `node -e` / `git rebase -x`. All three are
+    // excluded by OMISSION, not by a blocklist entry: they simply aren't in
+    // the safe set below, so an unrecognised flag (including any abbreviation
+    // of one of them, e.g. `--edi` — verified against live git 2.55 to resolve
+    // to `--edit`, since no other `git add` long option starts "edi") falls to
+    // `ask` the same way it does for every other argument-sensitive prefix
+    // here. Every other flag stages only and never discards, unlike
+    // `checkout`'s ref-vs-path ambiguity: `-A`/`--all` and `-u`/`--update`
+    // widen WHICH tracked/untracked files are staged, never what happens to
+    // them; `-f`/`--force` stages otherwise-ignored files, it does not
+    // overwrite or delete anything; `-n`/`--dry-run`, `-v`/`--verbose`,
+    // `--sparse`, `--refresh`, `--ignore-errors`, `--ignore-missing`,
+    // `--no-warn-embedded-repo` and `--renormalize` are all inert w.r.t.
+    // destructiveness.
+    argsOk: flagsAndOperands(
+      '-A', '--all', '--no-ignore-removal',
+      '-u', '--update',
+      '-n', '--dry-run',
+      '-v', '--verbose',
+      '-f', '--force',
+      '--sparse', '--refresh',
+      '--ignore-errors', '--ignore-missing', '--no-warn-embedded-repo',
+      '--renormalize',
     ),
   },
   {
