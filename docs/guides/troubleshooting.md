@@ -32,6 +32,18 @@ Still stale? Check you're not shadowed: a repo-local override (a same-named skil
 
 `/reload-plugins` often isn't enough for hooks — restart the session. Verify wiring: the hook runs `node "${CLAUDE_PLUGIN_ROOT}/hooks/…"` — if `node` isn't on the **user** PATH (not just your shell profile), hooks fail open silently. Symptom for capture: `.forge/journal.jsonl` never grows despite failing commands.
 
+### Denylist staleness (working tree vs. the live enforced copy)
+
+`${CLAUDE_PLUGIN_ROOT}` resolves to the **installed plugin cache**, not a forge checkout's working tree (#447). If you're developing inside a forge checkout, that means editing `plugin/hooks/denylist.mjs` does **not** change the rules enforced against your own tool calls this session — the machine is still running whatever `denylist.mjs` shipped in the last plugin install/update. The same lag applies to `scripts/**` invoked by the `${CLAUDE_PLUGIN_ROOT}` path.
+
+`/forge:doctor` now reports this directly: when it detects a working-tree `plugin/hooks/denylist.mjs`, it compares that file's **content** (not just its `plugin.json` version — two copies can share a version and still differ, e.g. mid-development) against the live resolved copy and emits a `denylist-staleness` row:
+
+- `ok` — the live copy matches the working tree; nothing to do.
+- `warn` — they differ. The message names both paths and each side's `plugin.json` version.
+- **silent (no row at all)** — there's no working-tree copy to compare against. A plain consumer install (cache only, no checkout) never sees this check.
+
+If you get the `warn`, the fix is the same reinstall ladder as **[§1 above](#1-updated-the-plugin-but-changes-arent-visible)** — walk it from the top until the live copy matches. This check is diagnostic only: it reports the mismatch, it does not change which copy actually gets enforced (that's a separate, open question tracked in #484).
+
 ## 5. Environment breaks (Windows portable installs)
 
 - **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the current shell. In Git Bash, export it for the session (`export PATH="$PATH:/c/Users/$USER/AppData/Local/GitHub CLI"`) or add gh's `bin` dir to the user `Path` permanently so spawned scripts inherit it.
