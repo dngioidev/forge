@@ -1306,6 +1306,58 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
     // same direction as the rest of this file's safe/safe cases.
     expect(check(`true && rm -rf dist ; warm build`).blocked).toBe(false);
   });
+
+  // AC-452.5 — a THIRD adversarial finding, in a different consumer: a NUL
+  // landing between the two `-` characters of a standalone `--` token
+  // (POSIX end-of-options, #450) breaks `safeRmTarget()`'s own exact
+  // `t === '--'` match against `spacedText` — turning it into two separate
+  // `-` tokens, so `endOfOptions` never latches and the real dash-led
+  // target right after it is misread as a bare flag and filtered out of
+  // judgement, exempting the line via whatever safe-looking word is left.
+  // Fixed the same way as `&&` (pushing the marker past the whole token),
+  // but SCOPED to a whitespace-BOUNDED `--` only — see the comment on
+  // `adjustedMarkers` for why a blanket dash-run push is unsafe here in a
+  // way it is not for `&&`.
+  it('AC-452.5: a NUL splitting a standalone -- token cannot defeat end-of-options recognition', () => {
+    for (const cmd of [
+      `rm -rf -${NUL}- -prod-secrets dist`,
+      `rm -rf -${NUL}${NUL}${NUL}- -prod-secrets dist`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // Sanity: dashes that are NOT a standalone `--` token are untouched by
+    // the adjustment — this doesn't newly bless or newly break anything
+    // about how a NUL splitting an ORDINARY word behaves (that class is
+    // #446/#450's own pre-existing target-splitting design, unchanged here,
+    // and identical on `main`).
+    const { text, spacedText } = normalizeShellText(`rm -rf temp${NUL}-data`);
+    expect(text).toBe('rm -rf temp-data');
+    expect(spacedText).toBe('rm -rf temp -data');
+  });
+
+  // AC-452.5 — a FOURTH adversarial finding: `parts.pop()` in the ANSI-C
+  // `$'…'` quote-open handler (undoing a speculatively-pushed `$` once it
+  // turns out to introduce `$'…'` syntax, #437) can shrink `parts.length`
+  // below a value a NUL marker was already stamped with — e.g. `$<NUL>'`
+  // records a marker right after the `$`, which the very next character
+  // then pops. Left unfixed, `nulMarkers` could go non-monotonic (a later
+  // marker smaller than an earlier one), silently corrupting the linear
+  // `spacedText` insertion pass, which assumes ascending order. Fixed by
+  // retroactively rebasing any trailing marker that pointed exactly at the
+  // popped position down by one, alongside the pop itself.
+  it('AC-452.5: a NUL adjacent to a $-quote-open that gets popped keeps markers non-decreasing', () => {
+    const B = String.fromCharCode(92);
+    for (const cmd of [
+      `$${NUL}'${NUL}`,
+      `$${NUL}'${NUL}scratchpad'`,
+      `$${NUL}'${B}'';rm -r${NUL}f /prod-secrets`,
+    ]) {
+      const { text, spacedText } = normalizeShellText(cmd);
+      const textSegs = segments(text);
+      const spacedSegs = segments(spacedText);
+      expect(spacedSegs.length, cmd).toBe(textSegs.length);
+    }
+  });
 });
 
 describe('shared escalate message (#321, AC-321.1)', () => {

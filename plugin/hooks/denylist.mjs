@@ -487,8 +487,21 @@ export function normalizeShellText(rawCommand) {
         const introducer = endsDollar && !litDollar;
         ansiC = introducer && ch === "'";
         if (introducer) {
+          const oldLen = parts.length;
           parts.pop(); // drop the `$`: it was quoting syntax, not data
           endsDollar = parts[parts.length - 1] === '$';
+          // A marker recorded for a NUL sitting between that `$` and this
+          // quote char (e.g. `$<NUL>'`) was stamped with `oldLen` — the
+          // output position immediately AFTER the `$`, which the pop() above
+          // just deleted (#452 v2 fix-wave, security finding). Retroactively
+          // rebase every such trailing marker down by one so it still points
+          // at "immediately after whatever now precedes it", instead of
+          // going stale and, worse, LARGER than a marker recorded moments
+          // later at the (now shorter) `parts.length` — nulMarkers must stay
+          // non-decreasing for the linear spacedText build below to be
+          // correct. Markers are recorded in scan order, so any affected by
+          // THIS pop are necessarily the most recent (a trailing run).
+          for (let k = nulMarkers.length - 1; k >= 0 && nulMarkers[k] === oldLen; k--) nulMarkers[k] = parts.length;
         }
         quote = ch;
         litDollar = false;
@@ -621,9 +634,40 @@ export function normalizeShellText(rawCommand) {
   // pushing any such marker forward past the WHOLE run of `&` characters —
   // never inserting a space where it could split one of them apart — so the
   // extra space lands harmlessly just after the operator instead.
+  //
+  // A SECOND position needs the same treatment, found by a follow-up
+  // adversarial pass: `recursive-delete`'s own `safeRmTarget()` reads
+  // `spacedText` (not `segments()`) and does its OWN exact-string match,
+  // `t === '--'` (POSIX end-of-options, #450), against `spacedText`'s
+  // whitespace-split tokens. A marker landing between the two `-` characters
+  // of a standalone `--` token splits it into `- -`, so that match never
+  // fires, `endOfOptions` never latches, and the real dash-led target right
+  // after it gets misread as a bare flag and filtered out of judgement —
+  // the same failure shape as the `&&` case, in a different consumer.
+  //
+  // UNLIKE `&&`, this one must be scoped to a STANDALONE token — bounded by
+  // IFS whitespace (or string start/end) on BOTH sides — not any run of `-`
+  // characters wherever it appears. `&&` is safe to push past unconditionally
+  // because `segments()` only ever MERGES two would-be segments into one
+  // (over-merging is this file's own stated safe direction: a destructive
+  // command is still fully contained in whichever segment it ends up in).
+  // A blanket dash-run push does not have that safety net: pushing a marker
+  // past an ARBITRARY `--` inside a longer word (`prod<NUL>-secrets` is not
+  // `prod--secrets` unless the run happens to canonicalise to two dashes,
+  // but e.g. `temp--data` legitimately contains one) would instead SPLIT one
+  // real target into two pieces at a position `safeRmTarget()` never asked
+  // for, and the piece that happens to start with `-` gets filtered OUT of
+  // judgement entirely by the very same flag-skipping this rule relies on —
+  // trading the bypass being closed here for a new one that drops a target
+  // from judgement instead of merely re-segmenting harmlessly. Restricting
+  // to a whitespace-bounded `--` token matches EXACTLY what
+  // `safeRmTarget()`'s own IFS split would treat as one piece, so nothing
+  // outside that exact shape is touched.
+  const isIfsBoundary = (ch) => ch === undefined || ch === ' ' || ch === '\t' || ch === '\n';
   const adjustedMarkers = nulMarkers.map((p) => {
     let pos = p;
     while (text[pos - 1] === '&' && text[pos] === '&') pos++;
+    if (text[pos - 1] === '-' && text[pos] === '-' && isIfsBoundary(text[pos - 2]) && isIfsBoundary(text[pos + 1])) pos++;
     return pos;
   });
   let spacedText = text;

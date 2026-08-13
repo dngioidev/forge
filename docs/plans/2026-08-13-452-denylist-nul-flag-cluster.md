@@ -67,6 +67,42 @@ quote-opening syntax is recognised between the two views, with the same
 desync consequence. v2 (above) closes the whole class categorically by
 never computing two independently-parsed texts in the first place.
 
+A confirming re-review of v2 found two more, narrower gaps in the same
+spirit, both fixed within v2's single-scan design rather than reopening it:
+
+- `forge:security` found that `segments()` treats `&&` as one two-character
+  separator with no single-character fallback (unlike `||`, where a lone `|`
+  is ALSO independently a separator, so splitting `||` apart still converges
+  to the same segment count once the empty piece in between is filtered). A
+  NUL landing between the two `&` characters silently dropped a split rather
+  than adding a harmless extra one. Fixed by pushing any marker landing
+  inside a `&` run forward past the whole run before building `spacedText`.
+- A follow-up pass then found the same shape one level down, inside
+  `recursive-delete`'s own `safeRmTarget()`: a NUL splitting a standalone
+  `--` (POSIX end-of-options, #450) token defeats its exact `t === '--'`
+  match, filtering the real dash-led target out as a bare flag. Fixed the
+  same way, but scoped strictly to a whitespace-BOUNDED `--` — a blanket
+  dash-run push (unlike `&&`) would risk splitting an unrelated word and
+  dropping half of it from judgement, trading one bypass for another. A
+  third, lower-severity finding (`parts.pop()` in the ANSI-C quote-open
+  handler can retroactively invalidate an already-recorded marker position,
+  risking a non-monotonic `nulMarkers` array) was fixed by rebasing affected
+  trailing markers at the pop site.
+
+The `--` finding was initially triaged as out-of-scope-and-filed (#471) on
+the strength of "verified identical on `main` before any marker mechanism
+existed" — but on reflection that's the wrong test: the SAME mechanism
+already fixed for `&&` (an upstream marker-position adjustment in
+`normalizeShellText`, never touching `safeRmTarget()`'s own code, so
+AC-446.6 stays untouched) extends cleanly to `--` too, and leaving a live,
+directly-confirmed bypass sitting beside code this ticket just touched was
+the wrong call once that was clear. Fixed in the same pass; #471 stays filed
+as the historical record but its fix shipped here, not as a deferred
+follow-up. `#470` (an ANSI-C-escaped NUL in a flag cluster —
+`emitCodePoint()`'s control-byte handling, a genuinely different mechanism
+untouched by any of this ticket's raw-NUL-handling changes) remains
+correctly out of scope and filed separately.
+
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 
 - **AC-452.1** — All four reproductions block, each with the correct `rule`.
