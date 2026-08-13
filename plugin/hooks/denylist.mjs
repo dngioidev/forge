@@ -174,53 +174,54 @@ function shortFlagCluster(command, { alnum = false } = {}) {
  * certify a command safe if brace-group syntax sits in a flag-shaped token,
  * WITHOUT ever generating what it would expand to. No candidate is
  * generated, stored or counted, so none of those eight bugs has an
- * equivalent surface here — there is no generation/consumption sequencing
- * left to get wrong, and cost is a linear scan of text that is never larger
- * than the command itself (unlike the expand-first approach, which had to
- * bound something that grows with the text it produces).
+ * equivalent surface here.
  *
  * Scoped to a single whitespace-delimited TOKEN at a time — brace expansion
  * only ever combines with the token it sits inside, never across a real
- * space — and, within a token, to exactly the question "could this token's
- * FIRST character, after expansion, be `-` or `+`":
+ * space. A token is examined AT ALL only if it starts with `-`, `+` or `{`
+ * (`--forc{e,}`, `-r{f,}`, `-{D,}`, `+{main,}`, `{--force,}`) — every other
+ * token, whatever it contains, is skipped without ever being asked about
+ * brace syntax. This SCOPE check is what keeps AC-448.4's false positives
+ * out, not a leniency exception layered on top of it: `query='mutation{...}'`
+ * normalises (quote chars stripped, #437/#473) to a token starting with `q`;
+ * a `feat/{a,b}` branch-name argument starts with `f`; a `node_modules/{a,b}`
+ * rm target starts with `n`; a brace-bearing word inside a commit message
+ * value starts with whatever ordinary letter the message does. None of those
+ * ever reaches tokenHasBraceGroup() below.
  *
- *  - If the token itself already starts with `-`/`+` (`--forc{e,}`,
- *    `-r{f,}`, `-{D,}`, `+{main,}`), that leading character survives
- *    whatever the brace group(s) elsewhere in the token resolve to — a
- *    prefix before the first `{` is literal text, untouched by expansion —
- *    so the token is ALREADY flag-shaped and any brace-group syntax
- *    anywhere in it is enough to refuse, without asking which alternative
- *    would actually be chosen.
- *  - If the token instead STARTS with `{` (`{--force,}`), the token's own
- *    first character is undetermined until that leading group resolves, so
- *    the question becomes "does any comma-separated alternative in that
- *    FIRST group start with `-`/`+`" — checked by a flat split on ONE
- *    already-isolated brace group's content, never a cross-product, never
- *    recursive into a NESTED brace (this file doesn't attempt to parse
- *    those, on the safe over-block side: a token whose leading group can't
- *    be closed, or a comma/range this can't resolve, still fails the "does
- *    an alternative start with -/+" test and is left unflagged by this
- *    function alone — genuinely dangerous nested/malformed shapes are still
- *    caught by the literal flag checks these rules already run). A brace
- *    group LATER in a `{`-leading token cannot change the token's own first
- *    character, so only the first group needs inspecting.
+ * WITHIN a scoped token, the check is unconditional: ANY brace-group syntax
+ * anywhere in the token is enough to refuse, full stop — no attempt is made
+ * to work out WHICH alternative a `{`-leading token's leading character
+ * would resolve to. An earlier draft of this function tried exactly that
+ * (inspect only the token's first brace group, check whether SOME
+ * comma-separated alternative inside it starts with `-`/`+`) and two
+ * independent adversarial review rounds (forge:reviewer, forge:security)
+ * each found a live, real-bash-verified bypass in it, from two different
+ * angles: (1) a NESTED brace as a non-final alternative — `{{a,b},-f}` — made
+ * a naive "find the first `}`" mis-pair with the nested group's own closer,
+ * truncating the scan before the later, real `-f` alternative was ever read;
+ * (2) an EMPTY alternative in the first group glues the token's SUFFIX onto
+ * that empty expansion (`{,}-f` really bash-expands to `-f -f`, two words,
+ * confirmed against real bash), which the first-group-only design had no
+ * model for at all — a direct resurfacing of the REMOVED prior
+ * implementation's own "defect 6" (empty-alternative gluing), in the one
+ * place this rewrite had tried to be clever instead of merely conservative.
+ * Both findings independently defeated all four dangerous rules.
  *
- * Deliberately conservative, matching this file's own stated safe direction
- * (over-block, not under-block): a flag-shaped token with brace-group syntax
- * refuses the command whether or not the alternatives it could expand to
- * would actually be dangerous (`rm -{v,}` — a doubled, harmless -v either
- * way — now blocks too). Resolving that would mean classifying which
- * alternative wins, which is exactly the approach five review rounds
- * rejected.
- *
- * This is what keeps AC-448.4's false positives out, and it is a SCOPE
- * check, not a leniency exception: `query='mutation{...}'` normalises (quote
- * chars stripped, #437/#473) to a token starting with `q`; a `feat/{a,b}`
- * branch-name argument starts with `f`; a `node_modules/{a,b}` rm target
- * starts with `n`; a brace-bearing word inside a commit message value starts
- * with whatever ordinary letter the message does. None of those tokens
- * starts with `-`, `+` or `{`, so none of them is ever examined for brace
- * syntax at all — the scope check runs BEFORE the brace check, not after.
+ * Collapsing to "any brace-group syntax anywhere in a scoped token refuses,
+ * unconditionally" removes the bug class at its root rather than patching
+ * either instance: there is no alternative-content classification left to
+ * be wrong about, for nesting, emptiness, or any shape neither review round
+ * happened to try. This matches the `-`/`+`-leading half of this same
+ * function, which was never vulnerable to either finding for exactly this
+ * reason — a literal prefix before the first `{` is untouched by whatever
+ * the brace group(s) later in the token resolve to, so it never needed to
+ * classify anything either. The cost is accepted over-blocking on a
+ * `{`-leading token whose actual resolution is harmless (`{,}-v` on `rm`, or
+ * a `--list` pattern like `{main,dev}` naming two branches at once) — the
+ * same direction this file already takes everywhere else (spec comment at
+ * the top of this file: FAILS OPEN on a non-match, but a match always
+ * blocks rather than trying to prove itself wrong).
  *
  * Reads the SAME per-segment text every rule already reads (`c`, produced by
  * normalizeShellText() ahead of this call) — a scan behind that existing
@@ -228,16 +229,9 @@ function shortFlagCluster(command, { alnum = false } = {}) {
  */
 function hasFlagBrace(command) {
   for (const token of command.split(/[ \t\n]+/)) {
-    if (!token || token.indexOf('{') === -1) continue;
+    if (!token) continue;
     const first = token[0];
-    if (first === '-' || first === '+') {
-      if (tokenHasBraceGroup(token)) return true;
-      continue;
-    }
-    if (first === '{') {
-      const inner = firstBraceGroupContent(token);
-      if (inner !== null && innerHasFlagAlternative(inner)) return true;
-    }
+    if ((first === '-' || first === '+' || first === '{') && tokenHasBraceGroup(token)) return true;
   }
   return false;
 }
@@ -268,28 +262,6 @@ function tokenHasBraceGroup(token) {
     if (inner.indexOf(',') !== -1 || inner.indexOf('..') !== -1) return true;
     i = close + 1; // strictly forward — total work across all iterations is O(token length)
   }
-}
-
-/** The content of the FIRST `{…}` pair in a token known to start with `{`. */
-function firstBraceGroupContent(token) {
-  const close = token.indexOf('}', 1);
-  return close === -1 ? null : token.slice(1, close);
-}
-
-/**
- * Does any top-level comma-separated alternative inside one already-isolated
- * brace group's content start with `-`/`+`? For a range/step-range (no
- * comma at all — `d..e`, `o..o..1`), the single "alternative" is the whole
- * content, so its own leading character is the one that matters. Only ever
- * called on ONE group's content, never recursed into a nested `{`, never
- * cross-referenced against a later group — see the function-level comment
- * above for why that is enough.
- */
-function innerHasFlagAlternative(inner) {
-  if (inner.indexOf(',') === -1) {
-    return inner.indexOf('..') !== -1 && (inner[0] === '-' || inner[0] === '+');
-  }
-  return inner.split(',').some((alt) => alt[0] === '-' || alt[0] === '+');
 }
 
 /**

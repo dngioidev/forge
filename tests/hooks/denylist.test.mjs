@@ -1431,6 +1431,49 @@ describe('brace expansion cannot complete a flag the text never spells (#448, AC
     expect(check('git push -{d,} origin main:main')).toMatchObject({ blocked: true, rule: 'force-push' });
   });
 
+  // AC-448.1/AC-448.5 — full-branch adversarial review (forge:reviewer AND
+  // forge:security, independently, on the first draft of hasFlagBrace())
+  // found two live, real-bash-verified bypasses in a since-removed draft
+  // that tried to inspect ONLY a `{`-leading token's first brace group's
+  // alternatives, rather than refusing on any brace-group syntax present at
+  // all. Pinned here as their own regression cases, since the eight-defect
+  // list below predates this specific finding and neither shape appears in
+  // it verbatim.
+  it('AC-448.1/AC-448.5: a NESTED brace as a non-final alternative cannot hide a later dangerous one (full-branch review finding)', () => {
+    // bash-verified: `{{a,b},-f}` -> `a b -f` (three words, the third a real
+    // force flag) — a naive "first `}` in the token" scan mis-pairs with the
+    // NESTED group's own closer and never reads the real, later alternative.
+    const cases = [
+      ['git push {{a,b},-f} origin main', 'force-push'],
+      ['git branch {{a,b},-D} main', 'env-branch-delete'],
+      ['git reset {{a,b},--hard}', 'hard-reset'],
+      ['rm {{a,b},-rf} /opt/danger', 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(() => check(cmd), cmd).not.toThrow();
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule });
+    }
+  });
+
+  it('AC-448.1/AC-448.5: an EMPTY alternative gluing the token\'s own suffix onto it cannot hide a dangerous flag (full-branch review finding, resurfaces the removed implementation\'s own defect 6)', () => {
+    // bash-verified: `{,}-f` -> `-f -f` (the empty alternative glues the
+    // SUFFIX after the group's `}` onto it, producing a second, real `-f`
+    // word) and `{,x}{-f,y}` -> `-f y x-f xy` (a sibling group's alternative
+    // becomes the effective leading text once the first group is empty).
+    const cases = [
+      ['git push {,}-f origin main', 'force-push'],
+      ['git branch {,}-D main', 'env-branch-delete'],
+      ['git reset {,}--hard', 'hard-reset'],
+      ['rm {,}-rf /opt/danger', 'recursive-delete'],
+      ['git push {,x}{-f,y} origin main', 'force-push'],
+      ['rm {,x}{-rf,y} /opt/danger', 'recursive-delete'],
+    ];
+    for (const [cmd, rule] of cases) {
+      expect(() => check(cmd), cmd).not.toThrow();
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule });
+    }
+  });
+
   // AC-448.1 — the eight defects that killed the removed implementation,
   // re-expressed as input to THIS detector. Each must resolve to a defined,
   // safe outcome (blocked, or allowed per AC-448.4) — never throw, never
@@ -1563,8 +1606,17 @@ describe('brace expansion cannot complete a flag the text never spells (#448, AC
     expect(check("git branch -m 'renamed {old,new}' newname").blocked).toBe(false);
   });
 
-  it('AC-448.4: a read-only --list pattern naming protected branches inside braces is unaffected', () => {
-    expect(check("git branch --list '{main,dev}'").blocked).toBe(false);
+  // A `{`-leading token IS in scope (unlike the three named cases above,
+  // none of which start with `-`/`+`/`{`) — this specific construction is a
+  // documented, accepted over-block, not an AC-448.4 requirement: the
+  // ticket's own named false-positive list doesn't include it, and this
+  // file's own detector design (see hasFlagBrace()'s function-level comment)
+  // deliberately does not classify a `{`-leading token's alternatives at
+  // all, precisely because two adversarial review rounds each found a real
+  // bypass in an earlier draft that TRIED to. A read-only `--list` pattern
+  // like this one now needs rephrasing (e.g. two separate `--list` calls).
+  it('AC-448.4-adjacent: a --list pattern that itself starts with a brace group is a DOCUMENTED over-block, not a bypass', () => {
+    expect(check("git branch --list '{main,dev}'")).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
   });
 
   it('AC-448.4: an ordinary brace-free command matrix is completely unaffected (regression floor)', () => {
@@ -1602,6 +1654,9 @@ describe('brace expansion cannot complete a flag the text never spells (#448, AC
       'git push -{,,,,}f origin main', // degenerate: many empty alternatives
       'git push -{ origin main',       // unterminated
       'git push }{ origin main',       // reversed/garbage brace chars
+      'git push {{a,b},-f} origin main', // nested (full-branch review finding)
+      'git push {,}-f origin main',      // empty-alternative suffix-gluing (full-branch review finding)
+      "git branch --list '{main,dev}'",  // accepted over-block, not a bypass
       '',
       null,
     ];
