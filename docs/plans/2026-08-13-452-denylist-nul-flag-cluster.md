@@ -103,6 +103,26 @@ follow-up. `#470` (an ANSI-C-escaped NUL in a flag cluster —
 untouched by any of this ticket's raw-NUL-handling changes) remains
 correctly out of scope and filed separately.
 
+A fourth review round confirmed both of the above hold under substantial
+adversarial construction (no bypass found in either), but surfaced a
+performance regression the `&&` fix itself introduced: the marker adjustment
+walked one character at a time to the end of the enclosing `&` run, PER
+MARKER, making a command with many NULs inside ONE long `&` run
+O(run-length × marker-count) — measured at ~10s for an 80KB input, exceeding
+the fail-open timeout budget (#428) and reopening the exact hang-vs-bypass
+tradeoff the file's own chunked-`parts` design already had to solve once.
+Fixed by precomputing each position's run-end with a single linear backward
+pass instead of walking per marker (now O(1) per marker, O(n) total);
+verified at ~24ms for 200KB and ~92ms for 1M characters, and pinned by a
+generous-budget regression test. This same round also surfaced one more
+out-of-scope, pre-existing (verified identical on `main`) finding — a NUL
+fusing a safe word with a dash-prefixed suffix that `safeRmTarget()`'s
+own leading-dash flag filter then drops from judgement — filed as #472,
+correctly left out of scope since no analogous "push the marker" fix is
+available without changing how `safeRmTarget()` itself judges adjacent
+tokens (a materially larger change than this ticket's bounded marker-push
+fixes).
+
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 
 - **AC-452.1** — All four reproductions block, each with the correct `rule`.

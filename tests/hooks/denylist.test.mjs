@@ -1358,6 +1358,30 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
       expect(spacedSegs.length, cmd).toBe(textSegs.length);
     }
   });
+
+  // AC-452.5 — a FIFTH adversarial finding: the `&&`-run adjustment's initial
+  // shape walked one character at a time to the end of the enclosing `&` run,
+  // PER MARKER — a command with many NULs inside ONE long `&` run was
+  // therefore O(run length × marker count), i.e. quadratic overall. Measured
+  // against that shape at ~10s for an 80KB input, which alone exceeds agy's
+  // own documented fail-open timeout (#428) — a hang, not merely a slowdown,
+  // on a hook that runs on every Bash call (the exact failure class the
+  // chunked-`parts` O(1)-append design earlier in this file was built to
+  // avoid). Fixed by precomputing each position's run-end with one linear
+  // backward pass (`ampRunEnd`) instead of walking per marker. Pinned here
+  // with a generous wall-clock budget, not a tight one, since CI hardware
+  // varies (#251) — the point is "linear", not a specific millisecond figure.
+  it('AC-452.5: many NULs inside one long && run stay linear, not quadratic', () => {
+    const size = 200000;
+    const chars = new Array(size);
+    for (let i = 0; i < size; i++) chars[i] = i % 3 === 0 ? NUL : '&';
+    const cmd = chars.join('');
+    const start = Date.now();
+    const { text, spacedText } = normalizeShellText(cmd);
+    const elapsed = Date.now() - start;
+    expect(elapsed, `took ${elapsed}ms for ${size} chars`).toBeLessThan(2000);
+    expect(segments(spacedText).length).toBe(segments(text).length);
+  });
 });
 
 describe('shared escalate message (#321, AC-321.1)', () => {

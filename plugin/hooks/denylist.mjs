@@ -664,9 +664,24 @@ export function normalizeShellText(rawCommand) {
   // `safeRmTarget()`'s own IFS split would treat as one piece, so nothing
   // outside that exact shape is touched.
   const isIfsBoundary = (ch) => ch === undefined || ch === ' ' || ch === '\t' || ch === '\n';
+  // `ampRunEnd[p]` answers "where would the `&`-run walk starting at `p`
+  // stop?" in O(1) — precomputed with ONE backward linear pass rather than
+  // walked per marker (adversarial review, performance finding): a per-marker
+  // `while` walk is O(run length) each, so a command with many NULs inside
+  // ONE long run of `&` characters was O(n²) overall — measured at ~10s for
+  // an 80KB input, exceeding agy's own documented fail-open timeout (#428)
+  // and reopening the exact hang-vs-bypass tradeoff this file's chunked-parts
+  // design (see the O(1)-append comment above) already had to solve once.
+  // `ampRunEnd[p] = p` when `p` isn't inside a run boundary; otherwise it
+  // equals whatever the NEXT position's answer is — computed back-to-front
+  // so each position is visited exactly once.
+  const ampRunEnd = new Array(text.length + 1);
+  ampRunEnd[text.length] = text.length;
+  for (let p = text.length - 1; p >= 0; p--) {
+    ampRunEnd[p] = (text[p - 1] === '&' && text[p] === '&') ? ampRunEnd[p + 1] : p;
+  }
   const adjustedMarkers = nulMarkers.map((p) => {
-    let pos = p;
-    while (text[pos - 1] === '&' && text[pos] === '&') pos++;
+    let pos = ampRunEnd[p];
     if (text[pos - 1] === '-' && text[pos] === '-' && isIfsBoundary(text[pos - 2]) && isIfsBoundary(text[pos + 1])) pos++;
     return pos;
   });
