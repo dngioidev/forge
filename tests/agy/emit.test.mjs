@@ -3,11 +3,11 @@ import { mkdtemp, mkdir, readFile, writeFile, access, cp, rm } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import {
   emitAgyPlugin, buildMcpConfig, buildHooksConfig, buildPluginMarker, toPosix, longPath, pluginRoot, unsafeDestReason,
-  rewriteAgyRuntimePaths,
+  rewriteAgyRuntimePaths, assertUnquotedSafe,
 } from '../../plugin/scripts/agy/emit.mjs';
 import { runInit, parseArgs } from '../../plugin/scripts/init.mjs';
 
@@ -228,7 +228,9 @@ describe('AC-289.4: paths are ASCII-only, Windows-first, long-path aware', () =>
   it('AC-289.4: hooks.json + plugin marker are pure computed builders', () => {
     const hooks = buildHooksConfig();
     // #307: plugin-root-relative command (no absolute join), 10s timeout preserved.
-    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toBe('node "hooks/agy-deny.mjs"');
+    // #478: unquoted -- quoting the relative path caused literal `"` characters to
+    // leak into Node's module resolution on Windows (agy 1.1.12); see AC-478 below.
+    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toBe('node hooks/agy-deny.mjs');
     expect(hooks['forge-safety'].PreToolUse[0].hooks[0].timeout).toBe(10);
     const marker = buildPluginMarker({ $schema: 'x', name: 'forge', mcpServers: { a: 1 }, version: '1.0.0' });
     expect(marker).toEqual({ name: 'forge', version: '1.0.0' });
@@ -398,8 +400,9 @@ describe('AC-307: the emitted package is relocatable — survives `agy plugin in
     const mcp = JSON.parse(mcpRaw);
     expect(mcp.mcpServers['forge-graph'].args[0]).toBe('mcp/graph/server.mjs');
     const hooks = JSON.parse(hooksRaw);
-    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toBe('node "hooks/agy-deny.mjs"');
-    expect(hooks['forge-capture'].PostToolUse[0].hooks[0].command).toBe('node "hooks/agy-capture.mjs"');
+    // #478: unquoted (see AC-478 below for why quoting was the bug, not the fix).
+    expect(hooks['forge-safety'].PreToolUse[0].hooks[0].command).toBe('node hooks/agy-deny.mjs');
+    expect(hooks['forge-capture'].PostToolUse[0].hooks[0].command).toBe('node hooks/agy-capture.mjs');
   });
 
   it('AC-307.1: after `agy plugin install` (copy) + deleting the --out dir, every wired path resolves under the new root', async () => {
@@ -428,7 +431,7 @@ describe('AC-307: the emitted package is relocatable — survives `agy plugin in
       hooks['forge-capture'].PostToolUse[0].hooks[0].command,
     ];
     for (const cmd of cmds) {
-      const rel = cmd.match(/^node "([^"]+)"$/)[1]; // node "hooks/agy-deny.mjs"
+      const rel = cmd.match(/^node (\S+)$/)[1]; // node hooks/agy-deny.mjs (#478: unquoted)
       expect(isAbsolute(rel)).toBe(false);
       await expect(access(join(installRoot, rel))).resolves.toBeUndefined();
     }
@@ -486,7 +489,7 @@ describe('AC-307: the emitted package is relocatable — survives `agy plugin in
     const hooks = buildHooksConfig();
     const cmd = hooks['forge-safety'].PreToolUse[0].hooks[0].command;
     expect(cmd).not.toMatch(/[A-Za-z]:[\\/]/);
-    expect(cmd).toBe('node "hooks/agy-deny.mjs"');
+    expect(cmd).toBe('node hooks/agy-deny.mjs'); // #478: unquoted, see AC-478 below
   });
 });
 
@@ -562,4 +565,80 @@ describe('AC-430: emitted agy skills/commands never point the agent at a Claude-
     expect(mod.permsBlock()).toEqual({ permissions: { allow: expect.any(Array) } });
     expect(mod.ALLOW.length).toBeGreaterThan(0);
   });
+});
+
+describe('AC-478: emitted hooks.json command resolves on Windows (agy 1.1.12 quote-leak fix)', () => {
+  // #478: `node "hooks/agy-deny.mjs"` (quoted) leaked literal `"` characters into the
+  // module path Node tried to resolve on Windows/agy 1.1.12 -- MODULE_NOT_FOUND on a
+  // path with embedded `"` bytes. Root cause (docs/plans/2026-08-13-478-agy-hooks-quoting.md
+  // AC.2): a command string that already contains `"` characters, handed to `cmd /c` as
+  // a SINGLE argv element via an argv-array-style spawn, gets its embedded quotes
+  // backslash-escaped by the Windows argv-to-command-line serializer; cmd.exe's own
+  // outer-quote-stripping heuristic does not understand that escaping and leaves the
+  // literal `\"` sequence in what it hands on, which node.exe's argv unescaping then
+  // turns into a literal `"` character inside the module path. Fix: never embed a `"`
+  // in the command string at all (AC.4 -- platform-neutral by construction: nothing to
+  // strip means no reliance on `sh -c` vs `cmd /c` differing).
+
+  it('AC-478.1: the emitted command contains no quote characters at all (regression guard against the #478 shape)', () => {
+    const hooks = buildHooksConfig();
+    const deny = hooks['forge-safety'].PreToolUse[0].hooks[0].command;
+    const capture = hooks['forge-capture'].PostToolUse[0].hooks[0].command;
+    expect(deny).not.toMatch(/["']/);
+    expect(capture).not.toMatch(/["']/);
+    expect(deny).toBe('node hooks/agy-deny.mjs');
+    expect(capture).toBe('node hooks/agy-capture.mjs');
+  });
+
+  it('AC-478.2: assertUnquotedSafe rejects a path that would need quoting -- the guard forge-hooks-path invariant relies on is real, not decorative', () => {
+    expect(assertUnquotedSafe('hooks/agy-deny.mjs')).toBe('hooks/agy-deny.mjs'); // passes through today's real path
+    expect(() => assertUnquotedSafe('hooks/agy deny.mjs')).toThrow(); // a space would break unquoted embedding
+    expect(() => assertUnquotedSafe('hooks/agy-deny".mjs')).toThrow(); // an embedded quote is exactly the #478 shape
+    expect(() => assertUnquotedSafe('hooks/agy&deny.mjs')).toThrow(); // shell metacharacter
+    // adversarial-review finding (both forge:reviewer and forge:security independently
+    // flagged the same gap): an allowlist has no equivalent to a denylist's "did we
+    // enumerate every dangerous character" risk. These would all have SILENTLY PASSED
+    // the original first-cut denylist (`/[\s"'`+'`'+`$&|<>^%!]/`) despite being unsafe
+    // to embed unquoted in a shell command.
+    for (const unsafe of ['hooks/agy;deny.mjs', 'hooks/agy(1).mjs', 'hooks/agy[1].mjs', 'hooks/agy{1}.mjs', 'hooks/agy*deny.mjs', 'hooks/agy#deny.mjs', 'hooks/agy~deny.mjs']) {
+      expect(() => assertUnquotedSafe(unsafe), `expected ${unsafe} to be rejected`).toThrow();
+    }
+  });
+
+  it('AC-478.4: the emitted command is platform-neutral BY CONSTRUCTION — no character in it needs sh-vs-cmd quote-stripping to agree', () => {
+    // The by-construction argument (docs/plans/2026-08-13-478-agy-hooks-quoting.md
+    // AC.3/AC.4): dropping quotes fixes Windows not because `sh -c` and `cmd /c`
+    // happen to strip quotes the same way (they don't, and this fix takes no position
+    // on that), but because the command contains NOTHING either shell needs to strip,
+    // escape, or interpret differently in the first place. Every character in the
+    // emitted command must be one both shells treat identically and literally: no
+    // quotes (the #478 bug), and no other shell metacharacter either (`$ \` & | ; < >
+    // ( ) * ? ~ ! ^ %` etc.) that could diverge between `sh -c` and `cmd /c` semantics.
+    const hooks = buildHooksConfig();
+    const PLATFORM_NEUTRAL_ONLY = /^[A-Za-z0-9 ._\/-]+$/; // word chars, path separators, space, dash, dot
+    for (const cmd of [
+      hooks['forge-safety'].PreToolUse[0].hooks[0].command,
+      hooks['forge-capture'].PostToolUse[0].hooks[0].command,
+    ]) {
+      expect(cmd, `"${cmd}" contains a character whose sh-vs-cmd handling could diverge`).toMatch(PLATFORM_NEUTRAL_ONLY);
+    }
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'AC-478.3 (AC.1/AC.3 evidence): the real emitted hook resolves under the exact invocation shape that reproduced #478',
+    async () => {
+      // Simulates the mechanism AC.2 pinned down: the command handed to `cmd /c` as a
+      // single argv element via an argv-array spawn (execFileSync's own Windows argv
+      // serialization does this same job agy's internal spawn does). Against the
+      // PRE-FIX quoted command this throws MODULE_NOT_FOUND with a literal `"` in the
+      // path (see docs/plans/2026-08-13-478-agy-hooks-quoting.md); against the fix it
+      // must resolve and return a real decision.
+      const { dest } = await emitTo();
+      const hooks = JSON.parse(await readFile(join(dest, 'hooks.json'), 'utf8'));
+      const cmd = hooks['forge-safety'].PreToolUse[0].hooks[0].command;
+      const payload = JSON.stringify({ toolCall: { name: 'run_command', args: { CommandLine: 'echo hi' } } });
+      const out = execFileSync('cmd.exe', ['/c', cmd], { cwd: dest, input: payload }).toString();
+      expect(JSON.parse(out)).toHaveProperty('decision');
+    },
+  );
 });

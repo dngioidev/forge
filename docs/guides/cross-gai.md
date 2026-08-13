@@ -271,7 +271,7 @@ The generated file:
       {
         "matcher": "run_command",
         "hooks": [
-          { "type": "command", "command": "node \"hooks/agy-deny.mjs\"", "timeout": 10 }
+          { "type": "command", "command": "node hooks/agy-deny.mjs", "timeout": 10 }
         ]
       }
     ]
@@ -281,7 +281,7 @@ The generated file:
       {
         "matcher": "run_command",
         "hooks": [
-          { "type": "command", "command": "node \"hooks/agy-capture.mjs\"", "timeout": 10 }
+          { "type": "command", "command": "node hooks/agy-capture.mjs", "timeout": 10 }
         ]
       }
     ]
@@ -294,7 +294,13 @@ working directory set to the directory containing `hooks.json` (= the plugin
 root), so `hooks/agy-deny.mjs` resolves wherever the package is installed. Like
 `mcp_config.json`, this keeps the safety + capture hooks working after
 `agy plugin install` copies the package and the original `--out` dir is deleted
-([#307](https://github.com/dngioidev/forge/issues/307)).
+([#307](https://github.com/dngioidev/forge/issues/307)). The path is embedded
+**unquoted** — a quoted form (`node "hooks/agy-deny.mjs"`) broke Node's module
+resolution on Windows with agy 1.1.12: agy's own spawn layer backslash-escapes
+the embedded `"` characters when it serializes the command into a `cmd /c`
+invocation, and `cmd.exe`'s quote-stripping does not undo that escaping, so a
+literal `"` ends up inside the resolved module path
+([#478](https://github.com/dngioidev/forge/issues/478)).
 
 ### The host-mode I/O shims
 

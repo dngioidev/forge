@@ -111,16 +111,60 @@ export function buildMcpConfig({ hasForgeCore = false } = {}) {
 }
 
 /**
+ * Guard for `buildHooksConfig()` (#478): forge's own hook filenames are embedded in
+ * the emitted `command` string UNQUOTED (see below for why), so this asserts, at
+ * build/test time, that a path is actually safe to embed that way — whitespace or a
+ * shell metacharacter would silently reopen the class of bug this function exists to
+ * prevent. A positive ALLOWLIST, not a denylist: enumerating "safe" characters (word
+ * chars, `.`, `/`, `-`) is complete by construction, where a denylist of "unsafe"
+ * characters is only as strong as the list happens to be exhaustive (adversarial
+ * review on #478 found the first-cut denylist here missed `; ( ) { } [ ] * ? ~ #` —
+ * an allowlist has no equivalent gap to miss). Throws rather than silently emitting
+ * something broken. Exported so the invariant itself is directly testable, not just
+ * asserted in a comment.
+ */
+export function assertUnquotedSafe(relPath) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(relPath)) {
+    throw new Error(`agy hooks command path is not safe to embed unquoted: ${relPath}`);
+  }
+  return relPath;
+}
+
+/**
  * Build the agy hooks registration (named-hook schema, matcher `run_command`).
- * Commands quote the plugin-root-relative shim paths and carry a 10s timeout.
+ * Commands reference the plugin-root-relative shim paths with a 10s timeout.
  *
  * #307: relative, not absolute — agy runs a hook command with its working directory
  * set to the directory containing `hooks.json` (= the plugin root), so `hooks/agy-*.mjs`
  * resolves post-copy. Absolute paths would point back at the deleted `--out` dir.
+ *
+ * #478: the path is embedded UNQUOTED (`node hooks/agy-deny.mjs`, no `"`), not
+ * `node "hooks/agy-deny.mjs"` as before. Quoting was itself the bug: on Windows with
+ * agy 1.1.12, a command string that already contains `"` characters gets those quotes
+ * backslash-escaped when agy's own spawn layer serializes it into a `cmd /c` command
+ * line (any argv-array-style process spawn on Windows must do this — there is no
+ * OS-level argv), and `cmd.exe`'s outer-quote-stripping does not understand that
+ * escaping, so the literal `\"` survives into node.exe's own argv and resolves as part
+ * of the module path (`Cannot find module '...\"hooks\agy-deny.mjs"'`). Root-cause
+ * detail and reproduction: docs/plans/2026-08-13-478-agy-hooks-quoting.md.
+ *
+ * Dropping the quotes is safe by construction, not by luck: a command string with NO
+ * quote characters at all has nothing for either `sh -c` (Unix) or `cmd /c` (Windows)
+ * to strip, so the fix does not depend on the two shells' quote-handling agreeing —
+ * satisfying #478's platform-neutrality requirement directly rather than by testing
+ * one platform and hoping. It would still be unsafe to embed a path containing a space
+ * unquoted, which is why `assertUnquotedSafe()` guards it: forge's own `hooks/` shim
+ * filenames are fixed, ASCII, space-free literals (never user input, never
+ * installer-chosen), so they pass today — the guard's job is to keep that a checked
+ * invariant, not an unenforced assumption, so any future violation fails loudly here
+ * instead of silently reproducing #478. (agy's hooks.json schema has no argv-array
+ * alternative to a single shell string — checked against the installed agy docs
+ * (`hooks.md`) before assuming; a `command` handler field is a single required string
+ * only, run via `sh -c` / `cmd /c`.)
  */
 export function buildHooksConfig() {
-  const deny = `node "hooks/agy-deny.mjs"`;
-  const capture = `node "hooks/agy-capture.mjs"`;
+  const deny = `node ${assertUnquotedSafe('hooks/agy-deny.mjs')}`;
+  const capture = `node ${assertUnquotedSafe('hooks/agy-capture.mjs')}`;
   return {
     'forge-safety': {
       PreToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command: deny, timeout: 10 }] }],
