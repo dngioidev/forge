@@ -115,11 +115,16 @@ export function buildMcpConfig({ hasForgeCore = false } = {}) {
  * the emitted `command` string UNQUOTED (see below for why), so this asserts, at
  * build/test time, that a path is actually safe to embed that way — whitespace or a
  * shell metacharacter would silently reopen the class of bug this function exists to
- * prevent. Throws rather than silently emitting something broken. Exported so the
- * invariant itself is directly testable, not just asserted in a comment.
+ * prevent. A positive ALLOWLIST, not a denylist: enumerating "safe" characters (word
+ * chars, `.`, `/`, `-`) is complete by construction, where a denylist of "unsafe"
+ * characters is only as strong as the list happens to be exhaustive (adversarial
+ * review on #478 found the first-cut denylist here missed `; ( ) { } [ ] * ? ~ #` —
+ * an allowlist has no equivalent gap to miss). Throws rather than silently emitting
+ * something broken. Exported so the invariant itself is directly testable, not just
+ * asserted in a comment.
  */
 export function assertUnquotedSafe(relPath) {
-  if (/[\s"'`$&|<>^%!]/.test(relPath)) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(relPath)) {
     throw new Error(`agy hooks command path is not safe to embed unquoted: ${relPath}`);
   }
   return relPath;

@@ -595,6 +595,14 @@ describe('AC-478: emitted hooks.json command resolves on Windows (agy 1.1.12 quo
     expect(() => assertUnquotedSafe('hooks/agy deny.mjs')).toThrow(); // a space would break unquoted embedding
     expect(() => assertUnquotedSafe('hooks/agy-deny".mjs')).toThrow(); // an embedded quote is exactly the #478 shape
     expect(() => assertUnquotedSafe('hooks/agy&deny.mjs')).toThrow(); // shell metacharacter
+    // adversarial-review finding (both forge:reviewer and forge:security independently
+    // flagged the same gap): an allowlist has no equivalent to a denylist's "did we
+    // enumerate every dangerous character" risk. These would all have SILENTLY PASSED
+    // the original first-cut denylist (`/[\s"'`+'`'+`$&|<>^%!]/`) despite being unsafe
+    // to embed unquoted in a shell command.
+    for (const unsafe of ['hooks/agy;deny.mjs', 'hooks/agy(1).mjs', 'hooks/agy[1].mjs', 'hooks/agy{1}.mjs', 'hooks/agy*deny.mjs', 'hooks/agy#deny.mjs', 'hooks/agy~deny.mjs']) {
+      expect(() => assertUnquotedSafe(unsafe), `expected ${unsafe} to be rejected`).toThrow();
+    }
   });
 
   it('AC-478.4: the emitted command is platform-neutral BY CONSTRUCTION — no character in it needs sh-vs-cmd quote-stripping to agree', () => {

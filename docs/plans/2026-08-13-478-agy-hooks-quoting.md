@@ -171,6 +171,22 @@ the guide matches what actually ships. Add this plan to `docs/README.md`.
 **Files:** docs/guides/cross-gai.md, docs/README.md
 **AC map:** AC-478.3
 
+## Fix wave: adversarial review tightened the guard
+
+Full-branch `forge:reviewer` and `forge:security` both returned `verdict:
+pass`, zero critical/high findings — but independently converged on the same
+minor gap: `assertUnquotedSafe()`'s original denylist regex
+(`/[\s"'`+'`'+`$&|<>^%!]/`) omitted several shell metacharacters (`; ( ) { }
+[ ] * ? ~ #`) that the AC-478.4 test's own stricter allowlist already
+treated as unsafe. Not exploitable today (both call sites pass hardcoded
+literals), but it weakened the "checked invariant, not luck" claim the
+guard's docstring makes. Tightened `assertUnquotedSafe()` from a denylist to
+a positive allowlist (`/^[A-Za-z0-9._/-]+$/`) -- complete by construction,
+with no equivalent "did we enumerate every dangerous character" risk -- and
+extended AC-478.2 with explicit cases for the characters the original
+denylist missed. One review wave, not a second failing gate; both passes'
+only findings were this same low/minor note.
+
 ## Out of scope / filed separately
 
 - **#480** (already filed at triage, child of #182, blocked on environment
