@@ -97,7 +97,7 @@ Per §2.1 this is not cosmetic — today a successful shape either throws or is 
 
 **Drive the loop from the Workflow/orchestrate harness** — a deterministic script fanning out over the ticket queue. Closest to the owner's phrasing, and genuinely attractive for shaping, which is embarrassingly parallel. Rejected **as the loop**, for three reasons: (1) the queue is *dynamic* — delivery subagents file new work mid-run and shaped tickets re-enter as `ready`, so there is no fixed work-list to fan out over; (2) a workflow agent cannot hold the **in-session merge authorization** — the harness classifier requires a live user turn (ADR-0007, #397), so a workflow-driven loop could never merge; (3) escalations need a human in the live session. Autopilot's loop must stay a live orchestrator. **Partially adopted:** a parallel *shape wave* over the current unshaped backlog is a legitimate follow-on, and this spec unblocks it — after §3.1, every shape already runs in its own context.
 
-**Split the 49KB `autopilot/SKILL.md`** — at ~12k tokens it is 3× the next-largest skill and a real fixed cost, but ~6% of the window, not the cause of 100%. Deferred to its own ticket (§7).
+**Split the 49KB `autopilot/SKILL.md`** — at ~12k tokens it is 3× the next-largest skill and a real fixed cost, but ~6% of the window, not the cause of 100%. Deferred to **#467**, which must land *after* this spec (§3.1 adds prose to the same file).
 
 ## 5. Risks
 
@@ -119,6 +119,6 @@ Per §2.1 this is not cosmetic — today a successful shape either throws or is 
 ## 7. Out of scope
 
 - Parallel shape wave (§4, alternative 2 — follow-up, unblocked by this spec).
-- Splitting `autopilot/SKILL.md` (§4, alternative 3 — its own ticket).
+- Splitting `autopilot/SKILL.md` (§4, alternative 3 — **#467**, sequenced after this).
 - #464's watchdog coverage gap (separate open bug; this spec only requires shape outcomes be *routed* through it).
 - Any change to the grounded-only rule or the ground gate.
