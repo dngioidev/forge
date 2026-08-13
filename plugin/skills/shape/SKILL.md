@@ -62,7 +62,7 @@ Under autopilot, `forge:shape` runs as a **spawned subagent** (`docs/specs/2026-
 
 - **Write the escalation in full via `escalate.mjs` *before* you return** — the decision comment is the only surviving record of *why* this ticket needs a human; the terminal report below carries only `outcome: escalated` and nothing else. An escalation reasoned about but never written to `escalate.mjs` is lost the instant the subagent's context is discarded.
 - **Never return "spec drafted, awaiting approval," expecting a re-invocation.** Nothing re-invokes a returned subagent (the same return-then-resume stall #319/#177 forbid on the delivery side). Under autopilot, shape is **grounded-only**: it either promotes (writes acceptance + moves Backlog→Ready) or escalates-and-skips — there is no third "pause and wait" outcome.
-- The shape outcome (`ready`/`escalated`) is read by the main loop and, for delivery-shaped reports, passed through `watchdog.mjs`'s `resolveReturnedTicket` like every other returned report — an already-resolved outcome (which `ready` and `escalated` both are) passes straight through as `continue`, recorded with `stage:'shape'` (`ledger.mjs` `applyOutcome`).
+- The shape outcome (`ready`/`escalated`) is read by the main loop and passed through `watchdog.mjs`'s `resolveReturnedTicket` like every other returned report — since `ready` and `escalated` are both already-resolved outcomes (neither is the `awaiting-merge` sentinel the watchdog exists to catch), the watchdog is a harmless no-op pass-through here (`action: continue`), and the loop records the outcome with `stage:'shape'` (`ledger.mjs` `applyOutcome`).
 
 ## Report contract
 
