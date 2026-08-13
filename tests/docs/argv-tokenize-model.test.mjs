@@ -94,14 +94,6 @@ describe('#451 — tokenize-then-judge argv model spike', () => {
     expect(doc).toMatch(/over-block accident/);
   });
 
-  it('AC-451.5: the Phase-2 gate is a decision to settle early, not a blocker (the overclaim was withdrawn)', async () => {
-    const doc = await readFile(spikePath, 'utf8');
-    expect(doc).toMatch(/not a blocker/);
-    expect(doc).toMatch(/Phase 2 is not blocked/);
-    // three live options, not a forced binary
-    expect(doc).toMatch(/Three live options/);
-  });
-
   it('AC-451.4: the new live bypass found while testing the matrix is reported and filed, not silently dropped', async () => {
     const doc = await readFile(spikePath, 'utf8');
     // `rm -r$(true)f` — a substitution fused mid-word truncates the flag
@@ -119,13 +111,14 @@ describe('#451 — tokenize-then-judge argv model spike', () => {
     expect(doc).toContain('AC-450.*');
     expect(doc).toMatch(/Phase 1/);
     expect(doc).toMatch(/Phase 4/);
-    // Phase 2 cannot start until the AC-446.1/AC-446.6 conflict is decided —
-    // a faithful port fails one of the two pinned tests either way, so this is
-    // a hard prerequisite, not advice.
-    // The semantics question must be surfaced to the owner before the port —
-    // stated as a decision to settle early, not (as an earlier draft had it)
-    // an unsatisfiable hard blocker.
+    // The safe-target semantics question must be surfaced to the owner before
+    // the port — stated as a decision to settle early, NOT (as an earlier
+    // draft had it) an unsatisfiable hard blocker. Both halves are pinned:
+    // the gate exists, and it is not a blocker.
     expect(doc).toMatch(/Decide §4's safe-target question before writing the port/);
+    expect(doc).toMatch(/not a blocker/);
+    expect(doc).toMatch(/Phase 2 is not blocked/);
+    expect(doc).toMatch(/Three live options/);
   });
 
   it('AC-451.6: the recommendation weighs the tripwire-not-boundary and no-auto-approve facts honestly before recommending', async () => {
