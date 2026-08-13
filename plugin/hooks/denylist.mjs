@@ -286,7 +286,7 @@ const ANSI_C_ESCAPES = {
   r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
 };
 
-function normalizeShellText(rawCommand) {
+export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
   // Carriage returns go FIRST, before any other rule looks at the text.
   // Verified on this platform's own bash (both the Cygwin and the
   // Git-for-Windows/MSYS2 builds): a bare CR is stripped mid-token (`a\rb`
@@ -328,7 +328,31 @@ function normalizeShellText(rawCommand) {
   // ONLY, not control bytes generally: VT/FF are real in-token data that bash
   // does not word-split on, and splitting there is exactly the non-IFS bypass
   // the IFS split above exists to prevent.
-  const command = rawCommand.replace(/\r/g, '').replace(/\0/g, ' ');
+  //
+  // The SPACE mapping is not the only legitimate reading, though (#452). A
+  // space is a non-letter, so it closes the target-splice class above but
+  // opens a DIFFERENT one: `shortFlagCluster()` (below) collects short-flag
+  // letters via a contiguous run immediately after a `-`, and a space breaks
+  // that contiguity exactly as the raw byte did — `-r<NUL>f` normalises to
+  // `-r f`, which no longer reads as a bundled `-rf`, while a real shell drops
+  // the NUL and hands the target program the fully intact `-rf`. Deleting the
+  // byte instead (bash's actual behaviour) closes THAT class but reopens the
+  // target-splice one: `/prod-secrets<NUL>/scratchpad` fuses to
+  // `/prod-secrets/scratchpad`, whose tail component is on the safe list. No
+  // single global substitution closes both (verified against `check()` in
+  // both directions).
+  //
+  // So this function takes the NUL-handling mode as a caller-supplied
+  // PARAMETER rather than picking one globally. `check()` below calls it
+  // TWICE per command — once with the default SPACE mapping (unchanged, and
+  // the only one `recursive-delete`'s own `safeRmTarget()` target-parsing
+  // ever sees, so `AC-446.6`'s pinned splice tests need no change at all),
+  // and once with `nulReplacement: ''` (bash's real fuse behaviour) for the
+  // flag-cluster-sensitive rules that need contiguous letters to survive a
+  // NUL landing mid-flag. Neither mapping touches a `;|&\n` separator
+  // character, so the two views always segment identically — see the
+  // `AC-452.*` regression test in the test file that pins exactly that.
+  const command = rawCommand.replace(/\r/g, '').replace(/\0/g, nulReplacement);
   // Output is accumulated as single-character CHUNKS and joined once at the
   // end, rather than appended onto a growing string.
   //
@@ -497,9 +521,25 @@ function normalizeShellText(rawCommand) {
   return parts.join('');
 }
 
+// Rule-level `view` (#452): which of check()'s two normalizeShellText() outputs
+// a rule's `test()` receives as its segment text. Default (omitted) is the
+// SPACE view — unchanged behaviour, and the only view `recursive-delete`'s own
+// `safeRmTarget()` target-parsing ever sees (AC-446.6 needs zero changes).
+// `view: 'nulDeleted'` opts a rule into the NUL-DELETED view instead: every
+// rule here that judges a bundled short-flag cluster or a long-flag spelling
+// as its WHOLE test — force-push, env-branch-delete, hard-reset,
+// git-clean-force — needs contiguous letters to survive a NUL landing
+// mid-flag, exactly as a real shell (which drops the byte, not spaces it)
+// would hand the target program. `recursive-delete` is the one rule that
+// needs BOTH views at once — its own `shortFlagCluster()` call wants the
+// NUL-deleted text, but its target parsing must keep reading the NUL-as-space
+// text unchanged — so it alone declares no `view` (space stays primary) and
+// instead takes the deleted-view text as its test function's SECOND argument
+// (see check() below).
 export const RULES = [
   {
     name: 'force-push',
+    view: 'nulDeleted',
     // git has FOUR documented ways to force-update a published ref, and this
     // rule historically matched only the first two spellings (#429). Each of
     // the others was a real forced push that slipped through — and, once the
@@ -538,6 +578,7 @@ export const RULES = [
   },
   {
     name: 'env-branch-delete',
+    view: 'nulDeleted',
     // `git push` accepts `-d` as the literal short form of `--delete` (`git push
     // -h`); the old regex checked only `--delete` and a bare `:` refspec, so
     // `git push -d origin main` — a real, immediate remote branch delete —
@@ -571,6 +612,7 @@ export const RULES = [
   },
   {
     name: 'hard-reset',
+    view: 'nulDeleted',
     // `git reset`'s own long-option set (`git reset -h`, verified against git
     // 2.55) has exactly ONE option starting with "h" — --hard — so --h/--ha/
     // --har/--hard are all UNAMBIGUOUS abbreviations git itself accepts (parse-
@@ -599,6 +641,7 @@ export const RULES = [
   },
   {
     name: 'git-clean-force',
+    view: 'nulDeleted',
     // Audited for the #437 adjacency/spelling class: NOT anchored to be
     // adjacent to `clean` (the `[^\n]*` already spans any other flags in any
     // order — `git clean -n -f`, `git clean --interactive --force` both match
@@ -624,13 +667,21 @@ export const RULES = [
   },
   {
     name: 'recursive-delete',
-    test: (c) => {
+    // The one rule needing BOTH normalizeShellText() views at once (#452): its
+    // own shortFlagCluster() call below reads `cNulDeleted` (a NUL inside a
+    // cluster, e.g. `-r<NUL>f`, must still collect as `rf` the way a real
+    // shell's dropped-byte behaviour would hand `rm` the bundled `-rf`), while
+    // `rest`/`safeRmTarget()` keep reading `c` — the NUL-as-SPACE view —
+    // completely unchanged, so AC-446.6's pinned target-splice tests need no
+    // edits at all.
+    test: (c, cNulDeleted) => {
       if (!/\brm\b/.test(c)) return false;
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
-      // helper. Deliberately alpha-only (default) where force-push above passes
-      // `alnum: true`: git has numeric short flags (`-4`) that can bundle with
-      // `-f`, `rm` has none, so widening here would buy nothing.
-      const shortFlags = shortFlagCluster(c);
+      // helper, from the NUL-DELETED view. Deliberately alpha-only (default)
+      // where force-push above passes `alnum: true`: git has numeric short
+      // flags (`-4`) that can bundle with `-f`, `rm` has none, so widening
+      // here would buy nothing.
+      const shortFlags = shortFlagCluster(cNulDeleted);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
       const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
@@ -639,7 +690,8 @@ export const RULES = [
       const rest = c.slice(c.indexOf('rm'));
       // EVERY target must be safe, not merely one of them (#446) — see
       // safeRmTarget(): a single safe-looking decoy argument used to exempt
-      // the whole command, however many real targets sat beside it.
+      // the whole command, however many real targets sat beside it. Reads the
+      // SPACE view (`c`/`rest`), unchanged from before #452.
       return !safeRmTarget(rest);
     },
     msg: 'rm -rf (incl. --recursive --force) outside build/temp dirs',
@@ -715,11 +767,38 @@ export function check(command) {
   } catch {
     normalized = command;
   }
+  // A second view of the same command, with a raw NUL byte DELETED rather than
+  // mapped to a space — bash's own fuse behaviour, and what the flag-cluster-
+  // sensitive rules below need (#452; see normalizeShellText()'s NUL comment
+  // for why one global choice cannot serve both this and the target-splice
+  // class #446 closed). Same never-throws fallback as `normalized` above.
+  let normalizedNulDeleted;
+  try {
+    normalizedNulDeleted = normalizeShellText(command, { nulReplacement: '' });
+  } catch {
+    normalizedNulDeleted = normalized;
+  }
   const segs = segments(normalized);
+  const segsNulDeleted = segments(normalizedNulDeleted);
   for (const rule of RULES) {
+    const useNulDeleted = rule.view === 'nulDeleted';
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
-    // that segments() splits on); all others test each split sub-command.
-    const hit = rule.scope === 'full' ? rule.test(normalized) : segs.some((seg) => rule.test(seg));
+    // that segments() splits on); all others test each split sub-command. Every
+    // rule's test() gets its OWN configured view (default: space) as the FIRST
+    // argument and the OTHER view as the second, so recursive-delete — the one
+    // rule that reads both (its own shortFlagCluster() call wants NUL-deleted,
+    // its safeRmTarget() target parsing must keep reading NUL-as-space) — can
+    // use whichever it needs without a third normalization pass. The `?? seg`
+    // fallback on the second argument is defensive only: segs/segsNulDeleted
+    // are proven to always segment identically (AC-452 regression test in the
+    // test file), so index i is always in range in practice.
+    const hit = rule.scope === 'full'
+      ? rule.test(
+          useNulDeleted ? normalizedNulDeleted : normalized,
+          useNulDeleted ? normalized : normalizedNulDeleted,
+        )
+      : (useNulDeleted ? segsNulDeleted : segs).some((seg, i) =>
+          rule.test(seg, (useNulDeleted ? segs : segsNulDeleted)[i] ?? seg));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };

@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { check, handle, segments } from '../../plugin/hooks/denylist.mjs';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { check, handle, segments, normalizeShellText } from '../../plugin/hooks/denylist.mjs';
 import { escalateMessage } from '../../plugin/scripts/lib/escalate-msg.mjs';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const denylistPath = join(repoRoot, 'plugin', 'hooks', 'denylist.mjs');
+const thisTestPath = fileURLToPath(import.meta.url);
 
 describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () => {
   it('AC-B85.1: a push chained with an unrelated `gh … -f` is NOT force-push', () => {
@@ -1126,6 +1133,118 @@ describe('long-option abbreviations git itself accepts (#437, AC-437.6)', () => 
     expect(check('git push --force-with-lease --force-if-includes origin feat/x').blocked).toBe(false);
     // ...and a real --force alongside them is still a real force-push.
     expect(check('git push --force --force-if-includes origin main').rule).toBe('force-push');
+  });
+});
+
+describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452, AC-452.*)', () => {
+  const NUL = String.fromCharCode(0);
+
+  // AC-452.1 — shortFlagCluster() collects short-flag letters via a
+  // contiguous run immediately after a `-`; a raw NUL landing inside that
+  // run broke the run exactly as an inert SPACE would (#446's own NUL
+  // handling maps to a space, and a space is a non-letter too), so all four
+  // rules below saw a broken cluster and returned blocked:false while a real
+  // shell drops the byte and hands the target program the fully intact flag.
+  // Each case is the ticket's own reproduction. env-branch-delete's own gate
+  // on a PROTECTED branch name is unrelated to this bug and unchanged here —
+  // `main` stands in for the ticket's illustrative `somebranch`, which the
+  // rule was never going to fire on regardless of the NUL, since it targets
+  // only main/master/staging/production by design.
+  it('AC-452.1: recursive-delete blocks a NUL inside the -rf cluster', () => {
+    expect(check(`rm -r${NUL}f /prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  it('AC-452.1: force-push blocks a NUL inside the -uf cluster', () => {
+    expect(check(`git push -u${NUL}f origin main`)).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-452.1: git-clean-force blocks a NUL inside the -xdf cluster', () => {
+    expect(check(`git clean -xd${NUL}f`)).toMatchObject({ blocked: true, rule: 'git-clean-force' });
+  });
+
+  it('AC-452.1: env-branch-delete blocks a NUL inside the -D cluster on a protected branch', () => {
+    expect(check(`git branch -${NUL}D main`)).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+  });
+
+  // AC-452.2 — the fix is a DUAL view, not a global switch: recursive-delete's
+  // own safeRmTarget() target parsing keeps reading the pre-existing NUL-as-
+  // SPACE text unchanged, so #446's target-path splice (AC-446.6,
+  // tests/hooks/denylist.test.mjs:442-483 — untouched by this ticket) still
+  // blocks. Re-verified here as its own regression guard rather than editing
+  // those pinned tests, which is exactly what AC.2 requires.
+  it('AC-452.2: the #446 target-path NUL splice stays blocked (dual-view fix never touches safeRmTarget())', () => {
+    expect(check(`rm -rf /prod-secrets${NUL}/scratchpad`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    // ...and the safe/safe case beside it stays exempt, same as AC-446.6.
+    expect(check(`rm -rf dist${NUL}build`).blocked).toBe(false);
+  });
+
+  // AC-452.3 — when a command carries no NUL at all, the two normalizeShellText()
+  // views ARE the same text, so every pre-existing safe-target and NBSP/VT/FF
+  // class-5 case must keep its exact pre-#452 outcome. Spot-checked here for
+  // the four rules #452 touches specifically — AC-312.*, AC-446.1 and AC-450.*
+  // above already pin the full matrix, unmodified, which is what actually
+  // satisfies AC.3; this is a targeted regression guard on top of that.
+  it('AC-452.3: safe-target and non-IFS class-5 cases are unaffected by the dual-view fix', () => {
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build')).toMatchObject({ blocked: true, rule: 'recursive-delete' }); // NBSP, class 5
+    expect(check('git push -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git reset --hard HEAD~3')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+    expect(check('git clean -n -f')).toMatchObject({ blocked: true, rule: 'git-clean-force' });
+    expect(check('git push --force-with-lease origin feat/x').blocked).toBe(false);
+  });
+
+  // AC-452.4 (regression guard, not new work) — the exec-layer behaviour claim
+  // PR #453 already corrected must not regress back to a truncation model
+  // while this ticket's own comments touch the same NUL-handling code.
+  // Asserted POSITIVELY (the correct claims are present) rather than by
+  // banning the substring "truncat", which also appears inside several
+  // correctly-negated sentences ("NOT a truncation bug") that must stay.
+  it('AC-452.4: denylist.mjs and its own tests still state the fuse/throw model, not truncation', async () => {
+    const src = await readFile(denylistPath, 'utf8');
+    const testSrc = await readFile(thisTestPath, 'utf8');
+    for (const doc of [src, testSrc]) {
+      expect(doc).toMatch(/throws[^.]*on an embedded NUL/);
+      expect(doc).toMatch(/drops the (embedded )?(byte|NUL)/);
+      expect(doc).toMatch(/fuses/);
+    }
+  });
+
+  // AC-452.5 — the two normalizeShellText() views (default NUL-as-SPACE, and
+  // NUL-DELETED via `{ nulReplacement: '' }`) must always segment IDENTICALLY:
+  // check() indexes segsNulDeleted[i] against segs[i] (and vice versa) to hand
+  // recursive-delete both views of the SAME segment, so a length or order
+  // mismatch between the two views would silently desync a rule from the
+  // segment it is actually judging. Neither NUL-handling mode touches a
+  // `;|&\n` separator character, so this is a structural guarantee, not a
+  // coincidence of these particular inputs — verified empirically here rather
+  // than merely asserted in a comment.
+  it('AC-452.5: the NUL-as-space and NUL-deleted views always segment identically (count and order)', () => {
+    const cases = [
+      `rm -r${NUL}f /prod-secrets`,
+      `git push -u${NUL}f origin main`,
+      `git clean -xd${NUL}f`,
+      `git branch -${NUL}D main`,
+      `rm -rf /prod-secrets${NUL}/scratchpad`,
+      `echo one${NUL}two; git push -u${NUL}f origin main`,
+      `git reset --h${NUL}ard && rm -r${NUL}f build`,
+      `a${NUL} | b${NUL} || c${NUL}\nd${NUL}`,
+      `${NUL}${NUL}rm -rf${NUL}${NUL}`,
+      'no NUL at all in this one',
+      `"quoted ${NUL} text" ; rm -rf${NUL}build`,
+    ];
+    for (const cmd of cases) {
+      const spaceView = segments(normalizeShellText(cmd));
+      const deletedView = segments(normalizeShellText(cmd, { nulReplacement: '' }));
+      expect(deletedView.length, cmd).toBe(spaceView.length);
+      // Order: strip ALL whitespace from each corresponding pair before
+      // comparing, since the only structural difference between the two
+      // views is an extra inert space (space view) vs. nothing (deleted
+      // view) at each former NUL position — never a difference in which
+      // non-whitespace characters appear, or in what order.
+      for (let i = 0; i < spaceView.length; i++) {
+        expect(deletedView[i].replace(/\s/g, ''), `${cmd} segment ${i}`).toBe(spaceView[i].replace(/\s/g, ''));
+      }
+    }
   });
 });
 
