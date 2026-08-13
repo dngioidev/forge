@@ -214,20 +214,29 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     // of one of them, e.g. `--edi` — verified against live git 2.55 to resolve
     // to `--edit`, since no other `git add` long option starts "edi") falls to
     // `ask` the same way it does for every other argument-sensitive prefix
-    // here. Every other flag stages only and never discards, unlike
-    // `checkout`'s ref-vs-path ambiguity: `-A`/`--all` and `-u`/`--update`
-    // widen WHICH tracked/untracked files are staged, never what happens to
-    // them; `-f`/`--force` stages otherwise-ignored files, it does not
-    // overwrite or delete anything; `-n`/`--dry-run`, `-v`/`--verbose`,
-    // `--sparse`, `--refresh`, `--ignore-errors`, `--ignore-missing`,
-    // `--no-warn-embedded-repo` and `--renormalize` are all inert w.r.t.
-    // destructiveness.
+    // here.
+    //
+    // `-f`/`--force` is ALSO excluded by omission, and deliberately not in the
+    // "safe" set an earlier draft of this guard shipped it in (#444 adversarial
+    // security review). Its danger isn't destruction — staging an otherwise-
+    // ignored file overwrites nothing — it's EXFILTRATION: `-f`/`--force` is
+    // git's literal mechanism for overriding `.gitignore`, and this repo's own
+    // `.gitignore` protects exactly the class of file that matters
+    // (`runner.env`, carrying `FORGE_RUNNER_PAT` per
+    // docs/guides/runner-adoption.md). `git add --force runner.env` followed by
+    // the already-unguarded `git commit`/`git push` is a zero-human-checkpoint
+    // path from a gitignored credential to a pushed commit. Every other flag
+    // below stages only and changes nothing about WHICH protection a file has:
+    // `-A`/`--all` and `-u`/`--update` widen which tracked/untracked files are
+    // staged but do NOT bypass `.gitignore` on their own (only `--force` does);
+    // `-n`/`--dry-run`, `-v`/`--verbose`, `--sparse`, `--refresh`,
+    // `--ignore-errors`, `--ignore-missing`, `--no-warn-embedded-repo` and
+    // `--renormalize` are all inert w.r.t. both destructiveness and secrecy.
     argsOk: flagsAndOperands(
       '-A', '--all', '--no-ignore-removal',
       '-u', '--update',
       '-n', '--dry-run',
       '-v', '--verbose',
-      '-f', '--force',
       '--sparse', '--refresh',
       '--ignore-errors', '--ignore-missing', '--no-warn-embedded-repo',
       '--renormalize',

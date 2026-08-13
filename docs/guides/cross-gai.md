@@ -418,16 +418,22 @@ history"*.
 | `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
 | `pnpm verify` | the bare command, nothing else | any argument — pnpm forwards them to `vitest`, whose `--reporter=<path>` / `--config=<path>` `import()`s that module at startup |
 | `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
-| `git add` | `-A`/`--all`, `-u`/`--update`, `-n`/`--dry-run`, `-v`/`--verbose`, `-f`/`--force`, `--sparse`, `--refresh`, `--ignore-errors`, `--ignore-missing`, `--renormalize`, plain paths | `-p`/`--patch`, `-i`/`--interactive` (interactive prompt loops), `-e`/`--edit` (opens `$EDITOR` — arbitrary program launch) |
+| `git add` | `-A`/`--all`, `--no-ignore-removal`, `-u`/`--update`, `-n`/`--dry-run`, `-v`/`--verbose`, `--sparse`, `--refresh`, `--ignore-errors`, `--ignore-missing`, `--no-warn-embedded-repo`, `--renormalize`, plain paths | `-p`/`--patch`, `-i`/`--interactive` (interactive prompt loops), `-e`/`--edit` (opens `$EDITOR` — arbitrary program launch), `-f`/`--force` (overrides `.gitignore` — can silently stage a gitignored secret file) |
 | `git fetch` | plain refs/remotes and inert flags (`--all`, `--tags`, `--prune`, `-q`, `-v`) | `--upload-pack=<program>` and its abbreviations — overrides the remote helper and executes that program |
 | `git rebase` | plain refs and flow control (`--continue`, `--abort`, `--skip`, `--onto`, `-q`, `--autostash`) | `-x` / `--exec` (runs arbitrary shell after every replayed commit), `-i` |
 | `git checkout` | branch **creation** only — `-b <name>`, optionally from a start point | everything else, including plain `git checkout main` (see below) |
 | `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |
 
-`git add -p`/`-i`/`-e` still asking is **expected and by-design**, the same
-way plain `git checkout main` asking is (see below) — a future
-flow-measurement finding those three spellings still prompt is not a
-regression to reopen, it is the guard working as intended.
+`git add -p`/`-i`/`-e`/`-f`/`--force` still asking is **expected and
+by-design**, the same way plain `git checkout main` asking is (see below) — a
+future flow-measurement finding those spellings still prompt is not a
+regression to reopen, it is the guard working as intended. `-f`/`--force` was
+in an earlier draft of the safe set (reasoned only about destruction — it
+stages, it doesn't overwrite) until adversarial review found the real risk is
+exfiltration: `--force` is git's own mechanism for overriding `.gitignore`,
+and it's git's *documented remedy* for a blocked add (`git add`'s own hint
+text literally suggests `-f`), so this isn't a contrived spelling — it's the
+next thing an agent would naturally try.
 
 That direction is not stylistic. git's parse-options accepts **unambiguous
 long-option abbreviations**, so `git push --mir` *is* `--mirror` and

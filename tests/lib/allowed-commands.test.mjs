@@ -153,9 +153,19 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
       'git add --all',
       'git add -n',
       'git add -v src/foo.mjs',
-      'git add --force src/foo.mjs',
       'git add --sparse',
       'git add --renormalize',
+      // Full remaining stated safe set (#444 reviewer finding), so every
+      // entry in argsOk's flagsAndOperands() list is actually pinned, not
+      // just a representative subset.
+      'git add --no-ignore-removal',
+      'git add --update',
+      'git add --dry-run',
+      'git add --verbose',
+      'git add --refresh',
+      'git add --ignore-errors',
+      'git add --ignore-missing',
+      'git add --no-warn-embedded-repo',
     ]) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
     }
@@ -170,6 +180,38 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
                                   // (verified live — no other `git add` long option starts "edi"),
                                   // and the guard must not let it through either
       'git add --some-unknown-flag',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
+  it('AC-444.2 (fix wave, reviewer finding): a bundled short-flag cluster cannot smuggle `git add` past the guard — the class the file\'s own history (allowed-commands.mjs:98-99, "-uf bundled short flags") already found missed once for `git push`', () => {
+    // flagsAndOperands() does an exact-string Set lookup per token; a bundled
+    // cluster like `-uf` is a single token that equals none of the safe
+    // strings and doesn't match PLAIN_OPERAND (leading `-`), so it must ask —
+    // proven here rather than left to follow from the mechanism alone.
+    for (const cmd of ['git add -uf', 'git add -Af', 'git add -nf', 'git add -fu']) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
+  it('AC-444.2 (fix wave, adversarial security finding): `-f`/`--force` is EXCLUDED from the `git add` safe set — it overrides .gitignore, not just "stages ignored files"', () => {
+    // `-f`/`--force` shipped in an earlier draft of the guard on the reasoning
+    // "stages otherwise-ignored files, does not discard anything" — true, but
+    // that's ONE threat class (destruction). It missed a second: EXFILTRATION.
+    // `--force` is git's literal mechanism for overriding `.gitignore`, and this
+    // repo's own `.gitignore` protects exactly the file class that matters
+    // (`runner.env`, carrying a live PAT per docs/guides/runner-adoption.md).
+    // `git add --force runner.env` followed by the already-unguarded
+    // `git commit`/`git push` would be a zero-human-checkpoint path from a
+    // gitignored credential to a pushed commit — so this must ask, not allow.
+    for (const cmd of [
+      'git add -f',
+      'git add --force',
+      'git add -f runner.env',
+      'git add --force runner.env',
+      'git add --force .env',
+      'git add -f secrets/prod.key',
     ]) {
       expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
     }

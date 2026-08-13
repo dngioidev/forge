@@ -93,6 +93,39 @@ tests/docs/git-add-allowlist.test.mjs
 **Done:** Task 1's `allowed-commands.test.mjs` and `agy-deny.test.mjs`
 assertions pass.
 
+## Fix wave: adversarial `reviewer` and `security` passes, run in parallel on the full branch
+
+Both independently found the same critical/high issue: an earlier draft of
+the `git add` safe set included `-f`/`--force`, reasoned about only as
+"stages otherwise-ignored files, does not discard anything" — true for
+destruction, but blind to a second threat class, **exfiltration**.
+`-f`/`--force` is git's own mechanism for overriding `.gitignore`, and this
+repo's own `.gitignore` protects exactly the file class that matters
+(`runner.env`, carrying a live PAT per `docs/guides/runner-adoption.md`).
+`git add --force runner.env` followed by the already-unguarded
+`git commit`/`git push` chain would be a zero-human-checkpoint path from a
+gitignored credential to a pushed commit — and the reviewer noted `git add`'s
+own hint text for a blocked add literally suggests `-f` as the fix, so this
+isn't a contrived spelling. Cleanly excludable by the positive model (drop it
+from the safe set; it falls to `ask` exactly like `-p`/`-i`/`-e` already do),
+so this did not reopen AC.1 — it narrowed AC.2's enumerated safe set by one
+flag. Fixed: `-f`/`--force` removed from `git add`'s `flagsAndOperands()`
+call, comment updated to state the exfiltration risk explicitly, `cross-gai.md`'s
+table and by-design-asks sentence updated, and a dedicated regression test
+added (`git add -f runner.env`, `--force .env`, etc. all refused).
+
+The reviewer also flagged three smaller gaps in the same pass, all fixed
+here: no test exercised a bundled short-flag cluster for `git add` (e.g.
+`-uf`) — the exact hazard class this file's own history comment already
+names as previously missed for `git push` — now pinned; several of the
+stated-safe flags (`--no-ignore-removal`, `--update`, `--dry-run`,
+`--verbose`, `--refresh`, `--ignore-errors`, `--ignore-missing`,
+`--no-warn-embedded-repo`) had no "allowed" test case even though the
+mechanism (`flagsAndOperands`'s flat Set lookup) made them low-risk — now all
+pinned; and `cross-gai.md`'s table row omitted `--no-ignore-removal` and
+`--no-warn-embedded-repo` from the auto-approved column despite both being in
+the code's actual safe set — now complete.
+
 ## Task 3 (docs): cross-gai.md + install.md + docsync
 
 - `docs/guides/cross-gai.md`: add `git add` as an eighth row to the
