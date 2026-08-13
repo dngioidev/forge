@@ -1,36 +1,77 @@
 #!/usr/bin/env node
 /**
- * autopilot return-then-resume watchdog (#319, epic #183).
+ * autopilot return-then-resume watchdog (#319, #464, epic #183).
  *
- * The headline autopilot stall: a delivery subagent opens a PR, watches CI to
- * green, and then RETURNS reporting `awaiting-merge` — awaiting a re-invocation
- * that never comes. Its context is discarded on return and nothing re-drives it,
- * so the ticket parks at an open, green PR forever. There was no detection today:
- * the loop read the report and moved on, silently leaving the ticket un-merged —
- * and a subagent that never moved the board status may never be re-selected.
+ * Two distinct stalls share the same root cause — a subagent RETURNS instead
+ * of resolving to a real terminal state, discarding the context that would
+ * have let it finish, and nothing re-invokes it:
  *
- * This is the mechanical detector the loop runs the moment it reads a delivery
- * subagent's terminal report. It is PURE — it maps a returned report to a single
- * action, so the invariant is testable in isolation from GitHub:
+ * 1. **`awaiting-merge` (#319).** A delivery subagent opens a PR, watches CI to
+ *    green, and then returns reporting `awaiting-merge` — awaiting a
+ *    re-invocation that never comes. The ticket parks at an open, green PR
+ *    forever.
+ * 2. **Stalled-before-PR (#464).** A delivery subagent spawns a
+ *    `forge:reviewer`/`forge:security` subagent, then RETURNS before even
+ *    reaching a PR (or with one still open awaiting review) — with a terminal
+ *    report that is not the `{issue, outcome, pr, ciGreen, ...}` contract at
+ *    all, just free text like "Waiting on the reviewer's re-confirmation."
+ *    There is no `pr` to re-drive and no `outcome` to map. Before #464 this
+ *    fell through the same `outcome !== STALL_OUTCOME` branch as an
+ *    already-resolved report, silently recording `outcome: null` as if the
+ *    ticket were done.
  *
- *   INVARIANT: an `awaiting-merge` report is NEVER left as a silent terminal
- *   state. On a green PR it either MERGES (auto-merge authority → funnel the PR
- *   through the tested bar, `runMerge`) or is SURFACED (pr-only / can't-merge →
- *   escalate, recording awaiting-human/escalated visibly) — never silently parked
- *   as if resolved.
+ * This is the mechanical detector the loop runs the moment it reads a
+ * subagent's terminal report. It is PURE — it maps a returned report to a
+ * single action, so both invariants are testable in isolation from GitHub:
  *
- * Every other outcome (merged/escalated/awaiting-human/skipped) is already a
- * resolved, recordable state, so the watchdog passes it through as `continue`.
- * The merge action funnels to `merge.mjs` `runMerge`, which RE-checks CI itself
- * (fail-closed), so the watchdog's `ciGreen` is a gate on even attempting it, not
- * a substitute for the bar.
+ *   INVARIANT (#319): an `awaiting-merge` report is NEVER left as a silent
+ *   terminal state. On a green PR it either MERGES (auto-merge authority →
+ *   funnel the PR through the tested bar, `runMerge`) or is SURFACED (pr-only
+ *   / can't-merge → escalate, recording awaiting-human/escalated visibly).
+ *
+ *   INVARIANT (#464): an `outcome` that is not one of the known resolved
+ *   states (and not the `awaiting-merge` sentinel) is NEVER recorded as if it
+ *   were one — free text, a missing outcome, or anything else non-conforming
+ *   resolves to `action: 'respawn'`, `outcome: 'stalled-before-pr'` (itself
+ *   recordable — `ledger.mjs`'s `OUTCOMES` carries it — so the run report
+ *   shows the stall rather than the ledger throwing on an unknown outcome),
+ *   carrying `pr` through when one already exists so the loop knows whether
+ *   it's resuming to open a first PR or resuming a subagent already
+ *   mid-review. The actual resume/re-spawn mechanics are the loop's
+ *   (orchestrator prose today; #474 is the follow-up to automate the relay) —
+ *   this function only classifies, it never performs IO. Named `respawn`, not
+ *   `resume`, to avoid colliding with `select.mjs`'s unrelated `resume`
+ *   action (re-picking an in-flight ticket at the next selection).
+ *
+ * Every genuinely resolved outcome (merged/escalated/awaiting-human/skipped/
+ * ready) is already recordable, so the watchdog passes it through as
+ * `continue`. The merge action funnels to `merge.mjs` `runMerge`, which
+ * RE-checks CI itself (fail-closed), so the watchdog's `ciGreen` is a gate on
+ * even attempting it, not a substitute for the bar.
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isAutoMergeMode } from './preflight.mjs';
 
-/** The one returned outcome that is NOT a resolved terminal state — the stall this guards. */
+/** The one returned outcome that is NOT a resolved terminal state — the #319 stall this guards. */
 export const STALL_OUTCOME = 'awaiting-merge';
+
+/**
+ * Outcomes a `deliver`/`resume`/`shape`/`triage` subagent can legitimately
+ * report as an already-resolved terminal state — safe to record and continue.
+ * Mirrors `ledger.mjs`'s `OUTCOMES` (the ledger-recordable vocabulary), which
+ * already includes shape's `ready` alongside delivery's own outcomes.
+ */
+export const RESOLVED_OUTCOMES = ['merged', 'escalated', 'awaiting-human', 'skipped', 'ready'];
+
+/**
+ * The #464 stall: a non-conforming terminal report — `outcome` missing, or not
+ * one of `RESOLVED_OUTCOMES`/`STALL_OUTCOME` (typically free text like
+ * "waiting on the reviewer's re-confirmation"). A real, recordable, actionable
+ * state (`ledger.mjs`'s `OUTCOMES` carries it) — never a silent
+ * `continue`/`outcome: null`.
+ */
+export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
 
 /**
  * Resolve a delivery subagent's terminal report into a loop action.
@@ -41,22 +82,46 @@ export const STALL_OUTCOME = 'awaiting-merge';
  * @param {boolean} [report.ciGreen]        did the subagent observe CI green in-run?
  * @param {string|null} [report.mergeMode]  the run's effective merge mode
  *   (`auto-merge`|`pr-only`) as recorded by the preflight in run.json.
- * @returns {{ action:'merge'|'escalate'|'continue', pr?:number, outcome:(string|null), reason:string }}
+ * @returns {{ action:'merge'|'escalate'|'respawn'|'continue', pr?:(number|null), outcome:(string|null), reason:string }}
  *   `merge`    → funnel `pr` through `runMerge` (the tested bar re-checks CI).
  *   `escalate` → surface visibly; `outcome` is the state the loop records —
  *                `awaiting-human` for a green PR with no merge authority (pr-only),
  *                else `escalated` for a genuinely un-mergeable return.
+ *   `respawn`  → #464: a non-conforming report (not a resolved outcome, not
+ *                `awaiting-merge`) — resume or re-spawn the subagent; `pr` is
+ *                the already-open PR when one exists, else `null`. Never a
+ *                silent park. (Named `respawn`, not `resume`, to stay distinct
+ *                from `select.mjs`'s own `resume` selection action.)
  *   `continue` → already resolved; record the reported `outcome` and move on.
  */
 export function resolveReturnedTicket({ outcome, pr = null, ciGreen = false, mergeMode = null } = {}) {
   if (outcome !== STALL_OUTCOME) {
+    if (RESOLVED_OUTCOMES.includes(outcome)) {
+      return {
+        action: 'continue',
+        outcome,
+        reason: `outcome '${outcome}' is already a resolved state — record it and continue`,
+      };
+    }
+    // #464: not a resolved outcome and not the awaiting-merge sentinel — a non-conforming
+    // terminal report (missing outcome, or free text such as "waiting on the reviewer's
+    // re-confirmation"). NEVER record this as though it were resolved; classify it as the
+    // stalled-before-PR recovery instead.
+    const prNumber = Number.isInteger(pr) ? pr : null;
+    const describedOutcome = outcome ? `'${outcome}'` : 'none'; // catches undefined, null, AND '' (#464 review)
     return {
-      action: 'continue',
-      outcome: outcome ?? null,
-      reason: `outcome '${outcome ?? 'none'}' is already a resolved state — record it and continue`,
+      action: 'respawn',
+      outcome: NONCONFORMING_OUTCOME,
+      pr: prNumber,
+      reason:
+        prNumber == null
+          ? `non-conforming terminal report (outcome ${describedOutcome} is not a resolved state) with no PR — ` +
+            'the subagent stalled before reaching one; resume or re-spawn it to reach a PR, never record this as resolved'
+          : `non-conforming terminal report (outcome ${describedOutcome} is not a resolved state) with PR #${prNumber} already open — ` +
+            'the subagent stalled awaiting a verdict; resume it (the orchestrator may already hold the answer) rather than recording this as resolved',
     };
   }
-  // From here: an awaiting-merge report — the return-then-resume stall. Never leave it silent.
+  // From here: an awaiting-merge report — the #319 return-then-resume stall. Never leave it silent.
   if (!Number.isInteger(pr)) {
     return {
       action: 'escalate',
@@ -103,5 +168,7 @@ if (isMain) {
     mergeMode: val('--mode') ?? null,
   });
   console.log(`watchdog: ${dec.action}${dec.pr ? ` (PR #${dec.pr})` : ''} → record ${dec.outcome ?? '—'} — ${dec.reason}`);
-  process.exit(dec.action === 'escalate' ? 3 : 0);
+  // exit codes: 0 continue/merge, 3 escalate, 4 respawn (#464 — distinct from escalate so callers
+  // can tell "surface to a human" apart from "resume/re-spawn the subagent").
+  process.exit(dec.action === 'escalate' ? 3 : dec.action === 'respawn' ? 4 : 0);
 }
