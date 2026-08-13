@@ -1384,6 +1384,268 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
   });
 });
 
+// #448: brace expansion can complete a flag the command text never spells —
+// `--forc{e,}` -> `--force`, `-r{f,}` -> `-rf`, `-{D,}` -> `-D`, and ranges
+// need no comma at all (`--forc{d..e}` -> `--force`, step ranges too:
+// `--f{o..o..1}rce` -> `--force`). An earlier implementation tried to
+// correctly EXPAND every brace form and match the result; five adversarial
+// review rounds found eight defects and it was removed before merge. This
+// ticket's design direction is DETECT-AND-REFUSE instead: a bounded,
+// non-enumerating scan for brace-group syntax in a flag-shaped token, which
+// refuses to certify the command safe without ever generating what the
+// brace resolves to — see hasFlagBrace() in denylist.mjs for the mechanism.
+describe('brace expansion cannot complete a flag the text never spells (#448, AC-448.*)', () => {
+  const NUL = String.fromCharCode(0);
+
+  // AC-448.1 — literal reproductions of every argv example from the ticket's
+  // "The gap" section, across all four rules: comma lists, ranges, AND step
+  // ranges, none of which spell the dangerous flag literally anywhere in
+  // the command text.
+  it('AC-448.1: every "the gap" example blocks, across all four rules', () => {
+    const cases = [
+      ['git push --forc{e,} origin main', 'force-push'],
+      ['rm -r{f,} /opt/danger', 'recursive-delete'],
+      ['git branch -{D,} main', 'env-branch-delete'],
+      ['git push -{f,}', 'force-push'],
+      ['git push {--force,} origin main', 'force-push'],
+      ['git push --forc{d..e} origin main', 'force-push'],
+      ['rm -{e..f} /opt/danger', 'recursive-delete'],
+      ['git push --f{o..o..1}rce origin main', 'force-push'],
+    ];
+    for (const [cmd, rule] of cases) {
+      const r = check(cmd);
+      expect(r, cmd).toMatchObject({ blocked: true, rule });
+    }
+  });
+
+  it('AC-448.1: hard-reset and a brace-ambiguous protected-branch push both resolve to blocked, not classified by which flag it is', () => {
+    expect(check('git reset --h{a,}rd')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+    expect(check('git reset --{hard,soft}')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+    // force-push's own scan is unconditional on ANY brace-flagged push, so a
+    // `git push` segment with brace ambiguity resolves there first — still
+    // BLOCKED, which is what AC-448.1 requires; which of the two dangerous
+    // rules gets the credit is not something detect-and-refuse tries to
+    // resolve (that would be classification). A branch-only ambiguity (no
+    // push verb, so force-push's own gate never opens) IS attributed to
+    // env-branch-delete, per the first test in this describe block.
+    expect(check('git push -{d,} origin main:main')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  // AC-448.1 — the eight defects that killed the removed implementation,
+  // re-expressed as input to THIS detector. Each must resolve to a defined,
+  // safe outcome (blocked, or allowed per AC-448.4) — never throw, never
+  // silently pass a real force-push/reset/delete through.
+  it('AC-448.1/AC-448.5: defect 1 (comma-only detection) — a pure RANGE with no comma anywhere blocks', () => {
+    expect(check('git push --forc{d..e} origin main').blocked).toBe(true);
+    expect(() => check('git push --forc{d..e} origin main')).not.toThrow();
+  });
+
+  it('AC-448.1/AC-448.5: defect 2 (range detection missed step ranges) — a THREE-segment step range blocks', () => {
+    expect(check('git push --f{o..o..1}rce origin main').blocked).toBe(true);
+    expect(() => check('git push --f{o..o..1}rce origin main')).not.toThrow();
+  });
+
+  it('AC-448.1/AC-448.2/AC-448.5: defect 3 (single-element range broke a bounded-depth assumption) — 20k reps never throws, completes fast, and resolves safely', () => {
+    const braces = '{a..a}'.repeat(20000);
+    const start = Date.now();
+    const dangerous = check(`rm -r${braces} /opt/danger`);
+    const elapsedDangerous = Date.now() - start;
+    expect(dangerous, 'a dash-prefixed token stays flag-shaped regardless of how many single-element ranges it carries').toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(elapsedDangerous, `took ${elapsedDangerous}ms`).toBeLessThan(500);
+
+    // Same construction on a SAFE target: must not throw, and must resolve —
+    // this file's own recursion-free design has no stack to overflow either way.
+    const start2 = Date.now();
+    expect(() => check(`echo word${braces}`)).not.toThrow();
+    expect(Date.now() - start2).toBeLessThan(500);
+  });
+
+  it('AC-448.1/AC-448.5: defect 4 (first-come budget starvable by cheap padding) — padding BEFORE the dangerous group does not hide it', () => {
+    // The old design generated candidates in order and could exhaust its
+    // budget on cheap alternatives before ever reaching the dangerous one.
+    // This design has no budget: every token is examined independently.
+    const cmd = `git push origin/{a,b},origin/{c,d},origin/{e,f} --forc{e,} origin main`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-448.1/AC-448.5: defect 5 (word-count budget covered only ~log2(budget) groups) — many sequential groups in one token still block', () => {
+    // Spelling "force" one letter per group, well past any log2(N)-sized
+    // budget the old design could have afforded.
+    const cmd = 'rm -{r,}{f,}{o,}{r,}{c,}{e,} /opt/danger';
+    expect(() => check(cmd)).not.toThrow();
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  it('AC-448.1/AC-448.5: defect 6 (padding alternatives can expand to EMPTY) — an all-empty-capable prefix still leaves the dash-shaped token flagged', () => {
+    const cmd = 'git push -{,}{,}{,}{,}f origin main';
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-448.1/AC-448.2/AC-448.3: defect 7 (pool exhaustion let a real force-push through at ~11KB) — a large padded command still blocks, fast', () => {
+    const pad = Array.from({ length: 1200 }, (_, i) => `pad${i}/{a,b}`).join(' ');
+    const cmd = `git push ${pad} --forc{e,} origin main`;
+    expect(cmd.length, 'padding must reach the ~11KB class this defect needed').toBeGreaterThan(10000);
+    const start = Date.now();
+    const r = check(cmd);
+    const elapsed = Date.now() - start;
+    expect(r).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(elapsed, `took ${elapsed}ms for ${cmd.length} chars`).toBeLessThan(500);
+  });
+
+  // AC-448.2/AC-448.3 — defect 8, restated: the removed implementation
+  // turned a 74-byte command into ~188KB the EXISTING `\bgit\b…\bVERB\b`
+  // rules then had to re-scan, driving 4.65s of quadratic backtracking.
+  // This design never materialises anything, so an adversarial input of
+  // comparable scale, constructed DIRECTLY (not via any expansion this code
+  // performs), must stay fast and must not throw — asserted as a hard
+  // absolute wall-clock ceiling, never a ratio, per AC-448.3's explicit
+  // instruction to avoid #486's timing-ratio flake in this same file.
+  it('AC-448.2/AC-448.3: an ~188KB adversarial input completes within a fixed absolute ceiling, not a ratio', () => {
+    const tokens = Array.from({ length: 20000 }, (_, i) => `word${i}/{a,b}`);
+    const cmd = `echo ${tokens.join(' ')}`;
+    expect(cmd.length, 'must reach the 188KB-class scale defect 8 exercised').toBeGreaterThan(150000);
+    const start = Date.now();
+    const r = check(cmd);
+    const elapsed = Date.now() - start;
+    expect(elapsed, `took ${elapsed}ms for ${cmd.length} chars`).toBeLessThan(500);
+    expect(r.blocked).toBe(false); // no dangerous verb/flag anywhere in this one
+  });
+
+  it('AC-448.2: cost is O(command length), not proportional to how many brace groups a token spells out (doubling input does not blow past the absolute ceiling)', () => {
+    for (const reps of [20000, 40000]) {
+      const token = '-' + '{a,b}'.repeat(reps) + 'f';
+      const cmd = `rm -r ${token} /opt/danger`;
+      const start = Date.now();
+      const r = check(cmd);
+      const elapsed = Date.now() - start;
+      expect(r).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+      expect(elapsed, `${reps} groups took ${elapsed}ms`).toBeLessThan(500);
+    }
+  });
+
+  it('AC-448.2/AC-448.3: an UNTERMINATED brace with a dense run of commas cannot trigger quadratic backtracking', () => {
+    // The regex shape `\{[^{}]*(?:,|\.\.)[^{}]*\}` LOOKS equivalent to a
+    // linear scan but is not: on an unterminated brace packed with commas,
+    // the two `[^{}]*` runs can each anchor at every comma in turn. This
+    // detector is built on indexOf() advancing strictly forward instead
+    // (see tokenHasBraceGroup() in denylist.mjs) specifically to avoid that.
+    const commas = ','.repeat(150000);
+    const cmd = `git push -{${commas} origin main`; // never closes
+    const start = Date.now();
+    expect(() => check(cmd)).not.toThrow();
+    const elapsed = Date.now() - start;
+    expect(elapsed, `took ${elapsed}ms`).toBeLessThan(500);
+  });
+
+  // AC-448.4 — brace syntax OUTSIDE a dangerous rule's flag-relevant argument
+  // region is unaffected. This is the AC most at risk from an over-eager
+  // detector, so each of the ticket's named examples is tested directly,
+  // plus a couple of harder variants in the same shape.
+  it('AC-448.4: a GraphQL query value with braces (#85) is unaffected', () => {
+    expect(check("gh api graphql -f query='mutation{addComment(id:$id,body:$b){id}}'").blocked).toBe(false);
+    expect(check("git push origin main && gh api graphql -f query='mutation{x}'").blocked).toBe(false);
+  });
+
+  it('AC-448.4: feat/{a,b}-shaped branch-name arguments are unaffected', () => {
+    expect(check('git push origin feat/{a,b}').blocked).toBe(false);
+    expect(check("git checkout feat/{a,b} && git push origin feat/{a,b}").blocked).toBe(false);
+  });
+
+  it('AC-448.4: node_modules/{a,b}-shaped rm targets are unaffected', () => {
+    expect(check('rm -rf node_modules/{a,b}').blocked).toBe(false);
+    expect(check('rm -rf dist/{a,b} build/{c,d}').blocked).toBe(false);
+  });
+
+  it('AC-448.4: brace text inside a commit message (-m) value is unaffected', () => {
+    expect(check("git commit -m 'Fixed bug in {module-a,module-b}'").blocked).toBe(false);
+    // ...even alongside a rule that DOES inspect this segment for other
+    // reasons (a protected-branch rename, no delete/force flags at all).
+    expect(check("git branch -m 'renamed {old,new}' newname").blocked).toBe(false);
+  });
+
+  it('AC-448.4: a read-only --list pattern naming protected branches inside braces is unaffected', () => {
+    expect(check("git branch --list '{main,dev}'").blocked).toBe(false);
+  });
+
+  it('AC-448.4: an ordinary brace-free command matrix is completely unaffected (regression floor)', () => {
+    for (const cmd of [
+      'git push origin main',
+      'git push --force-with-lease origin feat/x',
+      'rm -rf node_modules',
+      'rm -rf dist build coverage',
+      'git reset HEAD~1',
+      'git branch -D feat/3-old-branch', // not a protected branch — allowed pre-#448 too
+    ]) {
+      expect(check(cmd).blocked, cmd).toBe(false);
+    }
+  });
+
+  // AC-448.5 — check() stays total across the whole AC-448.1–.4 matrix: no
+  // throw, and no rule silently skipped. Re-run as one combined sweep so a
+  // regression anywhere in this set is caught even if a future edit adds a
+  // case to only one of the describe-scoped tests above.
+  it('AC-448.5: check() never throws and always returns a defined verdict, across every case above', () => {
+    const allCases = [
+      'git push --forc{e,} origin main',
+      'rm -r{f,} /opt/danger',
+      'git branch -{D,} main',
+      'git push -{f,}',
+      'git push {--force,} origin main',
+      'git push --forc{d..e} origin main',
+      'rm -{e..f} /opt/danger',
+      'git push --f{o..o..1}rce origin main',
+      "gh api graphql -f query='mutation{x}'",
+      'git push origin feat/{a,b}',
+      'rm -rf node_modules/{a,b}',
+      "git commit -m 'Fixed bug in {module-a,module-b}'",
+      `rm -r${NUL}{f,} /opt/danger`,
+      'git push -{,,,,}f origin main', // degenerate: many empty alternatives
+      'git push -{ origin main',       // unterminated
+      'git push }{ origin main',       // reversed/garbage brace chars
+      '',
+      null,
+    ];
+    for (const cmd of allCases) {
+      let r;
+      expect(() => { r = check(cmd); }, JSON.stringify(cmd)).not.toThrow();
+      expect(typeof r.blocked, JSON.stringify(cmd)).toBe('boolean');
+    }
+  });
+
+  // AC-448.6 — the new detection sits BEHIND normalizeShellText()'s existing
+  // output, not a parallel scan of raw text: quoted and NUL-spliced flag
+  // tokens are resolved by the SAME normalisation every other rule already
+  // relies on before this detector ever looks at the text.
+  it('AC-448.6: a quoted brace-completed flag is still caught, via the existing normaliser', () => {
+    expect(check('git push "--forc{e,}" origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check("git branch -D main").blocked).toBe(true); // sanity: unrelated existing behaviour intact
+  });
+
+  it('AC-448.6: a NUL spliced into a brace-completed flag cluster is still caught (composes with #452\'s dual-view fix)', () => {
+    expect(check(`rm -r${NUL}{f,} /opt/danger`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    // A NUL landing INSIDE the flag cluster also splices spacedText's own
+    // target parsing (#446/#452, pre-existing and unchanged by this ticket):
+    // `spacedText` re-inserts a space at the dropped byte's position, which
+    // here lands BETWEEN the flag and the brace, so `{f,}` itself becomes a
+    // second, unrecognised "target" token for safeRmTarget() to judge — and
+    // brace syntax is not a recognised safe directory name, so this blocks
+    // too, for that pre-existing reason as much as the new one. The safe
+    // direction either way is blocking, consistent with #446's own stated
+    // per-argument design; asserted here as a defined outcome (AC-448.5),
+    // not a claim about which of the two mechanisms fired.
+    expect(check(`rm -r${NUL}{f,} node_modules`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    // A NUL placed OUTSIDE the flag/brace region entirely does not disturb
+    // the pre-existing safe-target exemption.
+    expect(check(`rm -r{f,} node_modules${NUL}`).blocked).toBe(false);
+  });
+
+  it('AC-448.6: normalizeShellText() itself is untouched by this ticket — same text/spacedText contract as #452', () => {
+    const { text, spacedText } = normalizeShellText('git push --forc{e,} origin main');
+    expect(text).toBe('git push --forc{e,} origin main');
+    expect(spacedText).toBe(text); // no NUL in this input, so the two views are identical
+  });
+});
+
 describe('shared escalate message (#321, AC-321.1)', () => {
   const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
 

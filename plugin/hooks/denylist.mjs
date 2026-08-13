@@ -158,6 +158,141 @@ function shortFlagCluster(command, { alnum = false } = {}) {
 }
 
 /**
+ * DETECT, DON'T ENUMERATE (#448). Brace expansion can complete a flag the
+ * command text never spells — `--forc{e,}` -> `--force`, `-r{f,}` -> `-rf`,
+ * `-{D,}` -> `-D`, `{--force,}` -> `--force`, and ranges need no comma at all
+ * (`--forc{d..e}` -> `--force`, `-{e..f}` -> `-f`, a step range too:
+ * `--f{o..o..1}rce` -> `--force`). An earlier implementation tried to
+ * correctly EXPAND every brace form and match the result; five adversarial
+ * review rounds found eight defects in it (stack overflow on a 20k-deep
+ * single-element range, budget starvation, a coverage gap past ~log2(budget)
+ * groups, empty-alternative gluing, pool exhaustion that let a real
+ * force-push through, and — the one that ended the approach — a 74-byte
+ * input expanding to ~188KB that drove the EXISTING `\bgit\b…\bVERB\b` rules
+ * into quadratic backtracking, 4.65s through the real hook entry point
+ * against agy's 10s fail-open timeout). Triage's design call: refuse to
+ * certify a command safe if brace-group syntax sits in a flag-shaped token,
+ * WITHOUT ever generating what it would expand to. No candidate is
+ * generated, stored or counted, so none of those eight bugs has an
+ * equivalent surface here — there is no generation/consumption sequencing
+ * left to get wrong, and cost is a linear scan of text that is never larger
+ * than the command itself (unlike the expand-first approach, which had to
+ * bound something that grows with the text it produces).
+ *
+ * Scoped to a single whitespace-delimited TOKEN at a time — brace expansion
+ * only ever combines with the token it sits inside, never across a real
+ * space — and, within a token, to exactly the question "could this token's
+ * FIRST character, after expansion, be `-` or `+`":
+ *
+ *  - If the token itself already starts with `-`/`+` (`--forc{e,}`,
+ *    `-r{f,}`, `-{D,}`, `+{main,}`), that leading character survives
+ *    whatever the brace group(s) elsewhere in the token resolve to — a
+ *    prefix before the first `{` is literal text, untouched by expansion —
+ *    so the token is ALREADY flag-shaped and any brace-group syntax
+ *    anywhere in it is enough to refuse, without asking which alternative
+ *    would actually be chosen.
+ *  - If the token instead STARTS with `{` (`{--force,}`), the token's own
+ *    first character is undetermined until that leading group resolves, so
+ *    the question becomes "does any comma-separated alternative in that
+ *    FIRST group start with `-`/`+`" — checked by a flat split on ONE
+ *    already-isolated brace group's content, never a cross-product, never
+ *    recursive into a NESTED brace (this file doesn't attempt to parse
+ *    those, on the safe over-block side: a token whose leading group can't
+ *    be closed, or a comma/range this can't resolve, still fails the "does
+ *    an alternative start with -/+" test and is left unflagged by this
+ *    function alone — genuinely dangerous nested/malformed shapes are still
+ *    caught by the literal flag checks these rules already run). A brace
+ *    group LATER in a `{`-leading token cannot change the token's own first
+ *    character, so only the first group needs inspecting.
+ *
+ * Deliberately conservative, matching this file's own stated safe direction
+ * (over-block, not under-block): a flag-shaped token with brace-group syntax
+ * refuses the command whether or not the alternatives it could expand to
+ * would actually be dangerous (`rm -{v,}` — a doubled, harmless -v either
+ * way — now blocks too). Resolving that would mean classifying which
+ * alternative wins, which is exactly the approach five review rounds
+ * rejected.
+ *
+ * This is what keeps AC-448.4's false positives out, and it is a SCOPE
+ * check, not a leniency exception: `query='mutation{...}'` normalises (quote
+ * chars stripped, #437/#473) to a token starting with `q`; a `feat/{a,b}`
+ * branch-name argument starts with `f`; a `node_modules/{a,b}` rm target
+ * starts with `n`; a brace-bearing word inside a commit message value starts
+ * with whatever ordinary letter the message does. None of those tokens
+ * starts with `-`, `+` or `{`, so none of them is ever examined for brace
+ * syntax at all — the scope check runs BEFORE the brace check, not after.
+ *
+ * Reads the SAME per-segment text every rule already reads (`c`, produced by
+ * normalizeShellText() ahead of this call) — a scan behind that existing
+ * output, never a parallel scan of raw text (AC-448.6).
+ */
+function hasFlagBrace(command) {
+  for (const token of command.split(/[ \t\n]+/)) {
+    if (!token || token.indexOf('{') === -1) continue;
+    const first = token[0];
+    if (first === '-' || first === '+') {
+      if (tokenHasBraceGroup(token)) return true;
+      continue;
+    }
+    if (first === '{') {
+      const inner = firstBraceGroupContent(token);
+      if (inner !== null && innerHasFlagAlternative(inner)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Does `token` contain at least one `{…}` pair (no nesting attempted — see
+ * the function-level comment above) whose content is brace-GROUP syntax, not
+ * merely a pair of braces: a comma list or a `..` range/step-range, the two
+ * ways bash brace expansion actually activates. Found by advancing a cursor
+ * strictly forward past each closed pair with `indexOf` — never a
+ * backtracking regex — so the whole scan is a single linear pass over the
+ * token regardless of how many groups it contains or how long any one
+ * group's content is (AC-448.2). A regex shaped like
+ * `\{[^{}]*(?:,|\.\.)[^{}]*\}` looks equivalent but is NOT: on a token that
+ * opens a brace and never closes it, densely packed with commas, the two
+ * `[^{}]*` runs either side of the alternation can each anchor at every
+ * comma in turn, which is the classic quadratic-backtracking shape this
+ * file's own #452 history exists to avoid repeating (AC-448.3).
+ */
+function tokenHasBraceGroup(token) {
+  let i = 0;
+  for (;;) {
+    const open = token.indexOf('{', i);
+    if (open === -1) return false;
+    const close = token.indexOf('}', open + 1);
+    if (close === -1) return false; // unterminated: nothing left to close, nothing more to find
+    const inner = token.slice(open + 1, close);
+    if (inner.indexOf(',') !== -1 || inner.indexOf('..') !== -1) return true;
+    i = close + 1; // strictly forward — total work across all iterations is O(token length)
+  }
+}
+
+/** The content of the FIRST `{…}` pair in a token known to start with `{`. */
+function firstBraceGroupContent(token) {
+  const close = token.indexOf('}', 1);
+  return close === -1 ? null : token.slice(1, close);
+}
+
+/**
+ * Does any top-level comma-separated alternative inside one already-isolated
+ * brace group's content start with `-`/`+`? For a range/step-range (no
+ * comma at all — `d..e`, `o..o..1`), the single "alternative" is the whole
+ * content, so its own leading character is the one that matters. Only ever
+ * called on ONE group's content, never recursed into a nested `{`, never
+ * cross-referenced against a later group — see the function-level comment
+ * above for why that is enough.
+ */
+function innerHasFlagAlternative(inner) {
+  if (inner.indexOf(',') === -1) {
+    return inner.indexOf('..') !== -1 && (inner[0] === '-' || inner[0] === '+');
+  }
+  return inner.split(',').some((alt) => alt[0] === '-' || alt[0] === '+');
+}
+
+/**
  * Build the regex source for a long flag AND every unambiguous abbreviation of
  * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
  * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
@@ -738,7 +873,11 @@ export const RULES = [
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
-      return /f/.test(shortFlagCluster(c, { alnum: true }));
+      if (/f/.test(shortFlagCluster(c, { alnum: true }))) return true;
+      // #448: brace expansion can complete --force/-f/--mirror/+refspec from
+      // text none of the checks above would ever match literally — detect
+      // the brace, don't try to resolve it (see hasFlagBrace()).
+      return hasFlagBrace(c);
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
@@ -763,6 +902,8 @@ export const RULES = [
       if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
         if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
         if (/d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+        // #448: e.g. `git push -{d,} origin main` on a protected branch.
+        if (hasFlagBrace(c)) return true;
       }
       if (/\bgit branch\b/.test(c)) {
         const cluster = shortFlagCluster(c, { alnum: true });
@@ -770,6 +911,8 @@ export const RULES = [
         const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
         const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
         if (hasForce && hasDelete) return true;
+        // #448: e.g. `git branch -{D,} main` — brace-completed -D/-d/-f.
+        if (hasFlagBrace(c)) return true;
       }
       return false;
     },
@@ -800,7 +943,8 @@ export const RULES = [
     // (2) splitting into two ANDed regexes drops the old requirement that
     // `--hard` appear textually AFTER `reset`, so `git --hard reset` now also
     // matches, which is strictly MORE caught, never less.
-    test: (c) => /\bgit\b[^\n]*\breset\b/.test(c) && HARD_RESET.test(c),
+    // #448: `git reset --h{a,}rd` etc. — brace-completed --hard.
+    test: (c) => /\bgit\b[^\n]*\breset\b/.test(c) && (HARD_RESET.test(c) || hasFlagBrace(c)),
     msg: 'git reset --hard discards work irrecoverably',
   },
   {
@@ -850,7 +994,15 @@ export const RULES = [
       // long --force. Both required (AC-312.1), in any order.
       const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
       const force = /f/.test(shortFlags) || /\B--force\b/.test(c);
-      if (!recursive || !force) return false;
+      // #448: a brace-group in a flag-shaped token (e.g. `-r{f,}`, `--forc{e,}`)
+      // could complete EITHER requirement without spelling it literally, and
+      // detect-and-refuse does not classify which one — so its presence
+      // satisfies whichever of the two isn't already literally satisfied,
+      // rather than requiring both to already be true before it is even
+      // consulted. A command with no brace at all falls straight through to
+      // the pre-existing literal-only check, unchanged.
+      const braceFlag = hasFlagBrace(c);
+      if (!(recursive || braceFlag) || !(force || braceFlag)) return false;
       const rest = cSpaced.slice(cSpaced.indexOf('rm'));
       // EVERY target must be safe, not merely one of them (#446) — see
       // safeRmTarget(): a single safe-looking decoy argument used to exempt
