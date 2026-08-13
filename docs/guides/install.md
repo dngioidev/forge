@@ -150,9 +150,9 @@ Everything is ticket-first: `/forge:ticket` for quick triage, then the lane skil
 ## 6. Pre-authorizing outward commands (optional)
 
 Running `/forge:deliver` — or any lane skill that ships a PR — drives outward
-commands: `git push`, `gh pr create`, `gh pr merge`, `pnpm verify`, and more.
-By default, each one prompts you before it runs; that is the safe default and
-nothing here changes it unless you opt in.
+commands: `git push`, `git add`, `gh pr create`, `gh pr merge`, `pnpm verify`,
+and more. By default, each one prompts you before it runs; that is the safe
+default and nothing here changes it unless you opt in.
 
 forge ships a known-good command allowlist, single-sourced in
 `plugin/scripts/lib/allowed-commands.mjs`. Pre-authorizing it lets those
@@ -171,6 +171,15 @@ treat adding it yourself as a deliberate, reviewed choice, not a default step:
   `allow` for a known-good command, `ask` for anything else, `deny` on a
   denylist hit. See [cross-gai.md](cross-gai.md)'s "Permissions: the allow /
   ask / deny default" section for the exact mechanics and honest limits.
+
+Eight of the allowlisted verbs (including `git add`, #444) carry an extra
+argument guard that narrows what auto-approves within the verb — e.g.
+`git add -A` auto-approves but `git add -e`/`-p`/`-i` still ask. That guard is
+**agy-side only**: pre-authorizing `git add` on Claude Code grants the broader,
+**unguarded** form (including `-p`/`-i`/`-e`), because `settings.local.json`'s
+prefix-glob grammar cannot express the narrowing — the same accepted trade
+already made for the other seven guarded verbs, not a new one. See
+cross-gai.md for the full per-verb table and the exact grant it expands to.
 
 This is **necessary but not sufficient** for autopilot's unattended merges on
 Claude Code: the allowlist does not clear the harness's own auto-mode

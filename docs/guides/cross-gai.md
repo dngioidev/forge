@@ -401,12 +401,14 @@ than a prompt. So the seven verbs whose danger lives in their **arguments**
 carry a guard, and the guard is a **positive** model: it enumerates the
 arguments that are safe, not the ones that are dangerous.
 
-Four of the seven are arbitrary **code execution** behind an innocuous-looking
+Five of the eight are arbitrary **code execution** behind an innocuous-looking
 verb — `node -e`, `pnpm verify --reporter=<path>`, `git rebase -x`,
-`git fetch --upload-pack=<program>` — and **none of them needs a shell
-metacharacter**, so the guard above cannot see them. Each was found by a
-separate adversarial review round of this very fix. That is the argument for
-the positive model, and the question to ask before adding any verb to the
+`git fetch --upload-pack=<program>`, `git add -e` — and **none of them needs a
+shell metacharacter**, so the guard above cannot see them. Each of the first
+four was found by a separate adversarial review round of this very fix;
+`git add -e` was identified the same way — by threat-modeling the same class —
+before it ever reached this allowlist (#444). That is the argument for the
+positive model, and the question to ask before adding any verb to the
 allowlist: not *"is this verb safe"* but *"can any argument make it run
 something else, read or write an arbitrary path, or rewrite published
 history"*.
@@ -416,10 +418,22 @@ history"*.
 | `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
 | `pnpm verify` | the bare command, nothing else | any argument — pnpm forwards them to `vitest`, whose `--reporter=<path>` / `--config=<path>` `import()`s that module at startup |
 | `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
+| `git add` | `-A`/`--all`, `--no-ignore-removal`, `-u`/`--update`, `-n`/`--dry-run`, `-v`/`--verbose`, `--sparse`, `--refresh`, `--ignore-errors`, `--ignore-missing`, `--no-warn-embedded-repo`, `--renormalize`, plain paths | `-p`/`--patch`, `-i`/`--interactive` (interactive prompt loops), `-e`/`--edit` (opens `$EDITOR` — arbitrary program launch), `-f`/`--force` (overrides `.gitignore` — can silently stage a gitignored secret file) |
 | `git fetch` | plain refs/remotes and inert flags (`--all`, `--tags`, `--prune`, `-q`, `-v`) | `--upload-pack=<program>` and its abbreviations — overrides the remote helper and executes that program |
 | `git rebase` | plain refs and flow control (`--continue`, `--abort`, `--skip`, `--onto`, `-q`, `--autostash`) | `-x` / `--exec` (runs arbitrary shell after every replayed commit), `-i` |
 | `git checkout` | branch **creation** only — `-b <name>`, optionally from a start point | everything else, including plain `git checkout main` (see below) |
 | `gh pr merge` | `--squash`/`--merge`/`--rebase`, `--delete-branch`, `--auto` | `--admin` (branch-protection bypass) |
+
+`git add -p`/`-i`/`-e`/`-f`/`--force` still asking is **expected and
+by-design**, the same way plain `git checkout main` asking is (see below) — a
+future flow-measurement finding those spellings still prompt is not a
+regression to reopen, it is the guard working as intended. `-f`/`--force` was
+in an earlier draft of the safe set (reasoned only about destruction — it
+stages, it doesn't overwrite) until adversarial review found the real risk is
+exfiltration: `--force` is git's own mechanism for overriding `.gitignore`,
+and it's git's *documented remedy* for a blocked add (`git add`'s own hint
+text literally suggests `-f`), so this isn't a contrived spelling — it's the
+next thing an agent would naturally try.
 
 That direction is not stylistic. git's parse-options accepts **unambiguous
 long-option abbreviations**, so `git push --mir` *is* `--mirror` and
@@ -466,6 +480,14 @@ constrain arguments — so the Claude host still grants the broader form. The
 *command set* is single-sourced (`ALLOWED_COMMAND_PREFIXES`); the argument
 guards are an additional narrowing the agy hook can enforce and Claude's
 permission grammar cannot.
+
+`git add` (#444) makes the identical trade, not a new one: granting it on
+Claude means `Bash(git add:*)` — an **unguarded** grant, including `-p`/`-i`/
+`-e` — because `settings.local.json`'s prefix-glob grammar cannot express the
+argument narrowing above any more than it could for the other seven. This is
+the same accepted trade already documented for `node`, `pnpm verify`,
+`git push`, `git fetch`, `git rebase`, `git checkout` and `gh pr merge`; only
+the agy hook enforces the `-p`/`-i`/`-e` exclusion.
 
 **A residual gap this fix cannot close from forge's side.** The spike verified
 that agy's own hook timeout (`hooks.json`'s `timeout: 10`, set in `emit.mjs`)
