@@ -1202,23 +1202,33 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
   it('AC-452.4: denylist.mjs and its own tests still state the fuse/throw model, not truncation', async () => {
     const src = await readFile(denylistPath, 'utf8');
     const testSrc = await readFile(thisTestPath, 'utf8');
-    for (const doc of [src, testSrc]) {
+    for (const raw of [src, testSrc]) {
+      // Collapse whitespace AND JSDoc/`//` comment-line prefixes so a claim
+      // split across source lines by ordinary prose wrapping still matches —
+      // this test cares whether the CLAIM is present, not its line breaks.
+      const doc = raw.replace(/\n\s*(?:\*|\/\/)?\s*/g, ' ').replace(/\s+/g, ' ');
       expect(doc).toMatch(/throws[^.]*on an embedded NUL/);
       expect(doc).toMatch(/drops the (embedded )?(byte|NUL)/);
       expect(doc).toMatch(/fuses/);
     }
   });
 
-  // AC-452.5 — the two normalizeShellText() views (default NUL-as-SPACE, and
-  // NUL-DELETED via `{ nulReplacement: '' }`) must always segment IDENTICALLY:
-  // check() indexes segsNulDeleted[i] against segs[i] (and vice versa) to hand
-  // recursive-delete both views of the SAME segment, so a length or order
-  // mismatch between the two views would silently desync a rule from the
-  // segment it is actually judging. Neither NUL-handling mode touches a
-  // `;|&\n` separator character, so this is a structural guarantee, not a
-  // coincidence of these particular inputs — verified empirically here rather
-  // than merely asserted in a comment.
-  it('AC-452.5: the NUL-as-space and NUL-deleted views always segment identically (count and order)', () => {
+  // AC-452.5 — normalizeShellText()'s two readings, `text` (canonical,
+  // NUL-deleted) and `spacedText` (`text` with a space re-inserted at every
+  // dropped-NUL position), must always segment IDENTICALLY: `check()`
+  // indexes `segsSpaced[i]` against `segs[i]` to hand `recursive-delete` both
+  // readings of the SAME segment, so a length or order mismatch would
+  // silently desync it from the segment it is actually judging — exactly the
+  // failure mode two independent adversarial reviews found in this ticket's
+  // first (two-independent-scans) design. `spacedText` is built by pure
+  // character INSERTION into the already-final `text` (never a second scan),
+  // which makes this a structural guarantee, not a coincidence of these
+  // particular inputs — including the two concrete desync triggers those
+  // reviews found (a NUL directly after a backslash and before a `;`; a NUL
+  // directly between `$` and `'`) — verified empirically here rather than
+  // merely asserted in a comment.
+  it('AC-452.5: the text and spacedText readings always segment identically (count and order)', () => {
+    const B = String.fromCharCode(92); // backslash, built at runtime — literal-string caveat
     const cases = [
       `rm -r${NUL}f /prod-secrets`,
       `git push -u${NUL}f origin main`,
@@ -1231,18 +1241,30 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
       `${NUL}${NUL}rm -rf${NUL}${NUL}`,
       'no NUL at all in this one',
       `"quoted ${NUL} text" ; rm -rf${NUL}build`,
+      // forge:security's PoC — a NUL directly after a backslash and directly
+      // before a `;`: the backslash must reach THROUGH the dropped NUL to
+      // escape the `;` itself (matching a live bash session, which never saw
+      // the byte), in BOTH readings alike, so this stays ONE segment either
+      // way rather than desyncing into two in one reading and one in the other.
+      `echo a${B}${NUL};echo b;rm -r${NUL}f /prod-secrets`,
+      // forge:reviewer's PoC — a NUL directly between `$` and `'`: must not
+      // change whether `$'…'` ANSI-C-quote-opening syntax is recognised
+      // (which would flip whether a later `;` is real or neutralised)
+      // between the two readings.
+      `$${NUL}'${B}'';rm -r${NUL}f /prod-secrets`,
     ];
     for (const cmd of cases) {
-      const spaceView = segments(normalizeShellText(cmd));
-      const deletedView = segments(normalizeShellText(cmd, { nulReplacement: '' }));
-      expect(deletedView.length, cmd).toBe(spaceView.length);
+      const { text, spacedText } = normalizeShellText(cmd);
+      const textSegs = segments(text);
+      const spacedSegs = segments(spacedText);
+      expect(spacedSegs.length, cmd).toBe(textSegs.length);
       // Order: strip ALL whitespace from each corresponding pair before
       // comparing, since the only structural difference between the two
-      // views is an extra inert space (space view) vs. nothing (deleted
-      // view) at each former NUL position — never a difference in which
-      // non-whitespace characters appear, or in what order.
-      for (let i = 0; i < spaceView.length; i++) {
-        expect(deletedView[i].replace(/\s/g, ''), `${cmd} segment ${i}`).toBe(spaceView[i].replace(/\s/g, ''));
+      // readings is an extra inert space (spacedText) vs. nothing (text) at
+      // each former NUL position — never a difference in which non-whitespace
+      // characters appear, or in what order.
+      for (let i = 0; i < textSegs.length; i++) {
+        expect(spacedSegs[i].replace(/\s/g, ''), `${cmd} segment ${i}`).toBe(textSegs[i].replace(/\s/g, ''));
       }
     }
   });

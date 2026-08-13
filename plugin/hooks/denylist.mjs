@@ -286,7 +286,85 @@ const ANSI_C_ESCAPES = {
   r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
 };
 
-export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
+/**
+ * Returns `{ text, spacedText }` — TWO readings of the same command, but
+ * built from exactly ONE scan (#452 v2; see the long history below for why a
+ * v1 that ran TWO independent scans was rejected by adversarial review).
+ *
+ * `text` is the canonical parse: quotes stripped, escapes resolved, and a raw
+ * NUL byte DELETED — bash's own real behaviour (a persistent session drops
+ * the byte before its parser ever runs). Node's child_process throws on an
+ * embedded NUL before the command ever runs, too — NOT truncation under
+ * either concrete path. Every rule reads `text` (via `segments()`) as its
+ * primary/only view.
+ *
+ * `spacedText` is `text` with one inert SPACE re-inserted at every position a
+ * raw NUL was dropped — needed ONLY by `recursive-delete`'s own
+ * `safeRmTarget()` target-parsing, to keep closing #446's target-path splice
+ * (`/prod-secrets<NUL>/scratchpad` must judge as TWO tokens, not one fused
+ * path ending in the safe word `scratchpad`) without reopening the
+ * flag-cluster class this ticket exists to close (`-r<NUL>f` must still read
+ * as a bundled `-rf`). `spacedText` is built by INSERTING characters into the
+ * ALREADY-FINAL `text`, never by re-scanning the raw command a second time —
+ * which is what guarantees `segments(text)` and `segments(spacedText)` always
+ * have the same length and order (AC-452.5): inserting a character that is
+ * never one of `;|&\n` cannot create or remove a split point, for ANY input,
+ * not merely the ones this file's own tests happen to try.
+ *
+ * ## Why v1 (two independent normalizeShellText() scans, one with NUL mapped
+ * to a space, one with it deleted) was wrong, not merely imprecise
+ *
+ * v1 ran the WHOLE quote/escape scan twice, from raw text, differing only in
+ * what a NUL substitutes to BEFORE the scan starts. That is unsound whenever
+ * a backslash sits directly before a NUL: which character the backslash
+ * escapes depends on what follows the NUL in EACH pre-substituted text, so
+ * the two scans can reach genuinely different quote/escape states — not just
+ * different rendered bytes — and diverge on how many REAL segments the
+ * command splits into. Two independent adversarial reviews (forge:reviewer,
+ * forge:security) each found a live bypass this way, via two different
+ * triggers: a NUL directly after a backslash and directly before a `;`
+ * (backslash escapes the substituted-space in the space view, leaving the
+ * `;` bare and splitting; backslash escapes the `;` itself in the deleted
+ * view, since the vanished NUL leaves it directly adjacent, neutralising it
+ * and NOT splitting), and a NUL directly between `$` and `'` (breaks the
+ * `$'…'` ANSI-C-quote-open adjacency in the space view only, so the same
+ * text closes a quote in one scan and keeps it open in the other). Both
+ * desynced `segments()`'s length between the two views, and `check()`'s
+ * `recursive-delete` dispatch — the one rule that cross-indexes the two
+ * arrays to read the SAME segment two ways — silently fell back to the
+ * WRONG (still flag-cluster-broken) text once the arrays ran out of step,
+ * reopening exactly the bypass #452 exists to close.
+ *
+ * v2 (this version) cannot have that failure mode: there is only ONE scan,
+ * so there is only ONE segmentation, full stop — `spacedText` is derived
+ * from `text` AFTER segmentation-relevant structure is already fully
+ * decided, as a pure textual insertion that cannot touch it.
+ *
+ * ## What "the scan treats a raw NUL as invisible" means concretely
+ *
+ * A raw NUL byte is dropped wherever it would otherwise become ordinary
+ * output data (recorded as a `nulMarkers` position instead), AND a backslash
+ * immediately before one or more raw NULs reaches THROUGH all of them to
+ * escape the first real byte that follows — exactly what happens to a
+ * PERSISTENT BASH SESSION fed this byte over stdin, since its input layer
+ * drops an embedded NUL before its own command-line parser (the one that
+ * resolves backslash-escaping) ever sees the stream; the backslash was never
+ * looking at "a NUL", from that parser's point of view, at all. This is
+ * implemented only where it can affect SEGMENTATION — the unquoted branch's
+ * generic backslash-escapes-the-next-character rule, since that is the only
+ * place a backslash can consume a `;|&\n` separator as its target. The
+ * double-quote branch (backslash special only before a fixed set of
+ * characters) and the ANSI-C `$'…'` decode branch (hex/octal/named escapes,
+ * which require SPECIFIC literal characters immediately after the backslash,
+ * not "whatever comes next") are deliberately left unchanged: a NUL
+ * interposed there produces at worst one stray literal backslash character
+ * or a missed decode (both pre-existing on `main` too, since #446 already
+ * pre-substitutes NUL before this same scan runs) — inert for rule-matching
+ * (never a letter, never a separator, and any decoded escape value still
+ * routes through `emitCodePoint()`'s own printable-ASCII-or-space collapse)
+ * — not a segmentation risk, and out of this ticket's bounded scope.
+ */
+export function normalizeShellText(rawCommand) {
   // Carriage returns go FIRST, before any other rule looks at the text.
   // Verified on this platform's own bash (both the Cygwin and the
   // Git-for-Windows/MSYS2 builds): a bare CR is stripped mid-token (`a\rb`
@@ -302,57 +380,11 @@ export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
   // tokens the shell would have kept apart, i.e. match more, never less — the
   // safe direction — and a CR cannot spell part of a flag either way.
   //
-  // A RAW NUL goes next, and for a different reason than the CR above.
-  // emitCodePoint() already turns a DECODED control byte into an inert space,
-  // which is what closes the `$'…\x00scratchpad'` splice (#446) — but that
-  // guarantee only ever covered NUL spelled as an ESCAPE. A NUL byte sitting
-  // literally in the command text never reaches emitCodePoint(): it flows
-  // through the plain push()/emit() paths untouched (emit() neutralises only
-  // `;|&\n`), so the checker saw ONE opaque token spanning the byte —
-  // `rm -rf /prod-secrets<NUL>/scratchpad` read as a single path ending in the
-  // safe component `scratchpad`, exempting the whole line. It is reachable
-  // input, not a curiosity: `\u0000`
-  // is a legal JSON string escape and main()'s JSON.parse hands it straight to
-  // check() with no sanitisation, as does agy-deny.mjs (#446, adversarial
-  // security review of the anchoring fix).
-  //
-  // Mapping it to the same inert SPACE the decoded form already gets makes the
-  // two spellings agree, and blocks regardless of how a downstream consumer
-  // actually handles the byte — which is NOT truncation under either concrete
-  // path checked: Node's child_process throws on an embedded NUL before the
-  // command ever runs, and a persistent bash session silently drops the byte
-  // and fuses the surrounding text into ONE argument rather than cutting
-  // anything off. This fix does not need to match either of those; it
-  // deliberately over-blocks by splitting the token at the byte, so
-  // `/prod-secrets` is judged on its own merits either way. Deliberately NUL
-  // ONLY, not control bytes generally: VT/FF are real in-token data that bash
-  // does not word-split on, and splitting there is exactly the non-IFS bypass
-  // the IFS split above exists to prevent.
-  //
-  // The SPACE mapping is not the only legitimate reading, though (#452). A
-  // space is a non-letter, so it closes the target-splice class above but
-  // opens a DIFFERENT one: `shortFlagCluster()` (below) collects short-flag
-  // letters via a contiguous run immediately after a `-`, and a space breaks
-  // that contiguity exactly as the raw byte did — `-r<NUL>f` normalises to
-  // `-r f`, which no longer reads as a bundled `-rf`, while a real shell drops
-  // the NUL and hands the target program the fully intact `-rf`. Deleting the
-  // byte instead (bash's actual behaviour) closes THAT class but reopens the
-  // target-splice one: `/prod-secrets<NUL>/scratchpad` fuses to
-  // `/prod-secrets/scratchpad`, whose tail component is on the safe list. No
-  // single global substitution closes both (verified against `check()` in
-  // both directions).
-  //
-  // So this function takes the NUL-handling mode as a caller-supplied
-  // PARAMETER rather than picking one globally. `check()` below calls it
-  // TWICE per command — once with the default SPACE mapping (unchanged, and
-  // the only one `recursive-delete`'s own `safeRmTarget()` target-parsing
-  // ever sees, so `AC-446.6`'s pinned splice tests need no change at all),
-  // and once with `nulReplacement: ''` (bash's real fuse behaviour) for the
-  // flag-cluster-sensitive rules that need contiguous letters to survive a
-  // NUL landing mid-flag. Neither mapping touches a `;|&\n` separator
-  // character, so the two views always segment identically — see the
-  // `AC-452.*` regression test in the test file that pins exactly that.
-  const command = rawCommand.replace(/\r/g, '').replace(/\0/g, nulReplacement);
+  // A raw NUL is handled INSIDE the main scan below (not here), because
+  // whether a backslash escapes a NUL or reaches through it to whatever
+  // follows can only be decided correctly while walking the text once — see
+  // the function-level comment above.
+  const command = rawCommand.replace(/\r/g, '');
   // Output is accumulated as single-character CHUNKS and joined once at the
   // end, rather than appended onto a growing string.
   //
@@ -371,6 +403,12 @@ export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
   // With chunks, appending is O(1), the "ends with `$`" question is answered
   // by a tracked boolean, and taking that `$` back off is a pop.
   const parts = [];
+  // Output-position markers (#452 v2) — one per raw NUL byte dropped from
+  // ordinary output, recorded as `parts.length` at the moment of the drop.
+  // Used AFTER the scan finishes to build `spacedText` by pure insertion; see
+  // the function-level comment above for why that ordering is what makes the
+  // two readings provably segment identically.
+  const nulMarkers = [];
   let endsDollar = false; // does the output currently end with `$`?
   let quote = null;    // the active quote character, or null
   let ansiC = false;   // the active single-quote region was opened as `$'…'`
@@ -400,14 +438,37 @@ export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
     if (!Number.isInteger(code) || code < 0x20 || code > 0x7e) { push(' '); return; }
     emit(String.fromCharCode(code));
   };
+  // Starting at index `j`, record a marker (and skip) every consecutive raw
+  // NUL byte, then return the index of the first non-NUL character (or
+  // `command.length` at end of input). This is how an unquoted backslash
+  // "reaches through" a run of NULs to its real escape target — see the
+  // function-level comment above for why that matches what a persistent bash
+  // session actually does with this byte.
+  const skipNuls = (j) => {
+    while (command[j] === '\0') { nulMarkers.push(parts.length); j++; }
+    return j;
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     const next = command[i + 1];
     if (quote === null) {
+      if (ch === '\0') {
+        // A raw NUL is invisible to bash's own parser (dropped before it ever
+        // runs) — delete it from the canonical output, marking its position
+        // for the `spacedText` reconstruction (#452 v2).
+        nulMarkers.push(parts.length);
+        continue;
+      }
       if (ch === '\\') {
         // Drop the backslash, consume AND emit what it escaped, so an escaped
-        // quote can never be mistaken for a quoting delimiter.
-        if (next !== undefined) { emitEscaped(next); litDollar = next === '$'; i++; } else litDollar = false;
+        // quote can never be mistaken for a quoting delimiter. The target is
+        // found by SKIPPING any raw NULs first (#452 v2) — a backslash
+        // reaches THROUGH them to whichever real byte follows, exactly as it
+        // would for a persistent bash session that never saw the dropped
+        // byte(s) at all; each skipped NUL still gets its own marker.
+        const j = skipNuls(i + 1);
+        const target = command[j];
+        if (target !== undefined) { emitEscaped(target); litDollar = target === '$'; i = j; } else litDollar = false;
         continue;
       }
       if (ch === '"' || ch === "'") {
@@ -444,6 +505,12 @@ export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
       ansiC = false;
       endsDollar = false;
       litDollar = false;
+      continue;
+    }
+    if (ch === '\0') {
+      // Same treatment as the unquoted case above: invisible to bash's
+      // parser, deleted from canonical output, marker recorded (#452 v2).
+      nulMarkers.push(parts.length);
       continue;
     }
     if (ch === '\\' && next !== undefined) {
@@ -518,28 +585,34 @@ export function normalizeShellText(rawCommand, { nulReplacement = ' ' } = {}) {
     }
     emit(ch);
   }
-  return parts.join('');
+  const text = parts.join('');
+  // `spacedText`: insert one space at every recorded marker position, in a
+  // single linear pass (never repeated slicing — same O(n²) trap this file's
+  // own chunked-`parts` design exists to avoid, see the comment above). Pure
+  // insertion into the ALREADY-FINAL `text`, never a second parse — see the
+  // function-level comment above for why that is what makes the two texts
+  // provably segment identically.
+  let spacedText = text;
+  if (nulMarkers.length > 0) {
+    const spacedParts = [];
+    let mi = 0;
+    for (let p = 0; p <= text.length; p++) {
+      while (mi < nulMarkers.length && nulMarkers[mi] === p) { spacedParts.push(' '); mi++; }
+      if (p < text.length) spacedParts.push(text[p]);
+    }
+    spacedText = spacedParts.join('');
+  }
+  return { text, spacedText };
 }
 
-// Rule-level `view` (#452): which of check()'s two normalizeShellText() outputs
-// a rule's `test()` receives as its segment text. Default (omitted) is the
-// SPACE view — unchanged behaviour, and the only view `recursive-delete`'s own
-// `safeRmTarget()` target-parsing ever sees (AC-446.6 needs zero changes).
-// `view: 'nulDeleted'` opts a rule into the NUL-DELETED view instead: every
-// rule here that judges a bundled short-flag cluster or a long-flag spelling
-// as its WHOLE test — force-push, env-branch-delete, hard-reset,
-// git-clean-force — needs contiguous letters to survive a NUL landing
-// mid-flag, exactly as a real shell (which drops the byte, not spaces it)
-// would hand the target program. `recursive-delete` is the one rule that
-// needs BOTH views at once — its own `shortFlagCluster()` call wants the
-// NUL-deleted text, but its target parsing must keep reading the NUL-as-space
-// text unchanged — so it alone declares no `view` (space stays primary) and
-// instead takes the deleted-view text as its test function's SECOND argument
-// (see check() below).
+// Every rule's `test()` reads `text` (the canonical parse — quotes stripped,
+// escapes resolved, a raw NUL byte deleted) as its segment argument (#452
+// v2). Only `recursive-delete` reads a SECOND argument, `spacedText`'s
+// corresponding segment, for its own target-parsing (see its own comment
+// below) — every other rule ignores the second argument entirely.
 export const RULES = [
   {
     name: 'force-push',
-    view: 'nulDeleted',
     // git has FOUR documented ways to force-update a published ref, and this
     // rule historically matched only the first two spellings (#429). Each of
     // the others was a real forced push that slipped through — and, once the
@@ -578,7 +651,6 @@ export const RULES = [
   },
   {
     name: 'env-branch-delete',
-    view: 'nulDeleted',
     // `git push` accepts `-d` as the literal short form of `--delete` (`git push
     // -h`); the old regex checked only `--delete` and a bare `:` refspec, so
     // `git push -d origin main` — a real, immediate remote branch delete —
@@ -612,7 +684,6 @@ export const RULES = [
   },
   {
     name: 'hard-reset',
-    view: 'nulDeleted',
     // `git reset`'s own long-option set (`git reset -h`, verified against git
     // 2.55) has exactly ONE option starting with "h" — --hard — so --h/--ha/
     // --har/--hard are all UNAMBIGUOUS abbreviations git itself accepts (parse-
@@ -641,7 +712,6 @@ export const RULES = [
   },
   {
     name: 'git-clean-force',
-    view: 'nulDeleted',
     // Audited for the #437 adjacency/spelling class: NOT anchored to be
     // adjacent to `clean` (the `[^\n]*` already spans any other flags in any
     // order — `git clean -n -f`, `git clean --interactive --force` both match
@@ -667,31 +737,31 @@ export const RULES = [
   },
   {
     name: 'recursive-delete',
-    // The one rule needing BOTH normalizeShellText() views at once (#452): its
-    // own shortFlagCluster() call below reads `cNulDeleted` (a NUL inside a
-    // cluster, e.g. `-r<NUL>f`, must still collect as `rf` the way a real
-    // shell's dropped-byte behaviour would hand `rm` the bundled `-rf`), while
-    // `rest`/`safeRmTarget()` keep reading `c` — the NUL-as-SPACE view —
-    // completely unchanged, so AC-446.6's pinned target-splice tests need no
-    // edits at all.
-    test: (c, cNulDeleted) => {
+    // The one rule reading `spacedText` as well as `text` (#452 v2): `c` (the
+    // canonical, NUL-deleted segment — same argument every other rule reads)
+    // drives flag-cluster detection, so `-r<NUL>f` still collects as a
+    // bundled `rf` the way a real shell's dropped-byte behaviour would hand
+    // `rm` the intact `-rf`. `cSpaced` — that SAME segment's spacedText
+    // reading — drives target parsing ONLY, so #446's target-splice fix
+    // (`/prod-secrets<NUL>/scratchpad` judged as two tokens, not one fused
+    // path ending in the safe word `scratchpad`) keeps working unchanged;
+    // AC-446.6's pinned tests need no edits.
+    test: (c, cSpaced) => {
       if (!/\brm\b/.test(c)) return false;
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
-      // helper, from the NUL-DELETED view. Deliberately alpha-only (default)
-      // where force-push above passes `alnum: true`: git has numeric short
-      // flags (`-4`) that can bundle with `-f`, `rm` has none, so widening
-      // here would buy nothing.
-      const shortFlags = shortFlagCluster(cNulDeleted);
+      // helper. Deliberately alpha-only (default) where force-push above
+      // passes `alnum: true`: git has numeric short flags (`-4`) that can
+      // bundle with `-f`, `rm` has none, so widening here would buy nothing.
+      const shortFlags = shortFlagCluster(c);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
       const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
       const force = /f/.test(shortFlags) || /\B--force\b/.test(c);
       if (!recursive || !force) return false;
-      const rest = c.slice(c.indexOf('rm'));
+      const rest = cSpaced.slice(cSpaced.indexOf('rm'));
       // EVERY target must be safe, not merely one of them (#446) — see
       // safeRmTarget(): a single safe-looking decoy argument used to exempt
-      // the whole command, however many real targets sat beside it. Reads the
-      // SPACE view (`c`/`rest`), unchanged from before #452.
+      // the whole command, however many real targets sat beside it.
       return !safeRmTarget(rest);
     },
     msg: 'rm -rf (incl. --recursive --force) outside build/temp dirs',
@@ -761,44 +831,30 @@ export function check(command) {
   // scan with no recursion, so this should be unreachable — but "should be
   // unreachable" is exactly the reasoning that failed twice on this branch,
   // and the guard costs nothing.
-  let normalized;
+  let text, spacedText;
   try {
-    normalized = normalizeShellText(command);
+    ({ text, spacedText } = normalizeShellText(command));
   } catch {
-    normalized = command;
+    text = command;
+    spacedText = command;
   }
-  // A second view of the same command, with a raw NUL byte DELETED rather than
-  // mapped to a space — bash's own fuse behaviour, and what the flag-cluster-
-  // sensitive rules below need (#452; see normalizeShellText()'s NUL comment
-  // for why one global choice cannot serve both this and the target-splice
-  // class #446 closed). Same never-throws fallback as `normalized` above.
-  let normalizedNulDeleted;
-  try {
-    normalizedNulDeleted = normalizeShellText(command, { nulReplacement: '' });
-  } catch {
-    normalizedNulDeleted = normalized;
-  }
-  const segs = segments(normalized);
-  const segsNulDeleted = segments(normalizedNulDeleted);
+  const segs = segments(text);
+  // `segsSpaced` is PROVABLY the same length/order as `segs` — spacedText is
+  // built from text by pure character insertion at positions that are never
+  // one of the `;|&\n` separators segments() splits on (#452 v2; see
+  // normalizeShellText()'s function-level comment for the full argument, and
+  // the AC-452.5 regression test for empirical pins). The `?? seg` fallback
+  // below is therefore defensive only, never load-bearing.
+  const segsSpaced = segments(spacedText);
   for (const rule of RULES) {
-    const useNulDeleted = rule.view === 'nulDeleted';
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
     // that segments() splits on); all others test each split sub-command. Every
-    // rule's test() gets its OWN configured view (default: space) as the FIRST
-    // argument and the OTHER view as the second, so recursive-delete — the one
-    // rule that reads both (its own shortFlagCluster() call wants NUL-deleted,
-    // its safeRmTarget() target parsing must keep reading NUL-as-space) — can
-    // use whichever it needs without a third normalization pass. The `?? seg`
-    // fallback on the second argument is defensive only: segs/segsNulDeleted
-    // are proven to always segment identically (AC-452 regression test in the
-    // test file), so index i is always in range in practice.
+    // rule's test() gets `text`'s segment as its first argument and the
+    // corresponding `spacedText` segment as its second — only `recursive-delete`
+    // reads the second at all (its own target-parsing, see its own comment).
     const hit = rule.scope === 'full'
-      ? rule.test(
-          useNulDeleted ? normalizedNulDeleted : normalized,
-          useNulDeleted ? normalized : normalizedNulDeleted,
-        )
-      : (useNulDeleted ? segsNulDeleted : segs).some((seg, i) =>
-          rule.test(seg, (useNulDeleted ? segs : segsNulDeleted)[i] ?? seg));
+      ? rule.test(text, spacedText)
+      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
