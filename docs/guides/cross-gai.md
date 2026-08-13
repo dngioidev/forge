@@ -473,13 +473,42 @@ its own side to make agy's host-level timeout fail closed instead — this is
 stated here plainly rather than implying the denylist is airtight when it
 isn't.
 
-**Only `run_command` is hooked today.** agy's hook matcher supports arbitrary
-tool-name patterns (the spike confirmed a `"*"` matcher also gates
-`write_to_file`), but forge's `hooks.json` scopes both hooks to `run_command`
-only — file writes/edits are unhooked. Widening the matcher is tracked as a
-follow-up rather than folded into this fix, because a `"*"` matcher runs the
-hook on **every** tool call, which raises the stakes of the timeout finding
-above (more calls now depend on staying under the 10s ceiling).
+**Only `run_command` is hooked today — still, and here's why (#436).** agy's
+hook matcher supports arbitrary tool-name patterns (the 2026-08-12 spike
+confirmed a `"*"` matcher also gates `write_to_file`), but forge's
+`hooks.json` scopes both hooks to `run_command` only, so file writes/edits are
+unhooked. A follow-up spike
+([`docs/spikes/2026-08-13-agy-file-write-gating.md`](../spikes/2026-08-13-agy-file-write-gating.md),
+#436) re-verified this on agy v1.1.12 and found two things that, together,
+explain why the matcher hasn't simply been widened:
+
+- **The timeout finding above gets worse, not just "more calls now depend on
+  it."** Re-tested across a representative multi-call session (not one
+  worst-case probe), fail-open reproduces identically for `write_to_file` once
+  the matcher is `"*"` — and the actual cutoff is **not a clean, deterministic
+  10 seconds**: below ~8s the hook reliably answers and is honored; at/above
+  the configured 10s timeout it behaves like a race that sometimes lets a slow
+  hook run to completion and sometimes silently discards its answer in favour
+  of `allow`, observed anywhere from ~10s to ~25s. Widening the matcher makes
+  every additional tool type depend on that same non-deterministic margin.
+- **`write_to_file` has no fallback native gate the way `run_command` does.**
+  Headless `write_to_file` calls succeed with zero prompting whether or not
+  forge's hook is even present — no `--dangerously-skip-permissions`, no
+  `permissions.allow` entry needed, in direct contrast to `run_command`'s
+  confirmed native `"command"` permission wall (above). So unlike shell
+  commands, there is currently **nothing** standing between an agy-hosted
+  session and an arbitrary file write once the matcher is widened without also
+  adding a rule for it — `agy-deny.mjs` has no file-write-shaped logic to
+  consult, so a bare matcher change would resolve every write as `allow` and
+  add fail-open surface for zero gating benefit.
+
+The spike proposes (but explicitly does not choose between) four candidate
+rule shapes for a path+content payload — a path-based denylist, an
+overwrite-of-protected-config rule, a content-signature rule, and "accept the
+gap" — and files the decision as a scoped follow-up,
+[#477](https://github.com/dngioidev/forge/issues/477), rather than widening
+the matcher alone. **So: still `run_command`-only, on purpose, pending that
+owner decision** — not an oversight and not silently stale.
 
 ---
 
