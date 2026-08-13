@@ -47,7 +47,7 @@ A `source` is grounded when it points at something real — a repo file that exi
 Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/groundgate.mjs" --manifest .forge/shape/<issue>.sources.json`:
 
 - **clean** → write the acceptance criteria onto the ticket, move **Backlog → Ready** (`board/move.mjs --status ready`), trail `--phase spec` with the shaped summary + the sources. The ticket re-enters the autopilot queue and is delivered.
-- **ungrounded** → `escalate.mjs` with the **exact** open question the gate flagged (and the recommended options if you have grounded ones), then **skip** — the loop continues with the next ticket. Do **not** promote.
+- **ungrounded** → **before returning**, write the escalation via `escalate.mjs` with the **exact** open question the gate flagged (and the recommended options if you have grounded ones), then **skip** — the loop continues with the next ticket. Do **not** promote.
 
 ## Guardrails
 
@@ -55,6 +55,14 @@ Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/groundgate.mjs" --manifest .forge
 - A spike **never** ships code — findings are an ADR + a follow-up ticket (spec §4 item 12).
 - One escalation parks **one** ticket; it does not stop the run.
 - Everything routine — which approach, which UI variant, how to phrase an AC the docs already imply — the shaper decides. Only genuinely ungrounded product decisions escalate.
+
+## Escalate before you return (#466 — the return-then-resume stall, shape's own axis)
+
+Under autopilot, `forge:shape` runs as a **spawned subagent** (`docs/specs/2026-08-13-autopilot-orchestrate-only-every-stage.md`) — its context, and every bit of reasoning behind an open question, **dies the moment it returns**. So:
+
+- **Write the escalation in full via `escalate.mjs` *before* you return** — the decision comment is the only surviving record of *why* this ticket needs a human; the terminal report below carries only `outcome: escalated` and nothing else. An escalation reasoned about but never written to `escalate.mjs` is lost the instant the subagent's context is discarded.
+- **Never return "spec drafted, awaiting approval," expecting a re-invocation.** Nothing re-invokes a returned subagent (the same return-then-resume stall #319/#177 forbid on the delivery side). Under autopilot, shape is **grounded-only**: it either promotes (writes acceptance + moves Backlog→Ready) or escalates-and-skips — there is no third "pause and wait" outcome.
+- The shape outcome (`ready`/`escalated`) is read by the main loop and, for delivery-shaped reports, passed through `watchdog.mjs`'s `resolveReturnedTicket` like every other returned report — an already-resolved outcome (which `ready` and `escalated` both are) passes straight through as `continue`, recorded with `stage:'shape'` (`ledger.mjs` `applyOutcome`).
 
 ## Report contract
 

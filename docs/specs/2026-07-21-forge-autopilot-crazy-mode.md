@@ -26,18 +26,20 @@ This is enforced mechanically by the **ground gate** (§5.3): the shaper emits a
 
 ## 4. Orchestration — the loop with the shaping front door
 
+**Amended by #466 (`docs/specs/2026-08-13-autopilot-orchestrate-only-every-stage.md`):** `forge:shape` runs in a **SPAWNED subagent**, exactly like the delivery route — never inline in the main loop's own context. The diagram below shows the spawn explicitly; see that spec §3.1 for the full orchestrate-only rule (every `select.mjs` action gets a spawn, not just `deliver`).
+
 ```
 select next ticket (autopilot §5)
   ▼
 status?
-  ├─ ready / triageable ─────────────────▶ deliver (autopilot, unchanged)
-  ├─ backlog + NOT shaped + --shape ──────▶ forge:shape ─┐
-  │                                                       ├─ shaped (grounded) ─▶ set acceptance + Backlog→Ready ─▶ re-enters queue, delivers
-  │                                                       └─ needs a human decision ─▶ ESCALATE + skip, continue
+  ├─ ready / triageable ─────────────────▶ SPAWN a delivery subagent (autopilot, unchanged)
+  ├─ backlog + NOT shaped + --shape ──────▶ SPAWN a shape subagent (forge:shape, its OWN context) ─┐
+  │                                                       ├─ shaped (grounded) ─▶ set acceptance + Backlog→Ready ─▶ re-enters queue, delivered by a LATER spawn
+  │                                                       └─ needs a human decision ─▶ ESCALATE (via escalate.mjs, before returning) + skip, continue
   └─ backlog + NOT shaped + no --shape ───▶ ESCALATE + skip (today's behaviour)
 ```
 
-Shaping and delivery are the same continuous loop; a shaped ticket becomes `ready` and is picked up by a later iteration and delivered — so one `--shape` run can take a raw backlog item all the way to a merged PR without a human touch, *when the grounding allows*.
+Shaping and delivery are the same continuous loop; a shaped ticket becomes `ready` and is picked up by a later iteration and delivered **as its own separate spawn** — never chained into the same subagent invocation that shaped it (no fused shape-then-deliver route) — so one `--shape` run can take a raw backlog item all the way to a merged PR without a human touch, *when the grounding allows*, while keeping each stage's context bounded and discardable.
 
 ## 5. forge:shape — the shaper
 
