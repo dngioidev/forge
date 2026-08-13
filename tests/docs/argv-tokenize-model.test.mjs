@@ -45,24 +45,61 @@ describe('#451 — tokenize-then-judge argv model spike', () => {
       expect(doc, n).toContain(n);
     }
     expect(doc).toMatch(/\*\*Closed\*\*/);
-    expect(doc).toMatch(/Partially closed/);
     // The corrected count, after adversarial review downgraded #449 and #452.
     // Pinned explicitly so a later edit cannot quietly re-inflate the claim
     // back toward "one rewrite retires six tickets".
     expect(doc).toMatch(/one rewrite does not retire six tickets/);
     expect(doc).toMatch(/2 cleanly closed \(#454, #456\)/);
+
+    // Pin the two DOWNGRADED verdicts to their own matrix rows, not to a bare
+    // "Partially closed" appearing anywhere in the doc — #448 was already
+    // partial before the review, so a generic match would still pass if #449
+    // or #452 were quietly re-inflated back to "Closed". Locate each row by
+    // its leading ticket cell, then assert that row's own verdict text.
+    const row = (ticket) => {
+      const line = doc.split('\n').find((l) => l.startsWith(`| **${ticket}**`));
+      expect(line, `matrix row for ${ticket}`).toBeTruthy();
+      return line;
+    };
+    expect(row('#449')).toMatch(/Partially closed/);
+    expect(row('#449')).toMatch(/Downgraded from "Closed"/);
+    expect(row('#452')).toMatch(/Split verdict/);
+    expect(row('#452')).toMatch(/does NOT/);
+    expect(row('#448')).toMatch(/Partially closed/);
+
+    // #452's AC.4 scope caveat — the round-1 reviewer minor finding. Pinned so
+    // the caveat cannot be dropped again without failing here.
+    expect(row('#452')).toMatch(/AC\.4/);
+    expect(row('#452')).toMatch(/#453/);
   });
 
   it('AC-451.4: the #452 mutual-exclusivity question is answered with evidence, not asserted', async () => {
     const doc = await readFile(spikePath, 'utf8');
     expect(doc).toMatch(/## 4\. #452's mutual exclusivity/);
     expect(doc).toMatch(/forced-choice artifact/i);
-    // The real finding: tokenization dissolves the REPORTED artifact but
-    // exposes a deeper AC-446.1 vs AC-446.6 conflict it cannot resolve. This
-    // is the spike's most consequential output, so pin it specifically.
+    // Tokenization dissolves the REPORTED artifact and exposes a real
+    // question about what AC-446.6 actually tests. But the doc must NOT
+    // overclaim that as unsatisfiable — round-2 security review falsified
+    // that, and the withdrawal must stay visible rather than being quietly
+    // reworded away.
     expect(doc).toMatch(/AC-446\.1[\s\S]{0,300}AC-446\.6|AC-446\.6[\s\S]{0,300}AC-446\.1/);
-    expect(doc).toMatch(/structurally indistinguishable|structurally identical/);
-    expect(doc).toMatch(/owner-level decision/);
+    expect(doc).toMatch(/A separating rule does exist/);
+    expect(doc).toMatch(/that was wrong/);
+    expect(doc).toMatch(/is withdrawn/);
+    // ...and the cost that makes it a tradeoff rather than a free win, which
+    // the review did not surface and the spike measured for itself.
+    expect(doc).toMatch(/spelling-dependence|spelling-dependent/);
+    // The over-block-accident finding DOES survive the correction — keep it
+    // pinned so the withdrawal doesn't take the valid part with it.
+    expect(doc).toMatch(/over-block accident/);
+  });
+
+  it('AC-451.5: the Phase-2 gate is a decision to settle early, not a blocker (the overclaim was withdrawn)', async () => {
+    const doc = await readFile(spikePath, 'utf8');
+    expect(doc).toMatch(/not a blocker/);
+    expect(doc).toMatch(/Phase 2 is not blocked/);
+    // three live options, not a forced binary
+    expect(doc).toMatch(/Three live options/);
   });
 
   it('AC-451.4: the new live bypass found while testing the matrix is reported and filed, not silently dropped', async () => {
@@ -85,7 +122,10 @@ describe('#451 — tokenize-then-judge argv model spike', () => {
     // Phase 2 cannot start until the AC-446.1/AC-446.6 conflict is decided —
     // a faithful port fails one of the two pinned tests either way, so this is
     // a hard prerequisite, not advice.
-    expect(doc).toMatch(/Hard prerequisite/);
+    // The semantics question must be surfaced to the owner before the port —
+    // stated as a decision to settle early, not (as an earlier draft had it)
+    // an unsatisfiable hard blocker.
+    expect(doc).toMatch(/Decide §4's safe-target question before writing the port/);
   });
 
   it('AC-451.6: the recommendation weighs the tripwire-not-boundary and no-auto-approve facts honestly before recommending', async () => {
