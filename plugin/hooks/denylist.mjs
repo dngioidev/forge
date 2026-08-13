@@ -468,7 +468,16 @@ export function normalizeShellText(rawCommand) {
         // byte(s) at all; each skipped NUL still gets its own marker.
         const j = skipNuls(i + 1);
         const target = command[j];
-        if (target !== undefined) { emitEscaped(target); litDollar = target === '$'; i = j; } else litDollar = false;
+        // Advance PAST the skipped run either way (#452 v2 fix-wave, minor
+        // finding): if the run reaches end-of-input with no real target,
+        // `target` is undefined and there is nothing to escape — but `i`
+        // must still land at `j - 1` so the loop's own `i++` resumes AFTER
+        // the run, not on its first byte again. Leaving `i` unmoved here let
+        // the top-level `ch === '\0'` case re-visit and double-mark the same
+        // trailing NULs (harmless — the extra markers only add inert
+        // trailing whitespace `segments()` trims away — but not what this
+        // function documents: one marker per NUL).
+        if (target !== undefined) { emitEscaped(target); litDollar = target === '$'; i = j; } else { litDollar = false; i = j - 1; }
         continue;
       }
       if (ch === '"' || ch === "'") {
@@ -592,12 +601,37 @@ export function normalizeShellText(rawCommand) {
   // insertion into the ALREADY-FINAL `text`, never a second parse — see the
   // function-level comment above for why that is what makes the two texts
   // provably segment identically.
+  //
+  // ONE marker position needs adjusting first (#452 v2 fix-wave, critical
+  // finding): `segments()` treats `&&` as a single TWO-character separator
+  // with NO single-character fallback — unlike `||`, where a lone `|` is
+  // ALSO independently in the single-char separator class `[;|\n]`, so
+  // splitting `||` into `| |` still produces the same final segment count
+  // (the extra empty piece between the two now-separate matches is trimmed
+  // and filtered by `segments()`, converging back to the original count). A
+  // marker landing BETWEEN the two `&` characters has no such fallback:
+  // inserting a space there turns an intact `&&` (one split point in `text`)
+  // into `& &` (ZERO split points in `spacedText`, since a lone `&` matches
+  // neither alternative), silently DROPPING a split rather than adding a
+  // filtered-away extra one — which shifts every later segment's index out
+  // from under `spacedText`'s array relative to `text`'s, handing
+  // `recursive-delete` an unrelated, attacker-chosen LATER segment as its
+  // `cSpaced` argument instead of merely a shorter/misordered array (the
+  // failure mode confirmed by adversarial security review). Fixed by
+  // pushing any such marker forward past the WHOLE run of `&` characters —
+  // never inserting a space where it could split one of them apart — so the
+  // extra space lands harmlessly just after the operator instead.
+  const adjustedMarkers = nulMarkers.map((p) => {
+    let pos = p;
+    while (text[pos - 1] === '&' && text[pos] === '&') pos++;
+    return pos;
+  });
   let spacedText = text;
-  if (nulMarkers.length > 0) {
+  if (adjustedMarkers.length > 0) {
     const spacedParts = [];
     let mi = 0;
     for (let p = 0; p <= text.length; p++) {
-      while (mi < nulMarkers.length && nulMarkers[mi] === p) { spacedParts.push(' '); mi++; }
+      while (mi < adjustedMarkers.length && adjustedMarkers[mi] === p) { spacedParts.push(' '); mi++; }
       if (p < text.length) spacedParts.push(text[p]);
     }
     spacedText = spacedParts.join('');

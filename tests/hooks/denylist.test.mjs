@@ -1219,14 +1219,23 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
   // indexes `segsSpaced[i]` against `segs[i]` to hand `recursive-delete` both
   // readings of the SAME segment, so a length or order mismatch would
   // silently desync it from the segment it is actually judging — exactly the
-  // failure mode two independent adversarial reviews found in this ticket's
-  // first (two-independent-scans) design. `spacedText` is built by pure
-  // character INSERTION into the already-final `text` (never a second scan),
-  // which makes this a structural guarantee, not a coincidence of these
-  // particular inputs — including the two concrete desync triggers those
-  // reviews found (a NUL directly after a backslash and before a `;`; a NUL
-  // directly between `$` and `'`) — verified empirically here rather than
-  // merely asserted in a comment.
+  // failure mode adversarial review found THREE separate times while this
+  // fix was under review, each closed in turn: (1)+(2) two triggers in the
+  // ticket's first (two-independent-scans) design — a NUL directly after a
+  // backslash and before a `;`, and a NUL directly between `$` and `'` —
+  // both closed by moving to a single canonical scan; (3) a NUL landing
+  // BETWEEN the two `&` characters of an unquoted `&&`, found AFTER that
+  // move: `segments()` treats `&&` as one two-character separator with NO
+  // single-character fallback (unlike `||`, where a lone `|` is ALSO
+  // independently a separator, so splitting it apart still converges to the
+  // same count once the resulting empty segment is filtered), so turning
+  // `&&` into `& &` silently DROPS a split rather than adding a harmless
+  // extra one — closed by pushing any marker landing inside a `&` run
+  // forward past the whole run, in `normalizeShellText()`. `spacedText` is
+  // built by pure character INSERTION into the already-final `text` (never
+  // a second scan) with that one adjustment, which makes the invariant a
+  // structural guarantee, not a coincidence of these particular inputs —
+  // verified empirically here rather than merely asserted in a comment.
   it('AC-452.5: the text and spacedText readings always segment identically (count and order)', () => {
     const B = String.fromCharCode(92); // backslash, built at runtime — literal-string caveat
     const cases = [
@@ -1252,6 +1261,13 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
       // (which would flip whether a later `;` is real or neutralised)
       // between the two readings.
       `$${NUL}'${B}'';rm -r${NUL}f /prod-secrets`,
+      // forge:security's PoC (second round) — a NUL BETWEEN the two `&`
+      // characters of an unquoted `&&`: must not desync split COUNT (the
+      // `&&`-specific gap the `while` adjustment above closes), including a
+      // triple-`&` run to prove the adjustment handles overlapping runs.
+      `true &${NUL}& rm -r${NUL}f /prod-secrets ; warm dist build`,
+      `a &${NUL}&${NUL}& b`,
+      `rm -r${NUL}f /prod-secrets &${NUL}& true`,
     ];
     for (const cmd of cases) {
       const { text, spacedText } = normalizeShellText(cmd);
@@ -1267,6 +1283,28 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
         expect(spacedSegs[i].replace(/\s/g, ''), `${cmd} segment ${i}`).toBe(textSegs[i].replace(/\s/g, ''));
       }
     }
+  });
+
+  // AC-452.5 — the functional consequence, not just the segment-count
+  // invariant: before the `&&`-run adjustment above, a NUL splitting `&&`
+  // shifted `recursive-delete`'s `cSpaced` argument onto an unrelated LATER
+  // segment (here, the decoy `warm dist build`, whose substring `rm` and
+  // all-safe remaining tokens made `safeRmTarget()` pass), letting the real
+  // `rm -r<NUL>f /prod-secrets` payload in the segment BEFORE the broken
+  // `&&` escape judgement entirely — confirmed by forge:security's
+  // adversarial review. A real bash session drops the NUL, reforms `&&`,
+  // and executes the `rm` unconditionally regardless of what follows it.
+  it('AC-452.5: a NUL splitting && cannot smuggle recursive-delete past a later decoy segment', () => {
+    for (const cmd of [
+      `true &${NUL}& rm -r${NUL}f /prod-secrets ; warm dist build`,
+      `true &${NUL}${NUL}${NUL}& rm -r${NUL}f /prod-secrets ; confirm build`,
+      `rm -r${NUL}f /prod-secrets &${NUL}& true`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // Sanity: an intact `&&` with an all-safe rm beside a decoy stays exempt,
+    // same direction as the rest of this file's safe/safe cases.
+    expect(check(`true && rm -rf dist ; warm build`).blocked).toBe(false);
   });
 });
 
