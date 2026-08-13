@@ -382,15 +382,19 @@
     <div class="sec-head">
       <span class="eyebrow">Mechanical ship gates</span>
       <h2>Nothing merges on a guess. It merges on green.</h2>
-      <p class="sec-sub">Gates are scripts, enforced at ship — plus an adversarial reviewer and security pass over the whole diff. Fail-closed, every time.</p>
+      <p class="sec-sub">Seven mechanical gates run as scripts at ship, not opinions — plus an adversarial reviewer and security pass over the whole diff, model-driven rather than mechanical. Fail-closed, every time.</p>
     </div>
     <div class="gate-grid">
-      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>ac-gate</div><p>Every acceptance-criteria id is proven by a passing test — no untested AC ships.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>situation</div><p>Incident and security-response situations lock what's allowed — hotfix-only, or nothing ships.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>conventions</div><p>Branch, commit, and PR naming follow the convention — no punctuation-only squashes.</p></div>
       <div class="gate reveal"><div class="stamp"><span class="k">✓</span>plandrift</div><p>The diff stays inside the plan's declared files and blast radius.</p></div>
       <div class="gate reveal"><div class="stamp"><span class="k">✓</span>testintent</div><p>Tests assert real behaviour, not tautologies that pass on anything.</p></div>
-      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>docsync</div><p>Docs and route index move in lockstep with the code they describe.</p></div>
       <div class="gate reveal"><div class="stamp"><span class="k">✓</span>depguard</div><p>New dependencies are declared, justified, and inside policy.</p></div>
-      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>license</div><p>Every SPDX id — npm and Python — stays inside the permissive allowlist.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>ac-gate</div><p>Every acceptance-criteria id is proven by a passing test — no untested AC ships.</p></div>
+      <div class="gate reveal"><div class="stamp"><span class="k">✓</span>docsync</div><p>Docs and route index move in lockstep with the code they describe.</p></div>
+    </div>
+    <p class="eyebrow" style="margin-top:32px">Adversarial passes · model-driven, not mechanical</p>
+    <div class="gate-grid" style="grid-template-columns:repeat(2,1fr);max-width:552px;margin-top:16px">
       <div class="gate reveal"><div class="stamp"><span class="k">✓</span>reviewer</div><p>A full-diff review subagent returns pass with zero critical or high findings.</p></div>
       <div class="gate reveal"><div class="stamp"><span class="k">✓</span>security</div><p>An adversarial pass treats the diff as hostile: injection, secrets, supply chain.</p></div>
     </div>
@@ -431,7 +435,7 @@
     <div class="stats">
       <div class="stat reveal"><div class="n">20</div><div class="l">Pipeline skills</div></div>
       <div class="stat reveal"><div class="n">12</div><div class="l">Agent roles</div></div>
-      <div class="stat reveal"><div class="n">6</div><div class="l">Mechanical gates</div></div>
+      <div class="stat reveal"><div class="n">7</div><div class="l">Mechanical gates</div></div>
       <div class="stat reveal"><div class="n">MIT</div><div class="l">0 non-permissive deps</div></div>
     </div>
   </div>
@@ -442,13 +446,13 @@
   <div class="wrap">
     <div>
       <span class="eyebrow">Install</span>
-      <h2>Three commands inside Claude Code — one to emit for Antigravity.</h2>
+      <h2>Three commands inside Claude Code, three steps for Antigravity.</h2>
       <div class="steps" style="margin-top:26px">
         <div class="step"><span class="num">01</span><span class="txt">Add the marketplace, install the plugin.</span></div>
         <div class="step"><span class="num">02</span><span class="txt">Run <span class="c">/forge:init</span> — adopt or create, wire the board, gates, hooks.</span></div>
         <div class="step"><span class="num">03</span><span class="txt">Describe work as tickets. Run <span class="c">/forge:deliver</span> or <span class="c">/forge:autopilot</span>.</span></div>
       </div>
-      <p class="req">Prerequisites: <code>Claude Code</code>, <code>Node ≥ 22.13</code>, <code>pnpm 10.14+</code>, and a GitHub account. Full wiring in the <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/install.md" style="color:var(--claude)">install guide</a>. Running <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/cross-gai.md" style="color:var(--claude)">Antigravity</a> instead? Same plugin, its own one-command emit flow — see the box alongside.</p>
+      <p class="req">Prerequisites: <code>Claude Code</code>, <code>Node ≥ 22.13</code>, <code>pnpm 10.14+</code>, and a GitHub account. Full wiring in the <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/install.md" style="color:var(--claude)">install guide</a>. Running <a href="https://github.com/dngioidev/forge/blob/main/docs/guides/cross-gai.md" style="color:var(--claude)">Antigravity</a> instead? Same Node/git/gh, plus <code>agy</code> on PATH. There's no marketplace for agy, so it's three steps, not one: clone a forge checkout, emit into your project, commit what's emitted — see the box alongside.</p>
     </div>
     <div>
       <div class="installbox">
@@ -458,8 +462,11 @@
 <span class="p">/forge:init</span></pre>
       </div>
       <div class="installbox" style="margin-top:14px">
-        <div class="top">or, running Antigravity (agy)</div>
-<pre><span class="p">node</span> plugin/scripts/init.mjs --host agy</pre>
+        <div class="top">or, running Antigravity (agy) — three steps</div>
+<pre><span class="p">git</span> clone https://github.com/dngioidev/forge C:\tools\forge
+<span class="p">cd</span> C:\my\project
+<span class="p">node</span> C:\tools\forge\plugin\scripts\init.mjs --host agy</pre>
+        <p style="margin:0;padding:0 18px 18px;font-size:12.5px;color:var(--ink-smoke);line-height:1.55">Run the last line from <b>your project's directory</b>, with an absolute path to the checkout — the emitter resolves its output relative to cwd. Then commit the emitted <code style="font-family:var(--mono);color:var(--ink-ash);background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:4px;padding:1px 6px;font-size:11.5px">.agents/plugins/forge/</code> (~126 files) — that's what every teammate shares, no checkout required on their side. (macOS/Linux: forward slashes, e.g. <code style="font-family:var(--mono);color:var(--ink-ash);background:var(--iron-plate);border:1px solid var(--iron-seam);border-radius:4px;padding:1px 6px;font-size:11.5px">~/tools/forge</code>.)</p>
       </div>
       <div class="cta-row" style="margin-top:22px">
         <a class="btn btn-primary" href="https://github.com/dngioidev/forge">Star on GitHub</a>
