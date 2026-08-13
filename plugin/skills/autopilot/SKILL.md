@@ -30,41 +30,63 @@ RUN START: confirm in-session merge authorization (§ Merge-authorization prefli
 RUN START: evaluateRateBudget(gh) (§ Rate-budget preflight)  ← ALSO required, before the first spawn
   └─ pause=true (low budget) ───────────────▶ surface the reset window, pause the run (not an escalation)
   ▼
+RE-READ run.json (§ Re-read, don't remember)  ← top of EVERY iteration, fresh session or after compaction
+  ▼
 ITERATION GUARD: nextIteration(run, boardSize) (§ Loop backstop)  ← call FIRST, every iteration
   └─ stop=true (runaway) ──────────────────▶ HALT + escalate (do NOT deliver another ticket)
   ▼
 every budgetCheckDue(run.iterations) iterations: evaluateRateBudget(gh) again (§ Rate-budget preflight)
   └─ pause=true ────────────────────────────▶ same pause as run start
   ▼
-select next actionable ticket (§ selection)
+select next actionable ticket (§ selection) → { ticket, action }
   ├─ none left ────────────────────────────▶ STOP + run report
   ▼
-SPAWN a delivery subagent (Task tool) for this ticket ─────────┐   § Orchestration
-  brief: deliver #N end-to-end (triage/shape → plan → execute   │   runs in its OWN context
-  → ship → open PR → WATCH CI to green in-run                   │
-  (`gh pr checks <pr> --watch`) → auto-merge on green),         │
-  return {issue, outcome, pr, notes}                            │
-  ▼                                                             │
-main loop reads ONLY that terminal report ◀────────────────────┘
-  │  WATCHDOG: resolveReturnedTicket(report) (§ Return-then-resume watchdog)  ← run on EVERY report
+SPAWN a subagent keyed on `action` (Task tool) ─────────────────┐   § Orchestration
+  action=deliver/resume → SPAWN a delivery subagent: deliver #N  │   runs in its OWN,
+    end-to-end (plan → execute → ship → open PR → WATCH CI to    │   DISCARDABLE context —
+    green in-run (`gh pr checks <pr> --watch`) → auto-merge on   │   never the main window
+    green), return {issue, outcome, pr, notes}                   │
+  action=triage → SPAWN a triage subagent: forge:triage in its   │
+    own context, return {issue, verdict, outcome}                │
+  action=shape → SPAWN a shape subagent: forge:shape in its own  │
+    context (gather product context → route to ideate/           │
+    brainstorm/spike/design → ground gate → promote or escalate),│
+    return {verdict, outcome, issue, followUp, sources}          │
+  ▼                                                              │
+main loop reads ONLY that terminal report ◀─────────────────────┘
+  │  WATCHDOG: resolveReturnedTicket(report) (§ Return-then-resume watchdog)  ← run on EVERY delivery report
   ├─ action=merge ───────────────────────▶ funnel the PR through the merge bar (autopilot_merge/runMerge)
   ├─ action=escalate ────────────────────▶ surface visibly (record awaiting-human / escalate) — never a silent park
   ├─ action=continue: outcome=escalated / awaiting-human ─▶ record + park, continue with next ticket
   ├─ action=continue: outcome=merged ────▶ record to run.json · trail --phase merged
+  ├─ shape outcome=ready ─────────────────▶ record {outcome:'ready', stage:'shape'} · re-enters the queue as `deliver`
+  ├─ triage verdict=fail ─────────────────▶ escalate + skip (§ Auto-triage front door)
   └─ subagent filed new work ────────────▶ already on the board — re-enters the queue
   ▼
-loop  (main context unchanged — ~O(1) per ticket)
+loop  (main context unchanged — ~O(1) per ticket — RE-READ run.json again at the top)
 ```
 
-## Orchestration — the main loop only orchestrates
+## Orchestration — the main loop never runs a skill inline (#466)
+
+**The main loop never runs a skill inline. Every action `select.mjs` returns is executed in a spawned subagent.** The loop's own tools are only: `select.mjs`, the ledger, `watchdog.mjs`, the merge bar, trail/escalation surfacing, and the Task tool. This generalizes the earlier delivery-only rule (#156): `select.mjs` `actionFor()` returns **four spawnable** actions — `resume`/`deliver`/`triage`/`shape` — and every one of them gets a spawn, not just delivery. (`actionFor()` can also return `'escalate'` — an unshaped `backlog` ticket with no `--shape` — but that names a decision already parked for the human, not delegable work; it is handled directly by the loop's existing escalation surfacing, § Selection / § The human gates, exactly as before this ticket.) Before this, `shape` had no spawn rule at all and ran inline in the main window — the most context-hungry stage forge has (`docs/product/**`, linked spec/ADR, code-graph payloads, then a nested `ideate`/`brainstorm`/`spike`/`design` run) — which is exactly what drove a long `--shape` run to 100% context.
+
+| action | subagent | brief runs | terminal report |
+| --- | --- | --- | --- |
+| `shape` | **shape subagent** | `forge:shape` | `{verdict, outcome, issue, followUp, sources}` |
+| `triage` | **triage subagent** | `forge:triage` | `{issue, verdict, outcome}` |
+| `deliver` / `resume` | **delivery subagent** (unchanged) | `forge:deliver` | `{issue, outcome, pr, notes}` |
 
 Per ticket, the main loop does exactly three things: **spawn**, **record**, **continue**.
 
-1. **Spawn a delivery subagent** with the Task tool — `subagent_type: general-purpose, model: sonnet` (or a dedicated delivery agent if the roster has one). Pin the model explicitly; an unpinned `general-purpose` spawn silently inherits whatever model the orchestrating session happens to be on, so a run started on a heavier model burns delivery-tier work at that model's rates for no reason (#379) — every other forge role agent (planner/implementer/reviewer/security/test-architect/etc.) already carries an explicit model tier for the same reason (#101); delivery gets the same discipline. The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the route (deliver, or shape-first under `--shape`), the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, open the PR, **watch CI to green in this same run with `gh pr checks <pr> --watch`**, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
+1. **Spawn a subagent for whatever action was selected** with the Task tool — `subagent_type: general-purpose, model: sonnet` (or a dedicated agent if the roster has one), for **every** action, not delivery alone. Pin the model explicitly; an unpinned `general-purpose` spawn silently inherits whatever model the orchestrating session happens to be on, so a run started on a heavier model burns work at that model's rates for no reason (#379) — every other forge role agent (planner/implementer/reviewer/security/test-architect/etc.) already carries an explicit model tier for the same reason (#101); every spawned action gets the same discipline.
+
+   - **`deliver`/`resume` → delivery subagent.** The brief is self-contained so the subagent needs no main-loop context: the ticket ref + body, the merge bar (§ auto-merge), the escalation triggers (§ human gates), and this instruction — *do the whole ticket in your own context (branch, plan, implement, test, gates, ship, open the PR, **watch CI to green in this same run with `gh pr checks <pr> --watch`**, auto-merge on green, post-merge ritual); file follow-ups directly with `board/create.mjs`; escalate with `escalate.mjs`; then return a compact terminal report and nothing else.*
+   - **`triage` → triage subagent.** Self-contained brief: the ticket ref + body, run `forge:triage` in its own context (classify, confirm the ask, set fields), escalate (`verdict: fail`) rather than guessing, then return `{issue, verdict, outcome}` and nothing else.
+   - **`shape` → shape subagent** — spawned the same way as every other action (`subagent_type: general-purpose, model: sonnet`, pinned per #379/#101). Self-contained brief: the ticket ref + body, run `forge:shape` in its own context (gather `docs/product/**` + linked spec/ADR + ticket body + code graph, classify why it isn't ready, route to `ideate`/`brainstorm`/`spike`/`design`, ground gate, promote Backlog→Ready or escalate), then return only the terminal JSON `{verdict, outcome, issue, followUp, sources}` (§ forge:shape's own report contract) — never the gathered context itself. **No fused shape-then-deliver route:** the delivery brief above does NOT carry a `shape-first` clause — one action, one spawn, one discardable context. A shaped ticket becomes `ready`, re-enters the queue, and is picked up by a **later** iteration as its own `deliver` spawn — never chained into the same subagent invocation that shaped it, so the shape context (product docs, code graph, a drafted spec) never rides along as dead weight through implementation.
 
    **Forbidden — the return-then-resume stall:** the brief must NOT tell the subagent to open the PR and then return awaiting an external/background completion notification (e.g. "await the CI watcher's notification"). The subagent's context is discarded on return and **nothing re-invokes it when CI goes green** — that stalls the ticket until a manual resume. The background CI monitor notifies the **main loop**, not a returned subagent. The subagent must therefore watch CI to conclusion **in-run itself** (`gh pr checks <pr> --watch`) and merge within the **same invocation** — never return on the assumption it will be re-spawned on green.
 
-   **Denylist safe-alternatives — carried in every delivery brief.** The brief teaches each spawned delivery subagent the safe alternative up front so it doesn't reflexively reach for a denylisted destructive command, hit the block, and burn a turn retrying:
+   **Denylist safe-alternatives — carried in every spawned brief, not delivery alone (#466).** Every subagent brief — delivery, triage, **and shape** — teaches the safe alternative up front so it doesn't reflexively reach for a denylisted destructive command, hit the block, and burn a turn retrying. Triage and shape don't do destructive git ops themselves, but they do write ticket-derived text (comments, escalation reasons, sources manifests) that can trip the **literal-string caveat** below just as easily as a delivery subagent's PR body can, so both get the same caveat, not only delivery's:
 
    | Blocked class | Safe alternative |
    | --- | --- |
@@ -75,11 +97,11 @@ Per ticket, the main loop does exactly three things: **spawn**, **record**, **co
 
    **On a denylist block, escalate — do not retry the blocked command** (`escalate.mjs`); a genuinely-required destructive action is a human decision, not a retry.
 
-   **Literal-string caveat:** the denylist matches these command strings even inside quoted/heredoc bodies, so a PR body, comment, or trail note that merely *mentions* a blocked command trips it when passed inline. Write such content to a file and pass `--body-file` (or `git commit -F <file>`), never inline on a shell command line.
-2. **Read only the terminal report** — `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}` — and **run it through the watchdog** (`watchdog.mjs` `resolveReturnedTicket`, § Return-then-resume watchdog) before recording. A subagent that returns `awaiting-merge` (opened a green PR, then returned awaiting a re-invocation) must NOT be recorded as a silent terminal state — the watchdog turns that into a `merge` (funnel to the bar) or an `escalate` (surface awaiting-human / escalate). Every already-resolved outcome passes through as `continue`. The main loop then writes the resolved outcome to `run.json`, trails the ticket, and never re-reads the subagent's work.
-3. **Continue** to the next ticket. Because the delivery context is discarded, the main window is unchanged between tickets — a 5-ticket and a 50-ticket run cost the same orchestration overhead, and the run never compacts mid-loop.
+   **Literal-string caveat — applies to every spawned brief.** The denylist matches these command strings even inside quoted/heredoc bodies, so a PR body, an issue/trail comment, an escalation reason, or a sources-manifest entry that merely *mentions* a blocked command trips it when passed inline — this applies equally to a delivery subagent's PR body, a triage subagent's `board/*.mjs --body`, and a shape subagent's `escalate.mjs --reason`/`--context`. Write such content to a file and pass `--body-file` (or `git commit -F <file>`), never inline on a shell command line.
+2. **Read only the terminal report** and **run every returned report through the watchdog** (`watchdog.mjs` `resolveReturnedTicket`, § Return-then-resume watchdog) before recording — it is a harmless no-op pass-through (`action: continue`) for any outcome other than the `awaiting-merge` sentinel, and only `deliver`/`resume` reports can ever carry that outcome, so running it on every report (not delivery alone) costs nothing and keeps one code path for "record what a subagent returned." For `deliver`/`resume`: `{issue, outcome: merged|escalated|awaiting-human|skipped, pr, notes}`. A subagent that returns `awaiting-merge` (opened a green PR, then returned awaiting a re-invocation) must NOT be recorded as a silent terminal state — the watchdog turns that into a `merge` (funnel to the bar) or an `escalate` (surface awaiting-human / escalate); every already-resolved outcome passes through as `continue`. For `shape`: `{verdict, outcome: ready|escalated, issue, followUp, sources}` — `outcome: ready` records via `ledger.mjs` `applyOutcome(run, {issue, outcome:'ready', stage:'shape'})` (the ticket re-enters the queue as `deliver` on a later iteration; § Run ledger & report), `outcome: escalated` records + parks like any other escalation. For `triage`: `{issue, verdict, outcome}` — `verdict: fail` escalates-and-skips (§ Auto-triage front door), a pass proceeds to `deliver` on the next iteration. Every recorded outcome carries the producing `stage` (`shape`/`triage`/`deliver`) so the run report can distinguish them. The main loop writes the resolved outcome to `run.json`, trails the ticket, and never re-reads the subagent's work.
+3. **Continue** to the next ticket. Because every spawned context is discarded on return, the main window is unchanged between tickets — a 5-ticket and a 50-ticket run cost the same orchestration overhead, and the run never compacts mid-loop.
 
-A subagent that can't finish (deadlock, a gate failing twice, an ungrounded shape) returns `outcome: escalated` with the reason; the loop parks that one ticket and moves on. Never fall back to delivering inline — a missing/broken delivery subagent is itself an escalation.
+A subagent that can't finish (deadlock, a gate failing twice, an ungrounded shape) returns `outcome: escalated` with the reason; the loop parks that one ticket and moves on. Never fall back to running any stage inline — a missing/broken subagent is itself an escalation.
 
 ## Return-then-resume watchdog — awaiting-merge is never silently parked (#319)
 
@@ -143,11 +165,11 @@ A `backlog` ticket routes on its **readiness** (`readiness.mjs` → does it carr
 
 ## Crazy mode — shaping the backlog (`--shape`, spec: forge-autopilot-crazy-mode)
 
-Off by default. With `--shape`, a `backlog` ticket that isn't shaped (no acceptance criteria) is sent to **`forge:shape`** instead of being escalated: it gathers the product context, classifies why it isn't ready, runs the right front-of-pipeline skill (`ideate`/`brainstorm`/`spike`/`design`), and — **grounded-only** — either promotes it Backlog→Ready (then the loop delivers it) or **escalates** the exact open question and skips. The **ground gate** (`gates/groundgate.mjs`) enforces that every shaped product decision cites a real source, so the engine never invents product direction. Without `--shape`, this whole stage is off and an unshaped ticket escalates as before.
+Off by default. With `--shape`, a `backlog` ticket that isn't shaped (no acceptance criteria) is sent to a **spawned shape subagent** instead of being escalated (§ Orchestration — `action=shape` gets the same spawn discipline as every other action, never an inline call): it gathers the product context, classifies why it isn't ready, runs the right front-of-pipeline skill (`ideate`/`brainstorm`/`spike`/`design`), and — **grounded-only** — either promotes it Backlog→Ready (recorded `outcome: ready, stage: shape` — the ticket re-enters the queue and is delivered by a **later** `deliver` spawn, never the same subagent invocation) or **escalates** the exact open question (writing the escalation via `escalate.mjs` **before** it returns — its context is discarded on return, so an unwritten reason is lost) and skips. The **ground gate** (`gates/groundgate.mjs`) enforces that every shaped product decision cites a real source, so the engine never invents product direction. Without `--shape`, this whole stage is off and an unshaped ticket escalates as before.
 
 ## Auto-triage front door
 
-A `backlog` ticket that is already shaped is run through `forge:triage` to become deliverable *before* `deliver` sees it. If it still can't be specified (planner or triage returns `verdict: fail` — the ask or acceptance is unclear), **escalate it and skip** — the loop moves to the next ticket. Autopilot never guesses a product decision to keep moving.
+A `backlog` ticket that is already shaped is sent to a **spawned triage subagent** (§ Orchestration) that runs `forge:triage` in its own context to become deliverable *before* `deliver` sees it. If it still can't be specified (planner or triage returns `verdict: fail` — the ask or acceptance is unclear), **escalate it and skip** — the loop moves to the next ticket. Autopilot never guesses a product decision to keep moving.
 
 ## Auto-merge — the bar that replaces human review
 
@@ -198,6 +220,12 @@ Two background **monitors** (`plugin/monitors/monitors.json`, both registered `w
 ## Filing new work as it goes (spec §7)
 
 When delivery surfaces a need out of the current ticket's scope, file it rather than drop it — `board/create.mjs`, linked to the driving ticket, trail-noted: a **bug** found in passing, a **spike** when a ticket turns out to need investigation first, a **follow-up item** for deferred work. Filed tickets re-enter the queue and are picked up by a later iteration — the board may *grow* mid-run and still converge, as long as new work trends down.
+
+## Re-read, don't remember — compaction is harmless by construction (#466)
+
+The loop holds no un-checkpointed state — everything needed to continue lives in `run.json`, the board, and `.forge/decisions`. So rather than *detecting* a mid-run auto-compaction, the loop makes one harmless: it **re-reads `run.json` at the top of every iteration**, before selecting the next ticket (§ The loop diagram). It is a ~5KB file read at zero model cost, and the window is never the source of truth for run state — a compaction mid-run loses only prose the loop never needed to remember. The resume protocol (below) accordingly applies on a **fresh session or after any compaction** — not a fresh session only.
+
+**Explicit failure mode this guards against:** `mergeMode` in `run.json` is a **record of a past grant, not a recoverable grant**. Re-anchoring from disk must never create the belief that merge authority was restored merely because `run.json` still shows `auto-merge` from an earlier point in the run — the harness classifier re-evaluates per attempt regardless of what's on disk (#397/#398), so every merge attempt still needs the live in-session grant (§ Merge-authorization preflight), compaction or not.
 
 ## Stop conditions & safety rails (spec §8)
 

@@ -720,6 +720,43 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     expect(out).toMatch(/filed: #3 \(spike\)/);
   });
 
+  // AC-466.6: a successful `forge:shape` (crazy mode) must be a recordable outcome —
+  // today `applyOutcome(run, {outcome:'ready'})` throws because 'ready' isn't in
+  // OUTCOMES, which is why a real run.json shows 18 iterations and zero shape entries.
+  describe('AC-466.6: the ledger can record a shape (ready outcome + stage field)', () => {
+    it("applyOutcome accepts outcome:'ready' and round-trips — throws today", () => {
+      let run = freshRun('2026-08-13T00:00:00Z');
+      run = applyOutcome(run, { issue: 140, outcome: 'ready', stage: 'shape' });
+      const entry = run.outcomes.find((o) => o.issue === 140);
+      expect(entry).toMatchObject({ issue: 140, outcome: 'ready', stage: 'shape' });
+    });
+
+    it('outcome entries carry the producing stage; omitting it defaults to null (back-compat)', () => {
+      let run = freshRun();
+      run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#10', stage: 'deliver' });
+      run = applyOutcome(run, { issue: 2, outcome: 'escalated' }); // no stage passed — existing call shape
+      expect(run.outcomes.find((o) => o.issue === 1).stage).toBe('deliver');
+      expect(run.outcomes.find((o) => o.issue === 2).stage).toBe(null);
+    });
+
+    it("renderReport emits a 'ready:' line, formatted the same as every other OUTCOMES line", () => {
+      let run = freshRun();
+      run = applyOutcome(run, { issue: 140, outcome: 'ready', stage: 'shape' });
+      run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#10', stage: 'deliver' });
+      const out = renderReport(run);
+      expect(out).toMatch(/ready: #140/);
+      expect(out).toMatch(/merged: #1 \(PR#10\)/);
+    });
+
+    it("recordOutcome/loadRun round-trip a 'ready' outcome through disk", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      await startRun(cwd);
+      await recordOutcome(cwd, { issue: 140, outcome: 'ready', stage: 'shape' });
+      const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
+      expect(onDisk.outcomes).toMatchObject([{ issue: 140, outcome: 'ready', stage: 'shape' }]);
+    });
+  });
+
   it('startRun + recordOutcome round-trip to disk and resume keeps the start time', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
     const started = await startRun(cwd);

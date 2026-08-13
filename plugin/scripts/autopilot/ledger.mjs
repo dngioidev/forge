@@ -12,7 +12,12 @@ import { mergeAuthPreflight } from './preflight.mjs';
 import { pendingCount as outboxPendingCount } from '../lib/outbox.mjs';
 
 export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
-export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human'];
+// 'ready' (#466 AC-6) is the terminal outcome of a successful `forge:shape` —
+// crazy mode promoting a backlog ticket to Ready. Without it a successful
+// shape is unrepresentable: applyOutcome throws, so no run.json ever recorded
+// one. It joins at the end so existing report ordering (merged/escalated/
+// skipped/awaiting-human first) is unchanged.
+export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human', 'ready'];
 
 export function freshRun(startedAt = null) {
   return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null };
@@ -46,11 +51,17 @@ export async function loadRun(cwd) {
  * Pure state transition: record what happened to one ticket this iteration.
  * Last write for an issue wins (a re-run of the same ticket supersedes), so
  * the ledger is idempotent under resume. Bumps the iteration counter.
+ *
+ * `stage` (#466 AC-6) names which spawned subagent produced the outcome —
+ * `'shape'`/`'triage'`/`'deliver'` — so a shape wave and a delegation
+ * regression are both visible in run.json instead of invisible until a human
+ * notices their context bar. Optional and defaults to `null`: no existing
+ * caller is required to pass it (back-compat).
  */
-export function applyOutcome(run, { issue, outcome, ref = null }) {
+export function applyOutcome(run, { issue, outcome, ref = null, stage = null }) {
   if (!OUTCOMES.includes(outcome)) throw new Error(`unknown outcome '${outcome}' — valid: ${OUTCOMES.join(', ')}`);
   const outcomes = run.outcomes.filter((o) => o.issue !== issue);
-  outcomes.push({ issue, outcome, ref, at: new Date().toISOString() });
+  outcomes.push({ issue, outcome, ref, stage, at: new Date().toISOString() });
   return { ...run, iterations: run.iterations + 1, outcomes };
 }
 

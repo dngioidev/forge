@@ -48,7 +48,7 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/parks? one ticket|continue.*next|does not stop the whole run/i);
   });
 
-  it('#156: the main loop is orchestrate-only — spawns a per-ticket delivery subagent, never delivers inline', async () => {
+  it('#156/AC-466.7: the main loop is orchestrate-only — spawns a per-ticket delivery subagent, never delivers inline', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     // the loop's per-ticket step is a Task-tool spawn, not inline delivery
     expect(s).toMatch(/SPAWN a delivery subagent|spawn a delivery subagent/i);
@@ -58,6 +58,9 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/never deliver.* inline|NEVER delivers inline|not run `?forge:deliver`? inline|must not.*deliver.*inline/i);
     // the compact return contract the loop consumes
     expect(s).toMatch(/\{issue, outcome/);
+    // #466: the same spawn discipline extends to triage and shape — not delivery alone
+    expect(s).toMatch(/SPAWN a triage subagent|spawn a triage subagent/i);
+    expect(s).toMatch(/SPAWN a shape subagent|spawn a shape subagent/i);
   });
 
   it('#156/#430: documents per-host permission pre-authorization required for a continuous run', async () => {
@@ -209,5 +212,38 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/paused|kill switch/i);
     expect(s).toMatch(/backstop|max-iterations/i);
     expect(s).toMatch(/run\.json|run ledger/i);
+  });
+
+  // AC-466.1/AC-7: the orchestrate-only mandate (#156) covered only `deliver`;
+  // this generalizes it to every action select.mjs can return.
+  it('AC-466.1: the main loop NEVER runs a skill inline — every select.mjs action (resume/deliver/triage/shape) is spawned', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/the main loop never runs a skill inline/i);
+    expect(s).toMatch(/every action `?select\.mjs`? returns is executed in a spawned subagent/i);
+    // the action->subagent table names all four
+    expect(s).toMatch(/\bresume\b[\s\S]{0,400}\bdeliver\b[\s\S]{0,400}\btriage\b[\s\S]{0,400}\bshape\b|shape[\s\S]{0,200}triage subagent|triage subagent/i);
+    expect(s).toMatch(/shape subagent/i);
+    expect(s).toMatch(/triage subagent/i);
+  });
+
+  it('AC-466.2: --shape spawns a shape subagent (not an inline forge:shape call) and reads only its terminal JSON', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/spawn.{0,80}shape subagent|shape subagent.{0,80}spawn/is);
+    // the shape subagent's terminal report contract (already specified in shape/SKILL.md)
+    expect(s).toMatch(/\{["']?verdict["']?,\s*["']?outcome["']?,\s*["']?issue["']?,\s*["']?followUp["']?,\s*["']?sources["']?\}/);
+  });
+
+  it('AC-466.3: the delivery brief no longer carries a fused shape-first route', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).not.toMatch(/shape-first under/i);
+  });
+
+  it('AC-466.5: the loop re-reads run.json every iteration, and the resume protocol covers compaction, not just a fresh session', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/re-reads? `?run\.json`? at the top of every iteration/i);
+    expect(s).toMatch(/fresh session.{0,40}or after (any )?compaction|compaction.{0,40}fresh session/i);
+    // mergeMode is a record of a past grant, not a recoverable grant — re-anchoring
+    // must not create the belief that merge authority was restored.
+    expect(s).toMatch(/record of a past grant, not a recoverable grant/i);
   });
 });
