@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { check, handle, segments } from '../../plugin/hooks/denylist.mjs';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { check, handle, segments, normalizeShellText } from '../../plugin/hooks/denylist.mjs';
 import { escalateMessage } from '../../plugin/scripts/lib/escalate-msg.mjs';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const denylistPath = join(repoRoot, 'plugin', 'hooks', 'denylist.mjs');
+const thisTestPath = fileURLToPath(import.meta.url);
 
 describe('chained-command segments (AC-B85.*, #85 — iomanage feedback)', () => {
   it('AC-B85.1: a push chained with an unrelated `gh … -f` is NOT force-push', () => {
@@ -1126,6 +1133,254 @@ describe('long-option abbreviations git itself accepts (#437, AC-437.6)', () => 
     expect(check('git push --force-with-lease --force-if-includes origin feat/x').blocked).toBe(false);
     // ...and a real --force alongside them is still a real force-push.
     expect(check('git push --force --force-if-includes origin main').rule).toBe('force-push');
+  });
+});
+
+describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452, AC-452.*)', () => {
+  const NUL = String.fromCharCode(0);
+
+  // AC-452.1 — shortFlagCluster() collects short-flag letters via a
+  // contiguous run immediately after a `-`; a raw NUL landing inside that
+  // run broke the run exactly as an inert SPACE would (#446's own NUL
+  // handling maps to a space, and a space is a non-letter too), so all four
+  // rules below saw a broken cluster and returned blocked:false while a real
+  // shell drops the byte and hands the target program the fully intact flag.
+  // Each case is the ticket's own reproduction. env-branch-delete's own gate
+  // on a PROTECTED branch name is unrelated to this bug and unchanged here —
+  // `main` stands in for the ticket's illustrative `somebranch`, which the
+  // rule was never going to fire on regardless of the NUL, since it targets
+  // only main/master/staging/production by design.
+  it('AC-452.1: recursive-delete blocks a NUL inside the -rf cluster', () => {
+    expect(check(`rm -r${NUL}f /prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  it('AC-452.1: force-push blocks a NUL inside the -uf cluster', () => {
+    expect(check(`git push -u${NUL}f origin main`)).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-452.1: git-clean-force blocks a NUL inside the -xdf cluster', () => {
+    expect(check(`git clean -xd${NUL}f`)).toMatchObject({ blocked: true, rule: 'git-clean-force' });
+  });
+
+  it('AC-452.1: env-branch-delete blocks a NUL inside the -D cluster on a protected branch', () => {
+    expect(check(`git branch -${NUL}D main`)).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+  });
+
+  // AC-452.2 — the fix is a DUAL view, not a global switch: recursive-delete's
+  // own safeRmTarget() target parsing keeps reading the pre-existing NUL-as-
+  // SPACE text unchanged, so #446's target-path splice (AC-446.6,
+  // tests/hooks/denylist.test.mjs:442-483 — untouched by this ticket) still
+  // blocks. Re-verified here as its own regression guard rather than editing
+  // those pinned tests, which is exactly what AC.2 requires.
+  it('AC-452.2: the #446 target-path NUL splice stays blocked (dual-view fix never touches safeRmTarget())', () => {
+    expect(check(`rm -rf /prod-secrets${NUL}/scratchpad`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    // ...and the safe/safe case beside it stays exempt, same as AC-446.6.
+    expect(check(`rm -rf dist${NUL}build`).blocked).toBe(false);
+  });
+
+  // AC-452.3 — when a command carries no NUL at all, the two normalizeShellText()
+  // views ARE the same text, so every pre-existing safe-target and NBSP/VT/FF
+  // class-5 case must keep its exact pre-#452 outcome. Spot-checked here for
+  // the four rules #452 touches specifically — AC-312.*, AC-446.1 and AC-450.*
+  // above already pin the full matrix, unmodified, which is what actually
+  // satisfies AC.3; this is a targeted regression guard on top of that.
+  it('AC-452.3: safe-target and non-IFS class-5 cases are unaffected by the dual-view fix', () => {
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build')).toMatchObject({ blocked: true, rule: 'recursive-delete' }); // NBSP, class 5
+    expect(check('git push -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git reset --hard HEAD~3')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+    expect(check('git clean -n -f')).toMatchObject({ blocked: true, rule: 'git-clean-force' });
+    expect(check('git push --force-with-lease origin feat/x').blocked).toBe(false);
+  });
+
+  // AC-452.4 (regression guard, not new work) — the exec-layer behaviour claim
+  // PR #453 already corrected must not regress back to a truncation model
+  // while this ticket's own comments touch the same NUL-handling code.
+  // Asserted POSITIVELY (the correct claims are present) rather than by
+  // banning the substring "truncat", which also appears inside several
+  // correctly-negated sentences ("NOT a truncation bug") that must stay.
+  it('AC-452.4: denylist.mjs and its own tests still state the fuse/throw model, not truncation', async () => {
+    const src = await readFile(denylistPath, 'utf8');
+    const testSrc = await readFile(thisTestPath, 'utf8');
+    for (const raw of [src, testSrc]) {
+      // Collapse whitespace AND JSDoc/`//` comment-line prefixes so a claim
+      // split across source lines by ordinary prose wrapping still matches —
+      // this test cares whether the CLAIM is present, not its line breaks.
+      const doc = raw.replace(/\n\s*(?:\*|\/\/)?\s*/g, ' ').replace(/\s+/g, ' ');
+      expect(doc).toMatch(/throws[^.]*on an embedded NUL/);
+      expect(doc).toMatch(/drops the (embedded )?(byte|NUL)/);
+      expect(doc).toMatch(/fuses/);
+    }
+  });
+
+  // AC-452.5 — normalizeShellText()'s two readings, `text` (canonical,
+  // NUL-deleted) and `spacedText` (`text` with a space re-inserted at every
+  // dropped-NUL position), must always segment IDENTICALLY: `check()`
+  // indexes `segsSpaced[i]` against `segs[i]` to hand `recursive-delete` both
+  // readings of the SAME segment, so a length or order mismatch would
+  // silently desync it from the segment it is actually judging — exactly the
+  // failure mode adversarial review found THREE separate times while this
+  // fix was under review, each closed in turn: (1)+(2) two triggers in the
+  // ticket's first (two-independent-scans) design — a NUL directly after a
+  // backslash and before a `;`, and a NUL directly between `$` and `'` —
+  // both closed by moving to a single canonical scan; (3) a NUL landing
+  // BETWEEN the two `&` characters of an unquoted `&&`, found AFTER that
+  // move: `segments()` treats `&&` as one two-character separator with NO
+  // single-character fallback (unlike `||`, where a lone `|` is ALSO
+  // independently a separator, so splitting it apart still converges to the
+  // same count once the resulting empty segment is filtered), so turning
+  // `&&` into `& &` silently DROPS a split rather than adding a harmless
+  // extra one — closed by pushing any marker landing inside a `&` run
+  // forward past the whole run, in `normalizeShellText()`. `spacedText` is
+  // built by pure character INSERTION into the already-final `text` (never
+  // a second scan) with that one adjustment, which makes the invariant a
+  // structural guarantee, not a coincidence of these particular inputs —
+  // verified empirically here rather than merely asserted in a comment.
+  it('AC-452.5: the text and spacedText readings always segment identically (count and order)', () => {
+    const B = String.fromCharCode(92); // backslash, built at runtime — literal-string caveat
+    const cases = [
+      `rm -r${NUL}f /prod-secrets`,
+      `git push -u${NUL}f origin main`,
+      `git clean -xd${NUL}f`,
+      `git branch -${NUL}D main`,
+      `rm -rf /prod-secrets${NUL}/scratchpad`,
+      `echo one${NUL}two; git push -u${NUL}f origin main`,
+      `git reset --h${NUL}ard && rm -r${NUL}f build`,
+      `a${NUL} | b${NUL} || c${NUL}\nd${NUL}`,
+      `${NUL}${NUL}rm -rf${NUL}${NUL}`,
+      'no NUL at all in this one',
+      `"quoted ${NUL} text" ; rm -rf${NUL}build`,
+      // forge:security's PoC — a NUL directly after a backslash and directly
+      // before a `;`: the backslash must reach THROUGH the dropped NUL to
+      // escape the `;` itself (matching a live bash session, which never saw
+      // the byte), in BOTH readings alike, so this stays ONE segment either
+      // way rather than desyncing into two in one reading and one in the other.
+      `echo a${B}${NUL};echo b;rm -r${NUL}f /prod-secrets`,
+      // forge:reviewer's PoC — a NUL directly between `$` and `'`: must not
+      // change whether `$'…'` ANSI-C-quote-opening syntax is recognised
+      // (which would flip whether a later `;` is real or neutralised)
+      // between the two readings.
+      `$${NUL}'${B}'';rm -r${NUL}f /prod-secrets`,
+      // forge:security's PoC (second round) — a NUL BETWEEN the two `&`
+      // characters of an unquoted `&&`: must not desync split COUNT (the
+      // `&&`-specific gap the `while` adjustment above closes), including a
+      // triple-`&` run to prove the adjustment handles overlapping runs.
+      `true &${NUL}& rm -r${NUL}f /prod-secrets ; warm dist build`,
+      `a &${NUL}&${NUL}& b`,
+      `rm -r${NUL}f /prod-secrets &${NUL}& true`,
+    ];
+    for (const cmd of cases) {
+      const { text, spacedText } = normalizeShellText(cmd);
+      const textSegs = segments(text);
+      const spacedSegs = segments(spacedText);
+      expect(spacedSegs.length, cmd).toBe(textSegs.length);
+      // Order: strip ALL whitespace from each corresponding pair before
+      // comparing, since the only structural difference between the two
+      // readings is an extra inert space (spacedText) vs. nothing (text) at
+      // each former NUL position — never a difference in which non-whitespace
+      // characters appear, or in what order.
+      for (let i = 0; i < textSegs.length; i++) {
+        expect(spacedSegs[i].replace(/\s/g, ''), `${cmd} segment ${i}`).toBe(textSegs[i].replace(/\s/g, ''));
+      }
+    }
+  });
+
+  // AC-452.5 — the functional consequence, not just the segment-count
+  // invariant: before the `&&`-run adjustment above, a NUL splitting `&&`
+  // shifted `recursive-delete`'s `cSpaced` argument onto an unrelated LATER
+  // segment (here, the decoy `warm dist build`, whose substring `rm` and
+  // all-safe remaining tokens made `safeRmTarget()` pass), letting the real
+  // `rm -r<NUL>f /prod-secrets` payload in the segment BEFORE the broken
+  // `&&` escape judgement entirely — confirmed by forge:security's
+  // adversarial review. A real bash session drops the NUL, reforms `&&`,
+  // and executes the `rm` unconditionally regardless of what follows it.
+  it('AC-452.5: a NUL splitting && cannot smuggle recursive-delete past a later decoy segment', () => {
+    for (const cmd of [
+      `true &${NUL}& rm -r${NUL}f /prod-secrets ; warm dist build`,
+      `true &${NUL}${NUL}${NUL}& rm -r${NUL}f /prod-secrets ; confirm build`,
+      `rm -r${NUL}f /prod-secrets &${NUL}& true`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // Sanity: an intact `&&` with an all-safe rm beside a decoy stays exempt,
+    // same direction as the rest of this file's safe/safe cases.
+    expect(check(`true && rm -rf dist ; warm build`).blocked).toBe(false);
+  });
+
+  // AC-452.5 — a THIRD adversarial finding, in a different consumer: a NUL
+  // landing between the two `-` characters of a standalone `--` token
+  // (POSIX end-of-options, #450) breaks `safeRmTarget()`'s own exact
+  // `t === '--'` match against `spacedText` — turning it into two separate
+  // `-` tokens, so `endOfOptions` never latches and the real dash-led
+  // target right after it is misread as a bare flag and filtered out of
+  // judgement, exempting the line via whatever safe-looking word is left.
+  // Fixed the same way as `&&` (pushing the marker past the whole token),
+  // but SCOPED to a whitespace-BOUNDED `--` only — see the comment on
+  // `adjustedMarkers` for why a blanket dash-run push is unsafe here in a
+  // way it is not for `&&`.
+  it('AC-452.5: a NUL splitting a standalone -- token cannot defeat end-of-options recognition', () => {
+    for (const cmd of [
+      `rm -rf -${NUL}- -prod-secrets dist`,
+      `rm -rf -${NUL}${NUL}${NUL}- -prod-secrets dist`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // Sanity: dashes that are NOT a standalone `--` token are untouched by
+    // the adjustment — this doesn't newly bless or newly break anything
+    // about how a NUL splitting an ORDINARY word behaves (that class is
+    // #446/#450's own pre-existing target-splitting design, unchanged here,
+    // and identical on `main`).
+    const { text, spacedText } = normalizeShellText(`rm -rf temp${NUL}-data`);
+    expect(text).toBe('rm -rf temp-data');
+    expect(spacedText).toBe('rm -rf temp -data');
+  });
+
+  // AC-452.5 — a FOURTH adversarial finding: `parts.pop()` in the ANSI-C
+  // `$'…'` quote-open handler (undoing a speculatively-pushed `$` once it
+  // turns out to introduce `$'…'` syntax, #437) can shrink `parts.length`
+  // below a value a NUL marker was already stamped with — e.g. `$<NUL>'`
+  // records a marker right after the `$`, which the very next character
+  // then pops. Left unfixed, `nulMarkers` could go non-monotonic (a later
+  // marker smaller than an earlier one), silently corrupting the linear
+  // `spacedText` insertion pass, which assumes ascending order. Fixed by
+  // retroactively rebasing any trailing marker that pointed exactly at the
+  // popped position down by one, alongside the pop itself.
+  it('AC-452.5: a NUL adjacent to a $-quote-open that gets popped keeps markers non-decreasing', () => {
+    const B = String.fromCharCode(92);
+    for (const cmd of [
+      `$${NUL}'${NUL}`,
+      `$${NUL}'${NUL}scratchpad'`,
+      `$${NUL}'${B}'';rm -r${NUL}f /prod-secrets`,
+    ]) {
+      const { text, spacedText } = normalizeShellText(cmd);
+      const textSegs = segments(text);
+      const spacedSegs = segments(spacedText);
+      expect(spacedSegs.length, cmd).toBe(textSegs.length);
+    }
+  });
+
+  // AC-452.5 — a FIFTH adversarial finding: the `&&`-run adjustment's initial
+  // shape walked one character at a time to the end of the enclosing `&` run,
+  // PER MARKER — a command with many NULs inside ONE long `&` run was
+  // therefore O(run length × marker count), i.e. quadratic overall. Measured
+  // against that shape at ~10s for an 80KB input, which alone exceeds agy's
+  // own documented fail-open timeout (#428) — a hang, not merely a slowdown,
+  // on a hook that runs on every Bash call (the exact failure class the
+  // chunked-`parts` O(1)-append design earlier in this file was built to
+  // avoid). Fixed by precomputing each position's run-end with one linear
+  // backward pass (`ampRunEnd`) instead of walking per marker. Pinned here
+  // with a generous wall-clock budget, not a tight one, since CI hardware
+  // varies (#251) — the point is "linear", not a specific millisecond figure.
+  it('AC-452.5: many NULs inside one long && run stay linear, not quadratic', () => {
+    const size = 200000;
+    const chars = new Array(size);
+    for (let i = 0; i < size; i++) chars[i] = i % 3 === 0 ? NUL : '&';
+    const cmd = chars.join('');
+    const start = Date.now();
+    const { text, spacedText } = normalizeShellText(cmd);
+    const elapsed = Date.now() - start;
+    expect(elapsed, `took ${elapsed}ms for ${size} chars`).toBeLessThan(2000);
+    expect(segments(spacedText).length).toBe(segments(text).length);
   });
 });
 
