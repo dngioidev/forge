@@ -31,7 +31,8 @@ tests it against all six tickets. It does not implement a fix —
   tripwire status and the fact no host currently auto-approves these commands,
   including the option of not doing the rewrite at all.
 - **AC-451.7** if the recommendation is to proceed, the scoped consolidation
-  ticket is filed under #182 and named in the spike doc.
+  ticket is filed under #182 and named in the spike doc; any new defect found
+  while testing the matrix is filed too, never silently dropped.
 
 ## Task 1 (docs): tokenizer design + path-resolution scope + subsumption matrix + recommendation (AC-451.1–AC-451.6)
 
@@ -45,15 +46,17 @@ option).
 
 **Files:** docs/spikes/2026-08-13-argv-tokenize-model.md
 
-## Task 2 (docs): file the Phase-1-only consolidation ticket if recommending proceed (AC-451.7)
+## Task 2 (docs): file the follow-up tickets (AC-451.7)
 
-If the recommendation is to proceed, file it scoped to the smallest
-independently-reviewable slice (the tokenizer module alone, zero behaviour
-change), child of #182, explicitly not closing any of the six sibling tickets
-yet, and reference the filed number from the spike doc.
+If the recommendation is to proceed, file the consolidation ticket scoped to
+the smallest independently-reviewable slice (the tokenizer module alone, zero
+behaviour change), child of #182, explicitly not closing any of the six
+sibling tickets yet. File any new defect discovered while testing the matrix
+as its own ticket rather than folding it into the spike's prose. Reference
+every filed number from the spike doc.
 
 **Files:** docs/spikes/2026-08-13-argv-tokenize-model.md (reference only; the
-ticket itself is a board item, not a repo file)
+tickets themselves are board items, not repo files)
 
 ## Task 3 (test): grounding tests for the spike doc content (AC-451.1 through AC-451.7)
 
