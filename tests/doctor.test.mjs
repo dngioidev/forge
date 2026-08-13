@@ -574,6 +574,35 @@ describe('runDoctor — agy adapter health (#431 AC.1/AC.2/AC.4/AC.5)', () => {
   });
 });
 
+describe('runDoctor — denylist staleness (#447 AC.3)', () => {
+  const routes = [['auth status', AUTH_OK], ['repo view', REPO_VIEW], [() => true, { ok: false, stderr: 'x' }]];
+
+  it('AC-447.3: no working-tree plugin/hooks/denylist.mjs -> silent (plain consumer install shape, no false noise)', async () => {
+    const cwd = await gitRepo();
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'denylist-staleness')).toEqual([]);
+  });
+
+  it('AC-447.3: working-tree copy identical to the live (this checkout\'s own) denylist.mjs -> ok', async () => {
+    const live = await readFile(join(process.cwd(), 'plugin', 'hooks', 'denylist.mjs'), 'utf8');
+    const cwd = await gitRepo({ files: { 'plugin/hooks/denylist.mjs': live } });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'denylist-staleness')[0].level).toBe('ok');
+  });
+
+  it('AC-447.3: BREAK IT: working-tree copy diverges from the live denylist.mjs -> warn, never fails doctor outright', async () => {
+    const live = await readFile(join(process.cwd(), 'plugin', 'hooks', 'denylist.mjs'), 'utf8');
+    const cwd = await gitRepo({ files: { 'plugin/hooks/denylist.mjs': `${live}\n// hand-edited, diverged from the live copy\n` } });
+    const { gh } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const row = byName(res, 'denylist-staleness')[0];
+    expect(row.level).toBe('warn');
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('denylist-staleness');
+  });
+});
+
 describe('runDoctor — healthy repo shape', () => {
   it('all green (✓/⚠ only) against a fully consistent setup', async () => {
     const cwd = await tmpCwd();

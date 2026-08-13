@@ -16,6 +16,7 @@ import {
   detectRunnerServices, serviceTargetResults,
 } from './lib/runner-checks.mjs';
 import { checkAgyAdapter, checkAgyOffload } from './lib/agy-checks.mjs';
+import { checkDenylistStaleness } from './lib/denylist-checks.mjs';
 
 /**
  * Local self-hosted-runner health (ADR-0005 decisions 1 & 3, #225/AC4). Appends
@@ -212,6 +213,13 @@ export async function runDoctor(ctx) {
     const offload = await checkAgyOffload({ cfg: cfg.config, exec });
     if (offload) results.push(offload);
   }
+
+  // denylist staleness (#447 AC.3) — silent unless cwd has its own working-tree
+  // copy of plugin/hooks/denylist.mjs (a forge checkout, not a plain consumer
+  // install); diagnostic only, changes no resolution behaviour (that decision
+  // is #484, still open).
+  const denylistStaleness = await checkDenylistStaleness({ cwd });
+  if (denylistStaleness) results.push(denylistStaleness);
 
   // statusline wired (info-level) — local settings first (that's where init writes it)
   const settingsLocal = await readJson(join(cwd, '.claude', 'settings.local.json')).catch(() => null);
