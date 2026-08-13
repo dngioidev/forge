@@ -8,7 +8,7 @@ import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
 import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
-import { resolveReturnedTicket, STALL_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
+import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
@@ -584,13 +584,17 @@ describe('autopilot return-then-resume watchdog (#319, AC-319.1/AC-319.2) — aw
   });
 
   it('AC-319.1: every OTHER (already-resolved) outcome passes through as continue — the watchdog only fires on the stall', () => {
-    for (const outcome of ['merged', 'escalated', 'awaiting-human', 'skipped']) {
+    for (const outcome of RESOLVED_OUTCOMES) {
       const dec = resolveReturnedTicket({ outcome, pr: 42, ciGreen: true, mergeMode: 'auto-merge' });
       expect(dec.action, outcome).toBe('continue');
       expect(dec.outcome, outcome).toBe(outcome); // record the outcome the subagent already reported
     }
-    // an absent/unknown outcome is likewise not the stall — pass through.
-    expect(resolveReturnedTicket({}).action).toBe('continue');
+    // #464: an absent/unknown outcome is NOT a resolved state — it is the second stall shape
+    // (§ AC-464 below), never a silent `continue`/`outcome: null`. This assertion used to expect
+    // `continue` here; that was the exact gap #464 fixes, so the expectation flips.
+    const noReport = resolveReturnedTicket({});
+    expect(noReport.action).toBe('resume');
+    expect(noReport.outcome).toBe(NONCONFORMING_OUTCOME);
   });
 
   it("AC-319.1: the watchdog's merge action actually drives runMerge to a squash-merge on a green bar", async () => {
@@ -630,6 +634,94 @@ describe('autopilot return-then-resume watchdog (#319, AC-319.1/AC-319.2) — aw
     expect(pick.ticket.number).toBe(319);
     expect(pick.action).toBe('resume');
     expect(actionableQueue(tickets).map((q) => q.ticket.number)).toEqual([319, 400, 500]);
+  });
+});
+
+describe('autopilot watchdog — stalled-before-PR: the second return-then-resume shape (#464, epic #183)', () => {
+  // The 2026-08-11/13 run: a delivery subagent spawns a reviewer/security subagent, then RETURNS
+  // before opening a PR (or with one still awaiting review), with a terminal report that is not the
+  // {issue, outcome, pr, ciGreen, ...} contract at all — free text like "Waiting on the reviewer's
+  // re-confirmation." resolveReturnedTicket has no `awaiting-merge` outcome to match, so before this
+  // fix it fell through as `action: continue, outcome: null` — recorded as if resolved. That must
+  // become a distinct, actionable, non-silent state instead (AC.1/AC.2).
+
+  it('AC-464.1: a missing outcome with no PR classifies as stalled-before-pr, never continue/outcome:null', () => {
+    const dec = resolveReturnedTicket({ outcome: undefined, pr: null });
+    expect(dec.action).toBe('resume');
+    expect(dec.action).not.toBe('continue');
+    expect(dec.outcome).toBe('stalled-before-pr');
+    expect(dec.outcome).not.toBeNull();
+    expect(dec.pr).toBeNull();
+    expect(dec.reason).toMatch(/non-conforming|stalled/i);
+  });
+
+  it('AC-464.1: an unrecognised free-text outcome (not one of the known resolved states) is likewise classified, never recorded as a terminal outcome', () => {
+    for (const outcome of ["Waiting on the reviewer's re-confirmation", "I'm waiting on both re-review verdicts for the final tip.", 'garbled', '']) {
+      const dec = resolveReturnedTicket({ outcome, pr: null });
+      expect(dec.action, outcome).toBe('resume');
+      expect(dec.outcome, outcome).toBe(NONCONFORMING_OUTCOME);
+      expect(dec.outcome, outcome).not.toBe(outcome); // the free text itself is never recorded as the outcome
+    }
+  });
+
+  it('AC-464.2: stalled-before-pr (action:resume) is a distinct action from awaiting-merge (action:merge/escalate) — different recoveries', () => {
+    const stalled = resolveReturnedTicket({ outcome: undefined, pr: null });
+    const awaitingMerge = resolveReturnedTicket({ outcome: STALL_OUTCOME, pr: 42, ciGreen: true, mergeMode: 'auto-merge' });
+    expect(stalled.action).toBe('resume');
+    expect(awaitingMerge.action).toBe('merge');
+    expect(stalled.action).not.toBe(awaitingMerge.action);
+  });
+
+  it('AC-464.2: pr is carried through when the stalled subagent already had one open (vs null when it never reached a PR)', () => {
+    const noPr = resolveReturnedTicket({ outcome: undefined, pr: null });
+    expect(noPr.pr).toBeNull();
+    const withPr = resolveReturnedTicket({ outcome: undefined, pr: 4321 });
+    expect(withPr.pr).toBe(4321);
+    expect(withPr.action).toBe('resume');
+    expect(withPr.outcome).toBe(NONCONFORMING_OUTCOME);
+  });
+
+  it('AC-464.3: resolveReturnedTicket stays pure — same input always yields the same output, no IO', () => {
+    const input = { outcome: 'Waiting on the reviewer', pr: 99 };
+    const a = resolveReturnedTicket(input);
+    const b = resolveReturnedTicket({ ...input });
+    expect(a).toEqual(b);
+  });
+
+  // AC.4: pin the four observed instances from the 2026-08-11/13 run verbatim.
+  describe('AC-464.4: the four observed instances', () => {
+    it('#429: branch pushed at 4631286, no PR, awaiting reviewer re-confirmation', () => {
+      const dec = resolveReturnedTicket({ outcome: "Waiting on the reviewer's re-confirmation.", pr: null });
+      expect(dec.action).toBe('resume');
+      expect(dec.outcome).toBe('stalled-before-pr');
+      expect(dec.pr).toBeNull();
+    });
+
+    it('#437: branch pushed, PR open, awaiting reviewer (compounded by a session-limit kill)', () => {
+      const dec = resolveReturnedTicket({ outcome: 'Killed mid-flight awaiting reviewer re-confirmation', pr: 437 });
+      expect(dec.action).toBe('resume');
+      expect(dec.outcome).toBe('stalled-before-pr');
+      expect(dec.pr).toBe(437); // a PR already exists — resume should not re-open a duplicate one
+    });
+
+    it('#446: branch pushed at 1e41745, no PR, awaiting an escalation answer', () => {
+      const dec = resolveReturnedTicket({ outcome: 'Awaiting the escalation answer before proceeding.', pr: null });
+      expect(dec.action).toBe('resume');
+      expect(dec.outcome).toBe('stalled-before-pr');
+      expect(dec.pr).toBeNull();
+    });
+
+    it('#460: branch pushed at a0df69d, no PR, awaiting BOTH re-review verdicts the orchestrator already holds', () => {
+      // The distinguishing wrinkle: the orchestrator was already holding both verdicts when the
+      // subagent returned to wait for them — this ticket only needs the watchdog to surface the
+      // stall as actionable, not to relay the held verdicts automatically (that is #474, out of
+      // scope here).
+      const dec = resolveReturnedTicket({ outcome: "I'm waiting on both re-review verdicts for the final tip.", pr: null });
+      expect(dec.action).toBe('resume');
+      expect(dec.outcome).toBe('stalled-before-pr');
+      expect(dec.pr).toBeNull();
+      expect(dec.action).not.toBe('continue'); // never silently parked despite the orchestrator holding the answer
+    });
   });
 });
 
