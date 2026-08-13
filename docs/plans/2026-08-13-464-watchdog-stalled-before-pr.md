@@ -34,7 +34,7 @@ adversarial passes) are explicitly out of scope here.
   including free text truncated into the field, or simply absent because the
   return wasn't structured at all) is now classified as a **second, distinct**
   stall: `NONCONFORMING_OUTCOME = 'stalled-before-pr'`. `resolveReturnedTicket`
-  returns `{ action: 'resume', outcome: 'stalled-before-pr', pr, reason }` —
+  returns `{ action: 'respawn', outcome: 'stalled-before-pr', pr, reason }` —
   never `action: 'continue'` and never a recorded `outcome: null` — so the
   orchestrator has a real, actionable, non-silent state to branch on (AC.1).
   `pr` is carried through (parsed the same way the `awaiting-merge` branch
@@ -47,7 +47,7 @@ adversarial passes) are explicitly out of scope here.
   `merge`/`escalate` outcomes.
 - Pure, no IO (AC.3): same signature shape as today, only the classification
   logic changes; the CLI entry point gains a `4` exit code for `action:
-  'resume'` so callers can distinguish it from `escalate` (`3`) and the
+  'respawn'` so callers can distinguish it from `escalate` (`3`) and the
   already-resolved `continue`/`merge` paths (`0`).
 - SKILL.md's § Return-then-resume watchdog documents the second shape
   alongside the first (AC.5): what triggers it, why briefing alone didn't
@@ -60,13 +60,38 @@ orchestrator prose + a human/loop decision, same as the existing `escalate`
 action does today) and `#475`'s synchronous-adversarial-passes question (a
 delivery-contract product decision, not this ticket's or the engine's to make).
 
+## Fix wave: adversarial `forge:reviewer` found two majors, both fixed
+
+`forge:security` passed clean (zero findings). `forge:reviewer` returned
+`verdict: fail` with two major findings, both addressed here (plus two minor
+findings, also fixed):
+
+1. **`ledger.mjs`'s `OUTCOMES` allowlist didn't include `'stalled-before-pr'`**,
+   so an orchestrator following SKILL.md's claim that the state "records"
+   would hit `applyOutcome` throwing `unknown outcome`. Fixed by adding
+   `'stalled-before-pr'` to `ledger.mjs`'s `OUTCOMES` (mirroring exactly how
+   `'ready'` was added for #466 AC-6) — now genuinely recordable, so a real
+   run report can show the stall, and a later resolved outcome for the same
+   issue naturally supersedes it (`applyOutcome` is last-write-wins per issue).
+2. **The `AC-464.5` test and its plan-doc update were uncommitted** at review
+   time — working-tree edits not yet part of the reviewed commit. Fixed by
+   committing them together with the rest of the fix wave.
+3. *(minor)* **`action: 'resume'` collided with `select.mjs`'s existing
+   `'resume'` selection action** — same string, two different concepts, both
+   named in the same SKILL.md loop diagram. Renamed the watchdog's action to
+   `'respawn'` throughout (code, tests, SKILL.md) to remove the ambiguity;
+   `select.mjs`'s own `resume` action is untouched.
+4. *(minor)* **`outcome ?? 'none'` didn't catch an empty-string outcome** in
+   the `reason` text (cosmetic — classification/action/outcome fields were
+   unaffected). Fixed with an explicit truthiness check that also catches `''`.
+
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 
 - **AC.1** `resolveReturnedTicket` classifies a non-conforming terminal report
-  as a distinct actionable state (`action: 'resume'`, `outcome:
+  as a distinct actionable state (`action: 'respawn'`, `outcome:
   'stalled-before-pr'`), never as `continue`/`outcome: null`.
 - **AC.2** The returned action distinguishes stalled-before-PR (`action:
-  'resume'`) from `awaiting-merge` (`action: 'merge'`/`'escalate'`) — carries
+  'respawn'`) from `awaiting-merge` (`action: 'merge'`/`'escalate'`) — carries
   `pr` through so the loop knows whether a PR already exists.
 - **AC.3** Stays pure — no IO in `resolveReturnedTicket` itself.
 - **AC.4** Tests pin the four observed shapes (#429, #437, #446, #460),
@@ -79,10 +104,10 @@ delivery-contract product decision, not this ticket's or the engine's to make).
 
 Add an `AC-464.*`-titled describe block to `tests/autopilot/engine.test.mjs`
 covering: a missing/`undefined` outcome with no PR classifies as
-`stalled-before-pr`/`resume` (not `continue`) (AC.1); free-text-shaped input
+`stalled-before-pr`/`respawn` (not `continue`) (AC.1); free-text-shaped input
 (an `outcome` that isn't in the resolved set) with no PR does the same
 (AC.1); the four fixture shapes #429/#437/#446/#460 each resolve to `action:
-'resume'`, `outcome: 'stalled-before-pr'`, with `pr` correctly `null` (#429,
+'respawn'`, `outcome: 'stalled-before-pr'`, with `pr` correctly `null` (#429,
 #446, #460) or carried through (#437) (AC.4); the existing resolved-outcome
 pass-through set (`merged`/`escalated`/`awaiting-human`/`skipped`/`ready`)
 still returns `action: 'continue'` unchanged (regression guard); the existing
@@ -93,9 +118,21 @@ exact bug this ticket fixes) to the corrected expectation, with a comment
 citing #464. Written first against the pre-fix code so the new AC-464.1/AC-464.4
 assertions fail, confirming the gap.
 
-**Files:** tests/autopilot/engine.test.mjs
-**AC map:** AC-464.1, AC-464.2, AC-464.3, AC-464.4
-**Test plan:** see above; run `npx vitest run tests/autopilot/engine.test.mjs`.
+Also add an `AC-464.5` doc test to `tests/skills/autopilot.test.mjs` (mirroring
+the file's existing SKILL.md-content-check pattern, e.g. `#177`/`AC-466.5`)
+that pins the § Return-then-resume watchdog section naming both `#319` and
+`#464`, the `stalled-before-pr` state, and its `action: respawn` recovery
+(distinct from funnelling to the merge bar) — written first so it fails
+against the pre-doc-update SKILL.md.
+
+Fix-wave addition: a small `describe` in the ledger section of
+`tests/autopilot/engine.test.mjs` (mirroring `AC-466.6`'s pattern exactly)
+proves `applyOutcome`/`renderReport`/disk round-trip accept
+`outcome:'stalled-before-pr'` without throwing (AC.1, fix-wave finding 1).
+
+**Files:** tests/autopilot/engine.test.mjs, tests/skills/autopilot.test.mjs
+**AC map:** AC-464.1, AC-464.2, AC-464.3, AC-464.4, AC-464.5
+**Test plan:** see above; run `npx vitest run tests/autopilot/engine.test.mjs tests/skills/autopilot.test.mjs`.
 
 ## Task 2 (code): classify the non-conforming shape in watchdog.mjs
 
@@ -104,11 +141,14 @@ assertions fail, confirming the gap.
 - `resolveReturnedTicket`: after the existing `STALL_OUTCOME` branch, check
   `RESOLVED_OUTCOMES.includes(outcome)` for the `continue` pass-through
   (replacing the old unconditional fall-through); anything else returns the
-  new `action: 'resume'` decision with `pr` parsed and a reason distinguishing
+  new `action: 'respawn'` decision with `pr` parsed and a reason distinguishing
   the no-PR vs PR-open cases.
-- CLI (`isMain` block): map `action === 'resume'` to exit code `4`.
+- CLI (`isMain` block): map `action === 'respawn'` to exit code `4`.
+- `ledger.mjs`'s `OUTCOMES` gains `'stalled-before-pr'` (fix wave, mirroring
+  the `'ready'`/#466-AC-6 precedent) so the state is genuinely recordable, not
+  just returned from the pure decision function.
 
-**Files:** plugin/scripts/autopilot/watchdog.mjs
+**Files:** plugin/scripts/autopilot/watchdog.mjs, plugin/scripts/autopilot/ledger.mjs
 **AC map:** AC.1, AC.2, AC.3
 **Done:** Task 1's tests pass; `npx vitest run tests/autopilot/engine.test.mjs`
 green.
@@ -118,7 +158,7 @@ green.
 - `plugin/skills/autopilot/SKILL.md` § Return-then-resume watchdog: document
   the `stalled-before-pr` shape next to `awaiting-merge` — what triggers it
   (a non-conforming free-text return, not the `awaiting-merge` sentinel), why
-  briefing alone didn't prevent it, and its recovery (`action: 'resume'` —
+  briefing alone didn't prevent it, and its recovery (`action: 'respawn'` —
   resume or re-spawn the subagent; never funnel to the merge bar). Update the
   loop diagram's watchdog line and the action table to include the new
   action.

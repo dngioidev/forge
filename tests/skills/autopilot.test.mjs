@@ -246,4 +246,18 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     // must not create the belief that merge authority was restored.
     expect(s).toMatch(/record of a past grant, not a recoverable grant/i);
   });
+
+  it('AC-464.5: § Return-then-resume watchdog documents the stalled-before-PR shape alongside awaiting-merge', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/Return-then-resume watchdog/);
+    // the second stall's name and its distinguishing recovery (respawn, not the merge bar)
+    expect(s).toMatch(/stalled-before-pr/i);
+    expect(s).toMatch(/action.{0,10}respawn/i);
+    // both shapes named together so the prose and the mechanism agree (#464)
+    expect(s).toMatch(/#464/);
+    expect(s).toMatch(/#319/);
+    // the recovery distinction from AC.2: resume/re-spawn vs funnel to the merge bar
+    expect(s).toMatch(/resume or re-spawn/i);
+    expect(s).toMatch(/never funnel to the merge bar|not.{0,10}the merge bar/i);
+  });
 });

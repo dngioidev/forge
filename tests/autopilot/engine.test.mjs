@@ -593,7 +593,7 @@ describe('autopilot return-then-resume watchdog (#319, AC-319.1/AC-319.2) — aw
     // (§ AC-464 below), never a silent `continue`/`outcome: null`. This assertion used to expect
     // `continue` here; that was the exact gap #464 fixes, so the expectation flips.
     const noReport = resolveReturnedTicket({});
-    expect(noReport.action).toBe('resume');
+    expect(noReport.action).toBe('respawn');
     expect(noReport.outcome).toBe(NONCONFORMING_OUTCOME);
   });
 
@@ -647,7 +647,7 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
 
   it('AC-464.1: a missing outcome with no PR classifies as stalled-before-pr, never continue/outcome:null', () => {
     const dec = resolveReturnedTicket({ outcome: undefined, pr: null });
-    expect(dec.action).toBe('resume');
+    expect(dec.action).toBe('respawn');
     expect(dec.action).not.toBe('continue');
     expect(dec.outcome).toBe('stalled-before-pr');
     expect(dec.outcome).not.toBeNull();
@@ -658,18 +658,20 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
   it('AC-464.1: an unrecognised free-text outcome (not one of the known resolved states) is likewise classified, never recorded as a terminal outcome', () => {
     for (const outcome of ["Waiting on the reviewer's re-confirmation", "I'm waiting on both re-review verdicts for the final tip.", 'garbled', '']) {
       const dec = resolveReturnedTicket({ outcome, pr: null });
-      expect(dec.action, outcome).toBe('resume');
+      expect(dec.action, outcome).toBe('respawn');
       expect(dec.outcome, outcome).toBe(NONCONFORMING_OUTCOME);
       expect(dec.outcome, outcome).not.toBe(outcome); // the free text itself is never recorded as the outcome
     }
   });
 
-  it('AC-464.2: stalled-before-pr (action:resume) is a distinct action from awaiting-merge (action:merge/escalate) — different recoveries', () => {
+  it('AC-464.2: stalled-before-pr (action:respawn) is a distinct action from awaiting-merge (action:merge/escalate) — different recoveries', () => {
     const stalled = resolveReturnedTicket({ outcome: undefined, pr: null });
     const awaitingMerge = resolveReturnedTicket({ outcome: STALL_OUTCOME, pr: 42, ciGreen: true, mergeMode: 'auto-merge' });
-    expect(stalled.action).toBe('resume');
+    expect(stalled.action).toBe('respawn');
     expect(awaitingMerge.action).toBe('merge');
     expect(stalled.action).not.toBe(awaitingMerge.action);
+    // also distinct from select.mjs's own unrelated 'resume' selection action (#464 review finding)
+    expect(stalled.action).not.toBe('resume');
   });
 
   it('AC-464.2: pr is carried through when the stalled subagent already had one open (vs null when it never reached a PR)', () => {
@@ -677,7 +679,7 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
     expect(noPr.pr).toBeNull();
     const withPr = resolveReturnedTicket({ outcome: undefined, pr: 4321 });
     expect(withPr.pr).toBe(4321);
-    expect(withPr.action).toBe('resume');
+    expect(withPr.action).toBe('respawn');
     expect(withPr.outcome).toBe(NONCONFORMING_OUTCOME);
   });
 
@@ -692,21 +694,21 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
   describe('AC-464.4: the four observed instances', () => {
     it('#429: branch pushed at 4631286, no PR, awaiting reviewer re-confirmation', () => {
       const dec = resolveReturnedTicket({ outcome: "Waiting on the reviewer's re-confirmation.", pr: null });
-      expect(dec.action).toBe('resume');
+      expect(dec.action).toBe('respawn');
       expect(dec.outcome).toBe('stalled-before-pr');
       expect(dec.pr).toBeNull();
     });
 
     it('#437: branch pushed, PR open, awaiting reviewer (compounded by a session-limit kill)', () => {
       const dec = resolveReturnedTicket({ outcome: 'Killed mid-flight awaiting reviewer re-confirmation', pr: 437 });
-      expect(dec.action).toBe('resume');
+      expect(dec.action).toBe('respawn');
       expect(dec.outcome).toBe('stalled-before-pr');
       expect(dec.pr).toBe(437); // a PR already exists — resume should not re-open a duplicate one
     });
 
     it('#446: branch pushed at 1e41745, no PR, awaiting an escalation answer', () => {
       const dec = resolveReturnedTicket({ outcome: 'Awaiting the escalation answer before proceeding.', pr: null });
-      expect(dec.action).toBe('resume');
+      expect(dec.action).toBe('respawn');
       expect(dec.outcome).toBe('stalled-before-pr');
       expect(dec.pr).toBeNull();
     });
@@ -717,7 +719,7 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
       // stall as actionable, not to relay the held verdicts automatically (that is #474, out of
       // scope here).
       const dec = resolveReturnedTicket({ outcome: "I'm waiting on both re-review verdicts for the final tip.", pr: null });
-      expect(dec.action).toBe('resume');
+      expect(dec.action).toBe('respawn');
       expect(dec.outcome).toBe('stalled-before-pr');
       expect(dec.pr).toBeNull();
       expect(dec.action).not.toBe('continue'); // never silently parked despite the orchestrator holding the answer
@@ -846,6 +848,46 @@ describe('autopilot run ledger (#129, AC-6)', () => {
       await recordOutcome(cwd, { issue: 140, outcome: 'ready', stage: 'shape' });
       const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
       expect(onDisk.outcomes).toMatchObject([{ issue: 140, outcome: 'ready', stage: 'shape' }]);
+    });
+  });
+
+  // #464 fix-wave (adversarial review finding 1): watchdog.mjs's NONCONFORMING_OUTCOME
+  // ('stalled-before-pr') must be genuinely recordable, mirroring AC-466.6's 'ready' precedent
+  // exactly — otherwise an orchestrator that records the watchdog's respawn decision hits
+  // applyOutcome throwing 'unknown outcome', contradicting the "never silent, always
+  // actionable" invariant this ticket is meant to deliver.
+  describe("#464: the ledger can record a stalled-before-pr outcome", () => {
+    it("applyOutcome accepts outcome:'stalled-before-pr' and round-trips — threw before the fix-wave addition to OUTCOMES", () => {
+      let run = freshRun('2026-08-13T00:00:00Z');
+      run = applyOutcome(run, { issue: 429, outcome: 'stalled-before-pr', stage: 'deliver' });
+      const entry = run.outcomes.find((o) => o.issue === 429);
+      expect(entry).toMatchObject({ issue: 429, outcome: 'stalled-before-pr', stage: 'deliver' });
+    });
+
+    it("renderReport emits a 'stalled-before-pr:' line, formatted the same as every other OUTCOMES line", () => {
+      let run = freshRun();
+      run = applyOutcome(run, { issue: 429, outcome: 'stalled-before-pr', stage: 'deliver' });
+      run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#10', stage: 'deliver' });
+      const out = renderReport(run);
+      expect(out).toMatch(/stalled-before-pr: #429/);
+      expect(out).toMatch(/merged: #1 \(PR#10\)/);
+    });
+
+    it("a later resolved outcome for the same issue supersedes a recorded stalled-before-pr entry (last-write-wins)", () => {
+      let run = freshRun();
+      run = applyOutcome(run, { issue: 429, outcome: 'stalled-before-pr', stage: 'deliver' });
+      run = applyOutcome(run, { issue: 429, outcome: 'merged', ref: 'PR#429', stage: 'deliver' }); // respawned, then resolved
+      const entries = run.outcomes.filter((o) => o.issue === 429);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].outcome).toBe('merged');
+    });
+
+    it("recordOutcome/loadRun round-trip a 'stalled-before-pr' outcome through disk", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      await startRun(cwd);
+      await recordOutcome(cwd, { issue: 429, outcome: 'stalled-before-pr', stage: 'deliver' });
+      const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
+      expect(onDisk.outcomes).toMatchObject([{ issue: 429, outcome: 'stalled-before-pr', stage: 'deliver' }]);
     });
   });
 

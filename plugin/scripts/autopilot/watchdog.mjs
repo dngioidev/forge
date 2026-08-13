@@ -30,14 +30,18 @@
  *   / can't-merge → escalate, recording awaiting-human/escalated visibly).
  *
  *   INVARIANT (#464): an `outcome` that is not one of the known resolved
- *   states (and not the `awaiting-merge` sentinel) is NEVER recorded as a
- *   terminal outcome — free text, a missing outcome, or anything else
- *   non-conforming resolves to `action: 'resume'`, `outcome:
- *   'stalled-before-pr'`, carrying `pr` through when one already exists so the
- *   loop knows whether it's resuming to open a first PR or resuming a subagent
- *   already mid-review. The actual resume/re-spawn mechanics are the loop's
+ *   states (and not the `awaiting-merge` sentinel) is NEVER recorded as if it
+ *   were one — free text, a missing outcome, or anything else non-conforming
+ *   resolves to `action: 'respawn'`, `outcome: 'stalled-before-pr'` (itself
+ *   recordable — `ledger.mjs`'s `OUTCOMES` carries it — so the run report
+ *   shows the stall rather than the ledger throwing on an unknown outcome),
+ *   carrying `pr` through when one already exists so the loop knows whether
+ *   it's resuming to open a first PR or resuming a subagent already
+ *   mid-review. The actual resume/re-spawn mechanics are the loop's
  *   (orchestrator prose today; #474 is the follow-up to automate the relay) —
- *   this function only classifies, it never performs IO.
+ *   this function only classifies, it never performs IO. Named `respawn`, not
+ *   `resume`, to avoid colliding with `select.mjs`'s unrelated `resume`
+ *   action (re-picking an in-flight ticket at the next selection).
  *
  * Every genuinely resolved outcome (merged/escalated/awaiting-human/skipped/
  * ready) is already recordable, so the watchdog passes it through as
@@ -63,8 +67,9 @@ export const RESOLVED_OUTCOMES = ['merged', 'escalated', 'awaiting-human', 'skip
 /**
  * The #464 stall: a non-conforming terminal report — `outcome` missing, or not
  * one of `RESOLVED_OUTCOMES`/`STALL_OUTCOME` (typically free text like
- * "waiting on the reviewer's re-confirmation"). A real, recorded, actionable
- * state — never a silent `continue`/`outcome: null`.
+ * "waiting on the reviewer's re-confirmation"). A real, recordable, actionable
+ * state (`ledger.mjs`'s `OUTCOMES` carries it) — never a silent
+ * `continue`/`outcome: null`.
  */
 export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
 
@@ -77,15 +82,16 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
  * @param {boolean} [report.ciGreen]        did the subagent observe CI green in-run?
  * @param {string|null} [report.mergeMode]  the run's effective merge mode
  *   (`auto-merge`|`pr-only`) as recorded by the preflight in run.json.
- * @returns {{ action:'merge'|'escalate'|'resume'|'continue', pr?:(number|null), outcome:(string|null), reason:string }}
+ * @returns {{ action:'merge'|'escalate'|'respawn'|'continue', pr?:(number|null), outcome:(string|null), reason:string }}
  *   `merge`    → funnel `pr` through `runMerge` (the tested bar re-checks CI).
  *   `escalate` → surface visibly; `outcome` is the state the loop records —
  *                `awaiting-human` for a green PR with no merge authority (pr-only),
  *                else `escalated` for a genuinely un-mergeable return.
- *   `resume`   → #464: a non-conforming report (not a resolved outcome, not
+ *   `respawn`  → #464: a non-conforming report (not a resolved outcome, not
  *                `awaiting-merge`) — resume or re-spawn the subagent; `pr` is
  *                the already-open PR when one exists, else `null`. Never a
- *                silent park.
+ *                silent park. (Named `respawn`, not `resume`, to stay distinct
+ *                from `select.mjs`'s own `resume` selection action.)
  *   `continue` → already resolved; record the reported `outcome` and move on.
  */
 export function resolveReturnedTicket({ outcome, pr = null, ciGreen = false, mergeMode = null } = {}) {
@@ -99,18 +105,19 @@ export function resolveReturnedTicket({ outcome, pr = null, ciGreen = false, mer
     }
     // #464: not a resolved outcome and not the awaiting-merge sentinel — a non-conforming
     // terminal report (missing outcome, or free text such as "waiting on the reviewer's
-    // re-confirmation"). NEVER record this as a terminal outcome; classify it as the
+    // re-confirmation"). NEVER record this as though it were resolved; classify it as the
     // stalled-before-PR recovery instead.
     const prNumber = Number.isInteger(pr) ? pr : null;
+    const describedOutcome = outcome ? `'${outcome}'` : 'none'; // catches undefined, null, AND '' (#464 review)
     return {
-      action: 'resume',
+      action: 'respawn',
       outcome: NONCONFORMING_OUTCOME,
       pr: prNumber,
       reason:
         prNumber == null
-          ? `non-conforming terminal report (outcome '${outcome ?? 'none'}' is not a resolved state) with no PR — ` +
+          ? `non-conforming terminal report (outcome ${describedOutcome} is not a resolved state) with no PR — ` +
             'the subagent stalled before reaching one; resume or re-spawn it to reach a PR, never record this as resolved'
-          : `non-conforming terminal report (outcome '${outcome ?? 'none'}' is not a resolved state) with PR #${prNumber} already open — ` +
+          : `non-conforming terminal report (outcome ${describedOutcome} is not a resolved state) with PR #${prNumber} already open — ` +
             'the subagent stalled awaiting a verdict; resume it (the orchestrator may already hold the answer) rather than recording this as resolved',
     };
   }
@@ -161,7 +168,7 @@ if (isMain) {
     mergeMode: val('--mode') ?? null,
   });
   console.log(`watchdog: ${dec.action}${dec.pr ? ` (PR #${dec.pr})` : ''} → record ${dec.outcome ?? '—'} — ${dec.reason}`);
-  // exit codes: 0 continue/merge, 3 escalate, 4 resume (#464 — distinct from escalate so callers
+  // exit codes: 0 continue/merge, 3 escalate, 4 respawn (#464 — distinct from escalate so callers
   // can tell "surface to a human" apart from "resume/re-spawn the subagent").
-  process.exit(dec.action === 'escalate' ? 3 : dec.action === 'resume' ? 4 : 0);
+  process.exit(dec.action === 'escalate' ? 3 : dec.action === 'respawn' ? 4 : 0);
 }

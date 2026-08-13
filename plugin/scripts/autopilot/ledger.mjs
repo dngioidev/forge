@@ -17,7 +17,15 @@ export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 // shape is unrepresentable: applyOutcome throws, so no run.json ever recorded
 // one. It joins at the end so existing report ordering (merged/escalated/
 // skipped/awaiting-human first) is unchanged.
-export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human', 'ready'];
+// 'stalled-before-pr' (#464) is `watchdog.mjs`'s NONCONFORMING_OUTCOME — a
+// subagent's terminal report that doesn't parse as the delivery contract
+// (missing/free-text outcome). It is NOT a resolved state (§ Return-then-
+// resume watchdog: the ticket still needs a resume/re-spawn), but it must be
+// RECORDABLE — same reasoning as 'ready' above — so the run report shows the
+// stall instead of `applyOutcome` throwing if the loop records it. A later
+// resolved outcome for the same issue naturally supersedes it (`applyOutcome`
+// is last-write-wins per issue).
+export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human', 'ready', 'stalled-before-pr'];
 
 export function freshRun(startedAt = null) {
   return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null };
