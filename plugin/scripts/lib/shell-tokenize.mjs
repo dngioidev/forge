@@ -144,14 +144,55 @@ function isIfsChar(ch) {
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
- * Brace-group SYNTAX, detected never expanded (see NON-GOALS). One pattern
- * covers all three forms the spike names — comma list, range, step range —
- * because detection never needs to classify which kind is present, only
- * whether one is. `[^{}]*` deliberately refuses to match across a NESTED
- * brace pair (bounded, no backtracking blow-up on a long flat run of `{`/`}`
- * characters — the same class of cost #448's ReDoS finding warns about).
+ * Detects brace-group SYNTAX (comma list, range, or step range), never
+ * expanding it (see NON-GOALS). Detection never needs to classify which of
+ * the three forms is present, only whether one is — a group counts as long
+ * as its content (between one `{` and the next unnested `}`) contains a `,`
+ * or a `..`.
+ *
+ * A HAND-WRITTEN LINEAR SCAN, deliberately not a regex. An earlier version
+ * of this detector used `/\{[^{}]*(?:,[^{}]*)+\}/` for the comma-list form —
+ * REJECTED by adversarial security review (full-branch pass on this ticket):
+ * the outer `[^{}]*` and the repeated group's own `[^{}]*` both accept a
+ * comma, so on an input with many commas and no closing `}` (`'rm -r{f' +
+ * ','.repeat(30)`, a ~37-character, entirely plausible-looking fragment) the
+ * engine backtracks over exponentially many ways to partition the comma run
+ * between the two quantifiers before concluding no match — measured at
+ * 14.3s for 30 commas, still not returned after 120s at 35. That is the
+ * EXACT bug class #448's own ReDoS finding warns about (a `[^{}]*`-bounded
+ * pattern is NOT automatically safe merely because it cannot cross a nested
+ * brace pair — this repo already learned that lesson once and the regex
+ * version of this function silently relearned it). A prior version of this
+ * comment claimed the old regex was "bounded, no backtracking blow-up" —
+ * that claim was false and is corrected here rather than quietly dropped,
+ * per this file family's own established practice of recording a wrong
+ * claim alongside its correction (see `denylist.mjs`'s own comment history
+ * for the same discipline).
+ *
+ * This scan cannot have that failure mode: `i` only ever advances (the inner
+ * `while` walks forward from the current `{` to the next unnested `{`/`}`,
+ * and the outer loop resumes exactly there), so every character is visited
+ * at most once — O(command length), full stop, not merely "bounded per
+ * group".
  */
-const BRACE_GROUP_RE = /\{[^{}]*(?:,[^{}]*)+\}|\{[^{}]*\.\.[^{}]*(?:\.\.[^{}]*)?\}/;
+function hasBraceGroupSyntax(s) {
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    if (s[i] !== '{') { i++; continue; }
+    let j = i + 1;
+    let hasComma = false;
+    let hasRange = false;
+    while (j < n && s[j] !== '{' && s[j] !== '}') {
+      if (s[j] === ',') hasComma = true;
+      else if (s[j] === '.' && s[j + 1] === '.') hasRange = true;
+      j++;
+    }
+    if (j < n && s[j] === '}' && (hasComma || hasRange)) return true;
+    i = j; // resume exactly where the inner scan stopped — never re-visited
+  }
+  return false;
+}
 
 /**
  * Pass 1 — resolve quotes/escapes structurally (NOT their decoded VALUE;
@@ -342,7 +383,7 @@ function tokenizeCanonical(text, wsBare, synBare) {
       if (piece.kind === 'substitution') {
         tokens.push({ text: piece.text, kind: 'substitution' });
       } else {
-        tokens.push({ text: piece.text, kind: BRACE_GROUP_RE.test(piece.text) ? 'unresolved-brace' : 'word' });
+        tokens.push({ text: piece.text, kind: hasBraceGroupSyntax(piece.text) ? 'unresolved-brace' : 'word' });
       }
     }
     seenVerb = true;

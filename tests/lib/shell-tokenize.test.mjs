@@ -177,6 +177,31 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
     expect(() => tokenize(adversarial)).not.toThrow();
   });
 
+  it('AC-457.2e: brace detection is a linear scan, immune to catastrophic backtracking on a comma run with no closing brace (security finding, fix-wave 1)', () => {
+    // A full-branch adversarial security review found the FIRST version of
+    // this module's brace detector — a regex,
+    // `/\{[^{}]*(?:,[^{}]*)+\}/` — was catastrophically backtracking on a
+    // long comma run with NO closing `}`: the outer `[^{}]*` and the
+    // repeated group's own `[^{}]*` both accept a comma, so the engine tries
+    // exponentially many ways to partition the run before concluding no
+    // match. Measured against the ORIGINAL regex: 14.3s for 30 commas
+    // (`'rm -r{f' + ','.repeat(30)`, a ~37-character, entirely plausible
+    // command fragment), not returned after 120s at 35 — the exact ReDoS bug
+    // class #448's own finding (a 4.65s hang on a 74-byte input) warns
+    // about, silently relearned in this new module. Fixed by replacing the
+    // regex with a hand-written linear scan (`hasBraceGroupSyntax()`) whose
+    // index only ever advances — see that function's own comment for the
+    // full account, recorded rather than quietly dropped.
+    const adversarial = 'rm -r{f' + ','.repeat(2000);
+    const start = process.hrtime.bigint();
+    const tokens = nonSep(tokenize(adversarial));
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    expect(elapsedMs).toBeLessThan(1000);
+    // No closing brace anywhere in the input -> never classified as a brace
+    // group; the unterminated `{f,,,...` text is ordinary (if odd) word text.
+    expect(tokens.every((t) => t.kind !== 'unresolved-brace')).toBe(true);
+  });
+
   it('AC-457.2e: brace syntax outside any flag-shaped position is still marked unresolved-brace (scoping is a Phase 2 consumer concern, not this module\'s)', () => {
     // #85's pinned false-positive case: this module only detects and
     // classifies; deciding whether a GraphQL-shaped {...} in a commit
