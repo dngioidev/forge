@@ -14,7 +14,7 @@ One incoming item → a well-formed ticket. Ticket-first is law: no work starts 
    - `bug` — something built is wrong. Reproduce or note "unconfirmed" in the body; unknown-cause bugs get a `forge:investigate` pass before sizing.
    - `item` — new work. `test` — test-only work. `epic` — decomposable (route whole feature areas to `forge:ideate` instead).
 3. **Priority map**: p0 = production broken / security / data loss (consider `forge:hotfix` instead of the normal flow). p1 = current-epic work, real-user pain. p2 = everything that can wait.
-4. **Acceptance criteria**: 2–5 verifiable bullets, each testable — they become AC-IDs at plan time (spec §13). A bug's first AC is always "regression test reproducing the report passes."
+4. **Acceptance criteria**: 2–5 verifiable bullets, each testable — they become AC-IDs at plan time (spec §13). A bug's first AC is always "regression test reproducing the report passes." Write the section under a heading `isShaped()` recognises (`plugin/scripts/autopilot/readiness.mjs`) so autopilot's readiness gate classifies the ticket shaped instead of escalating it for a spelling reason (#491): a heading containing "Acceptance" — optionally with one qualifier word ahead of it ("Suggested acceptance criteria", "Draft acceptance criteria") or trailing qualifiers after it ("Acceptance criteria (this ticket's scope)") — and AC ids spelled `AC-1`, `AC1`, or `AC.1`. A project's `forge.json` can extend the heading list (`readiness.acHeadings`) for a fully custom or localized heading string.
 5. **Create** via the board script (never raw GraphQL):
 
 ```
