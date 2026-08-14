@@ -1843,6 +1843,57 @@ describe('shortFlagCluster substitution fusion (#459/#495, AC-459.*)', () => {
     expect(check('rm $(cat -- flagfile) -rf /important-template-configs').rule).toBe('recursive-delete');
   });
 
+  // AC-459.1 fix wave — adversarial finding, full-branch security re-review:
+  // an early version of this fix fed descrambleFlags() `guardedText`, which
+  // masks a quoted `$`/`(`/`)`/backtick identically regardless of quote
+  // TYPE. That reopened the ORIGINAL bypass behind the most ordinary
+  // possible evasion — simply double-quoting the fused flag — since real
+  // bash still expands `$(...)`/backtick syntax inside double quotes (only
+  // word-splitting of an empty result is suppressed, which is moot for a
+  // deterministically-empty substitution like `$(true)`).
+  // `rm "-r$(true)f" /prod-secrets` executes identically to the unquoted
+  // spelling in real bash. Fixed by a SEPARATE, quote-type-aware masking
+  // (`substGuardedText`, see `normalizeShellText()`'s own comment) that
+  // keeps a double-quoted substitution visible to the depth tracker while
+  // still correctly masking a SINGLE-quoted or `$'…'`-ANSI-C one (genuinely
+  // inert data in real bash — no expansion occurs there at all).
+  it('AC-459.1 fix wave: double-quoting the fused flag does not reopen the original bypass, across all four rules', () => {
+    expect(check('rm "-r' + '$(true)' + 'f" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push "-' + '$(true)' + 'f" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push "--for' + '$(true)' + 'ce" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch "-' + '$(true)' + 'D" main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean "-' + '$(true)' + 'fd"')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+    // the #495 adjacent edge, double-quoted too.
+    expect(check('rm "' + '$(true)' + '-rf" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  it('AC-459.1 fix wave control: a SINGLE-quoted fused flag is genuinely inert data in real bash (no expansion occurs), so it correctly stays unblocked here — never a live bypass on either side of this fix', () => {
+    // `rm '-r$(true)f' /prod-secrets` hands rm the literal 9-character
+    // argument `-r$(true)f` (bash performs zero expansion inside single
+    // quotes); GNU rm's short-option parser rejects `$`/`(`/`)` outright
+    // ("invalid option"), so it refuses to run — safe by construction, not
+    // by luck, and not part of this fix's own claim.
+    expect(check('rm \'-r' + '$(true)' + 'f\' /prod-secrets').blocked).toBe(false);
+  });
+
   // AC-459.4 — no NEW false positive on ordinary/unrelated substitution use,
   // plus a pre-existing false positive found during triage (same root cause:
   // shortFlagCluster() had zero awareness of substitution boundaries in
@@ -1850,31 +1901,20 @@ describe('shortFlagCluster substitution fusion (#459/#495, AC-459.*)', () => {
   // above, or just as wrongly pick up an UNRELATED flag sitting inside some
   // other command's own substitution, since the flat regex does not know
   // `$(...)`/backtick groups anything). Confirmed live on pre-fix `main`:
-  // an UNQUOTED `git push origin $(gh api -f q=1)` already blocks as
-  // force-push today, even though the `-f` belongs entirely to `gh api`'s
-  // own argument list, never to `git push`. The bounded fix (every word's
-  // own substitution spans deleted before flag-matching, never reading
-  // their interior) closes this as a direct consequence of closing
-  // AC.1/AC.2, not a separate change.
+  // `git push origin $(gh api -f q=1)` already blocks as force-push today
+  // (both unquoted AND double-quoted), even though the `-f` belongs
+  // entirely to `gh api`'s own argument list, never to `git push`. The
+  // bounded fix (every word's own substitution spans deleted before
+  // flag-matching, never reading their interior) closes this — in BOTH
+  // quotings, per the fix-wave finding above — as a direct consequence of
+  // closing AC.1/AC.2, not a separate change.
   it('AC-459.4: an ordinary substitution in an unrelated argument position does not trip force-push', () => {
     expect(check('git push origin "$(git rev-parse --short HEAD)"').blocked).toBe(false);
   });
 
-  it('AC-459.4: an UNQUOTED flag-shaped letter sitting INSIDE an unrelated substitution is not read as the outer command\'s own flag (pre-existing false positive, confirmed to fail pre-fix)', () => {
+  it('AC-459.4: a flag-shaped letter sitting INSIDE an unrelated substitution is not read as the outer command\'s own flag, unquoted or double-quoted (pre-existing false positive, confirmed to fail pre-fix)', () => {
     expect(check('git push origin ' + '$(gh api ' + '-f' + ' q=1)').blocked).toBe(false);
-  });
-
-  // NOT closed, and documented as such rather than silently left untested:
-  // the identical shape written INSIDE DOUBLE QUOTES is masked by
-  // normalizeShellText()'s existing bare/protected tracking the same way a
-  // SINGLE-quoted region is (that tracking has no concept of quote TYPE,
-  // only quoted-or-not), so descrambleFlags()'s depth-tracker cannot see
-  // into it — a pre-existing, narrower gap in the shared quote-tracking
-  // infrastructure this fix reuses, not one this fix introduces. Out of
-  // this ticket's bounded scope (see descrambleFlags()'s own comment); pinned
-  // here as a known-remaining case, not silently dropped.
-  it('AC-459.4 known gap (out of scope): the double-quoted spelling of the same inner-flag-leak case is not closed by this fix', () => {
-    expect(check('git push origin "' + '$(gh api ' + '-f' + ' q=1)' + '"').blocked).toBe(true);
+    expect(check('git push origin "' + '$(gh api ' + '-f' + ' q=1)' + '"').blocked).toBe(false);
   });
 
   it('AC-459.4: rm -rf with a substitution-only target is unaffected either way (target-parsing is a separate, untouched code path)', () => {

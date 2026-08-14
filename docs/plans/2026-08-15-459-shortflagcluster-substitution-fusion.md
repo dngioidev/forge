@@ -74,6 +74,51 @@ is unscanned and may hide a flag letter. `descrambleFlags()` returns
 automatic block, mirroring `recursive-delete`'s own existing `trustworthy`
 gate for the same class of problem.
 
+## Fix wave: adversarial security finding, closed
+
+Both `forge:security` (run adversarially against the full branch) and this
+agent's own independent verification found the same critical gap in the
+first version of `descrambleFlags()`: it read `guardedText` for its
+depth-tracking (the same input `beforeEndOfOptions()` uses), and
+`guardedText` masks a quoted `$`/`(`/`)`/backtick identically regardless of
+quote TYPE — it has no concept that double quotes and single quotes behave
+differently in real bash. Real bash still expands `$(...)`/backtick syntax
+inside DOUBLE quotes (only word-splitting of the result is suppressed,
+moot for a deterministically-empty substitution); only single quotes and
+`$'…'` ANSI-C quoting suppress it entirely.
+
+Consequence: simply double-quoting the ticket's own named reproduction —
+`rm "-r$(true)f" /prod-secrets`, `git push "-$(true)f" origin main`,
+`git push "--for$(true)ce" origin main`, `git branch "-$(true)D" main`,
+`git clean "-$(true)fd"`, and the #495 adjacent spelling — reopened the
+ORIGINAL bypass across all four rules. Verified this executes identically
+to the unquoted spelling in real bash, and that it already bypassed `main`
+pre-fix too (not a regression, a spelling the first fix draft simply didn't
+close). This is not an exotic evasion — quoting a flag argument is entirely
+ordinary shell usage.
+
+Fixed by adding a SECOND, differently-scoped masking to
+`normalizeShellText()`: `substGuardedText`, built from a new `liveSubst[]`
+per-character array tracked during the same single scan (alongside the
+existing `bare[]`). A character is "live for substitution" when it is bare
+(top-level, unquoted, unescaped) OR inside DOUBLE quotes and not itself
+individually escaped; false for single-quoted, `$'…'`-ANSI-C-quoted, or
+escaped content, regardless of surrounding quote. `descrambleFlags()` now
+reads `substGuardedText`'s segment instead of `guardedText`'s for its own
+purposes (`beforeEndOfOptions()` and `recursive-delete`'s own `trustworthy`
+gate are UNCHANGED, still reading `guardedText` — that function's own
+question, "is this whitespace/`--` genuinely bare," is correctly quote-type-
+blind). `check()` computes `substGuardedText`/`segsSubstGuarded` once,
+alongside `spacedText`/`guardedText`, and passes it as rule `test()`'s 4th
+argument.
+
+A single-quoted spelling of the same payload (`rm '-r$(true)f'
+/prod-secrets`) is correctly left unaffected either way: bash performs zero
+expansion inside single quotes, so `rm` receives the literal 9-character
+argument `-r$(true)f`, which GNU rm's own short-option parser rejects
+outright ("invalid option") — genuinely inert, not a live bypass on either
+side of this fix, and not this fix's concern.
+
 ## Tasks
 
 ### T1 — descrambleFlags() + wire into all four rules (bug)
