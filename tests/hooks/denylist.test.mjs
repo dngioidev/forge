@@ -713,6 +713,18 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
     }
   });
 
+  // AC-454.5 — the same decoy class via a BACKSLASH-ESCAPED space instead of
+  // quotes: `X\ --` is bash's other way to make a space part of the SAME
+  // argv token (`\ ` outside quotes is a literal-space escape), the same
+  // semantic shape the quoted-decoy fix above closes, through a different
+  // syntax. `emitEscaped()` routes through `emit()`, which defaults `isBare`
+  // to `false` exactly like the in-quote path, so this is covered by the
+  // same mechanism — pinned explicitly so a future refactor of the escape
+  // path can't silently regress it without a name attached.
+  it('AC-454.5: a backslash-escaped-space decoy merely containing -- is not read as end-of-options', () => {
+    expect(check('rm X\\ -- -rf /important-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
   // AC-454.5 — the control case, precisely bounding the fix above: a BARE
   // quoted `--` (the ENTIRE argv element equals "--", not merely containing
   // it) has no INTERNAL protected whitespace either way, and really is
