@@ -175,6 +175,27 @@ Re-ran both, full branch, after the round-1 fixes:
 `pnpm verify` re-run green (1269/1269: 1256 baseline + 13 new). This is
 round 2 of the adversarial cycle — within the ticket's own four-round cap.
 
+## Fix wave: adversarial `forge:reviewer` + `forge:security`, round 3
+
+Re-ran both a third time, full branch:
+
+- **security: `pass`, zero findings.** Confirmed every write in `runCheck`'s
+  resolve branch (journal, decision file, board-clear logic) sits strictly
+  after the trusted-reply gate, the first-trusted-match search order isn't
+  exploitable, `author_association` provenance is unchanged (GitHub API
+  only), and the round-2 tests would catch a reintroduced regression.
+- **reviewer: `pass`**, one low-severity non-blocking note: when
+  `findItemByIssue` succeeds but the issue isn't on the board at all
+  (`ok:true, item:null`), the code silently treated it the same as
+  "confirmed not blocked" with no log, inconsistent with the sibling
+  `!found.ok` branch which does warn. Fixed (low-risk, no re-review
+  needed): that case now gets its own log line ("issue not found on the
+  board, nothing to move") and a dedicated test (item-list returns no
+  match, the issue-side GraphQL fallback also finds nothing).
+
+`pnpm verify` re-run green (1270/1270: 1256 baseline + 14 new). Round 3 of
+the adversarial cycle — one round under the ticket's own four-round cap.
+
 ## Task 4 (docs): route index
 
 Add this plan to `docs/README.md`'s plan index.
