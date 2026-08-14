@@ -125,6 +125,36 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
     ]);
   });
 
+  it('AC-457.2c: a backslash reaches through a NUL to its escape target INSIDE double quotes too, symmetric with the unquoted branch (reviewer finding, fix-wave 3)', () => {
+    // Full-branch adversarial forge:reviewer (round 2) finding: an earlier
+    // version's double-quote escape branch tested `command[i+1]` directly,
+    // not the NUL-skipped-through target the unquoted branch already used —
+    // so a NUL sitting between a double-quote escape's backslash and its
+    // real target defeated the escape entirely. Concretely, `"a\<NUL>"b"`
+    // (backslash escaping a literal quote, with a NUL fused in between)
+    // mis-closed the string at the NUL-adjacent quote instead of reading it
+    // as an escaped literal `"` continuing the SAME string — a genuine
+    // parsing bug, not merely an undisclosed doc claim.
+    const escaped = nonSep(tokenize('"a\\' + '\0' + '"b" rm -rf /prod-secrets'));
+    expect(escaped).toEqual([
+      { text: 'a"b', kind: 'word' },
+      { text: 'rm', kind: 'word' },
+      { text: '-rf', kind: 'word' },
+      { text: '/prod-secrets', kind: 'word' },
+    ]);
+    // And when the NUL-skipped-through target is NOT one of the double-quote
+    // escape set, the backslash is correctly literal (matching bash) with no
+    // special handling needed — the fix only changes which target is
+    // consulted, not the escape-set membership test itself.
+    const notEscaped = nonSep(tokenize('"a\\' + '\0' + 'x" rm -rf /prod-secrets'));
+    expect(notEscaped).toEqual([
+      { text: 'a\\x', kind: 'word' },
+      { text: 'rm', kind: 'word' },
+      { text: '-rf', kind: 'word' },
+      { text: '/prod-secrets', kind: 'word' },
+    ]);
+  });
+
   it('AC-457.2c: an unquoted backslash-newline (line continuation) vanishes, joining the surrounding text with NOTHING inserted (security finding, fix-wave 2)', () => {
     // $ printf '[%s]\n' r\<LF>m -x   ->  [rm] [-x]   (real bash joins cleanly)
     // An earlier version had no case for this: it resolved to a literal

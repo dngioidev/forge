@@ -259,6 +259,21 @@ function hasBraceGroupSyntax(s) {
  * (`emitEscaped`'s own `if (ch !== '\n') emit(ch);`, and its double-quote
  * escape set already includes `\n`) — this mirrors it rather than
  * reinventing a second answer to the same question.
+ *
+ * The backslash-reaches-through-NUL claim above applies to BOTH the
+ * unquoted AND the double-quoted branches, symmetrically — full-branch
+ * adversarial `forge:reviewer` (round 2) found an earlier version only
+ * applied `skipNuls()` in the unquoted branch, so the SAME claim, stated
+ * unqualified in this comment, was actually false for double-quoted text (a
+ * NUL sitting between a double-quote escape's backslash and its target
+ * defeated the escape entirely there). No test exercised a backslash-then-
+ * NUL sequence at all, so the gap was undisclosed rather than merely
+ * untested. `denylist.mjs`'s own `normalizeShellText()` has this identical
+ * asymmetry but EXPLICITLY documents and justifies leaving it (its own
+ * comment: "deliberately left unchanged... inert for rule-matching... not a
+ * segmentation risk") — this module does not inherit that justification (it
+ * has no equivalent reason to accept the gap) so it closes it instead of
+ * copying the behaviour without the honesty about scope.
  */
 function canonicalize(rawCommand) {
   const command = rawCommand.replace(/\r/g, '');
@@ -289,10 +304,22 @@ function canonicalize(rawCommand) {
     }
 
     if (ch === quote) { quote = null; continue; }
-    if (quote === '"' && ch === '\\' && /["$`\\\n]/.test(command[i + 1] ?? '')) {
-      if (command[i + 1] !== '\n') push(command[i + 1], false, false);
-      i++;
-      continue;
+    if (quote === '"' && ch === '\\') {
+      // Symmetric with the unquoted branch above: the backslash reaches
+      // THROUGH any raw NULs to find its real target (skipNuls()), not
+      // merely `command[i + 1]`. If that target isn't one of the double-
+      // quote escape set, this falls through to the generic push() below,
+      // which is already correct: the backslash is pushed literally, the
+      // (already-deleted-by-the-loop's-own-top-level-check) NULs contribute
+      // nothing, and the target is read on its own next iteration exactly
+      // as real bash reads it — no special-casing needed for that path.
+      const j = skipNuls(i + 1);
+      const target = command[j];
+      if (target !== undefined && /["$`\\\n]/.test(target)) {
+        if (target !== '\n') push(target, false, false);
+        i = j;
+        continue;
+      }
     }
     // Ordinary character inside an active quote: never a real separator.
     // Live substitution syntax only inside DOUBLE quotes — single quotes

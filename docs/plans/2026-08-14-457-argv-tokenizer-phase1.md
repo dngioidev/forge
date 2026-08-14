@@ -126,6 +126,22 @@ the same full-branch pass:
   matched `NAME=` prefix be entirely `wsBare` (this module's own "reached
   output completely bare" flag) in source.
 
+**Fix wave 3 (`forge:reviewer` round 2, verdict fail -> fixed; `forge:security`
+round 2 ran in parallel, verdict pass, zero findings).** One new, narrower
+finding: `canonicalize()`'s doc comment claimed the backslash-reaches-
+through-NUL behaviour as a general, bash-verified property, but only the
+UNQUOTED branch actually called `skipNuls()` — the double-quote escape
+branch tested `command[i + 1]` directly. This was a genuine parsing bug, not
+merely an undisclosed scope: `"a\<NUL>"b"` (an escaped literal quote with a
+NUL fused in between) mis-closed the string at the NUL-adjacent quote
+instead of reading the escape correctly and continuing the SAME string. No
+test exercised a backslash-then-NUL sequence inside double quotes at all.
+`denylist.mjs`'s own `normalizeShellText()` has an analogous asymmetry but
+EXPLICITLY documents and justifies it; this module had no equivalent reason
+to accept the gap, so it was closed rather than merely disclosed. Fixed by
+making the double-quote branch call `skipNuls()` too, symmetric with the
+unquoted branch.
+
 ### Stated non-goals (module doc comment, AC.4)
 
 Glob expansion, filesystem-backed path resolution, variable-VALUE
@@ -200,8 +216,8 @@ limitation (`"$(echo ')')"`) rather than silently getting it wrong.
 **Files:** plugin/scripts/lib/shell-tokenize.mjs
 **AC map:** AC-457.1, AC-457.2, AC-457.4, AC-457.5
 **Done:** Task 1's tests pass, plus the fix-wave regression tests above;
-`npx vitest run tests/lib/shell-tokenize.test.mjs` green (40/40); full
-`pnpm verify` green at 1253/1253 (1213 pre-existing + 40 new, zero
+`npx vitest run tests/lib/shell-tokenize.test.mjs` green (41/41); full
+`pnpm verify` green at 1254/1254 (1213 pre-existing + 41 new, zero
 pre-existing tests modified); `git diff main -- plugin/hooks/denylist.mjs`
 empty.
 
