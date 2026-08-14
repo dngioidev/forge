@@ -304,6 +304,135 @@ function beforeEndOfOptions(command, guarded) {
 }
 
 /**
+ * Delete every SUBSTITUTION span (`$(...)` or `` `...` ``, including its own
+ * delimiters) from every IFS-whitespace-bounded WORD of `command` — always,
+ * regardless of what the word's surviving literal characters turn out to
+ * spell. Built on the identical `guardedText`/depth-tracking technique as
+ * `beforeEndOfOptions()` above (#454's precedent — deliberately NOT the
+ * argv-tokenizer module's flat `Token` shape (see `plugin/scripts/lib/`),
+ * whose own NON-GOALS comment already says cannot represent this; see #459's
+ * own triage trail).
+ *
+ * Closes BOTH edges of the same `shortFlagCluster()` flaw at once (#459
+ * absorbs #495), because they are the same root cause read two ways:
+ * `shortFlagCluster()` (and every literal `--force`/`--recursive`/
+ * `longFlag()` regex in this file) assumes a flag word is bounded by real
+ * whitespace and made of letters only, when real bash word-splitting only
+ * cares about IFS whitespace — anything glued together (letters, one or
+ * more substitutions, in any combination or order) is ONE word, and a real
+ * shell hands the invoked program that word fully assembled, substitutions
+ * expanded.
+ *
+ * - **#459 (mid-word):** `-r$(true)f` — a substitution breaks the letter run
+ *   the flat regex needs to be contiguous. Deleting the span merges the
+ *   letters either side back into `-rf`, exactly as a real shell would if
+ *   the substitution expands to nothing (`true`'s stdout, or any other
+ *   deterministically-empty spelling an attacker controls) — the ONLY
+ *   assumption this function makes about a substitution's unknown output,
+ *   and the conservative one: it is also the shape that preserves valid
+ *   flag syntax, i.e. the shape an attacker needs for the bypass to work at
+ *   all, so assuming it is never a missed catch, only ever a (harmless)
+ *   over-match if the true output turns out non-empty — a case GNU
+ *   getopt-style parsers reject outright as an invalid option anyway (see
+ *   the docstring on the affected rules for detail), never a silent escape.
+ * - **#495 (adjacent):** `$(true)-rf` — the flag never even reaches
+ *   `shortFlagCluster()`'s `(?:^|\s)-` start anchor, because the
+ *   substitution's own characters occupy the position real whitespace would
+ *   need to be. Deleting the span exposes the `-rf` sitting right where a
+ *   real shell would also fuse it into one argv word.
+ *
+ * Every word — not only ones that already look flag-shaped — is replaced by
+ * its own SKELETON (literal characters, spans removed, in order): a word
+ * whose skeleton does not start with `-` was never going to match any flag
+ * regex here regardless (deleting characters can only ever REMOVE a `-…`
+ * anchor point, never create one that was not already present in the
+ * surviving literal text — see the AC.3 note below), so descrambling it too
+ * costs nothing and closes an adjacent, same-root-cause false positive for
+ * free: an UNRELATED word like `$(gh api -f q=1)` (some OTHER command's own
+ * argument, entirely inside a substitution) has an EMPTY skeleton — the
+ * whole word IS the span — so its `-f` never survives into the output text
+ * at all, and is never read as this word's own flag. (Verified this exact
+ * unquoted shape is a live, PRE-EXISTING false positive on `main` today, for
+ * the identical reason in the opposite direction: the flat regex has no
+ * concept of substitution grouping whatsoever. Closing it is a direct
+ * consequence of this function's own design, not a separate change. NOTE:
+ * this specific side benefit reaches only an UNQUOTED substitution — one
+ * written inside double quotes is masked by `normalizeShellText()`'s
+ * existing bare/protected tracking the same way a single-quoted one is
+ * (that tracking has no concept of a quote TYPE, only quoted-or-not), so
+ * this function's depth-tracker cannot see into it either. That is a
+ * pre-existing, narrower gap in the shared quote-tracking infrastructure
+ * this function reuses, not a new one this fix introduces, and closing it
+ * is out of this ticket's bounded scope.)
+ *
+ * AC.5, categorical block-on-ambiguity: a substitution that never closes
+ * before its word ends leaves that word's true skeleton unknowable — some
+ * suffix is unscanned and MAY be hiding a flag letter this function cannot
+ * see. Per `beforeEndOfOptions()`'s own precedent (guessing wrong here is
+ * only safe in the BLOCKING direction), such a word's `ambiguous` state is
+ * reported back rather than silently trusted, but ONLY when that word's
+ * skeleton-so-far starts with `-` — an unresolved construction inside an
+ * ordinary, non-flag word is not itself a reason to block a command with no
+ * flags in it at all. Every affected rule treats a returned
+ * `ambiguous: true` as an automatic hit, mirroring `recursive-delete`'s own
+ * pre-existing `trustworthy` gate for the same class of problem.
+ */
+function descrambleFlags(command, guarded) {
+  const n = command.length;
+  const isIfsWs = (gch) => gch === ' ' || gch === '\t' || gch === '\n';
+  let out = '';
+  let rawWord = '';
+  let skelWord = '';
+  let parenDepth = 0;
+  let inBacktick = false;
+  let ambiguousFound = false;
+
+  // Flush the word accumulated so far: EVERY word is replaced by its own
+  // skeleton (spans deleted, everything else kept, in order) — see the
+  // function comment for why that is safe even for a word that turns out
+  // not to be flag-shaped. Only ever called with
+  // `parenDepth === 0 && !inBacktick` (the mid-loop call site is itself
+  // gated on that), EXCEPT the final call after the loop ends, where a
+  // still-nonzero depth/backtick state is exactly the unterminated-
+  // substitution case AC.5 exists to catch — scoped to a flag-candidate
+  // word only, per that AC's own text.
+  const closeWord = () => {
+    if (rawWord === '') return;
+    out += skelWord;
+    if (skelWord.startsWith('-') && (parenDepth > 0 || inBacktick)) ambiguousFound = true;
+    rawWord = '';
+    skelWord = '';
+  };
+
+  for (let i = 0; i < n; i++) {
+    const ch = command[i];
+    const gch = guarded[i];
+    if (parenDepth === 0 && !inBacktick && isIfsWs(gch)) {
+      closeWord();
+      out += ch;
+      continue;
+    }
+    rawWord += ch;
+    // Same depth-tracking as beforeEndOfOptions(): ANY bare '(' counts, and
+    // every check reads `guarded` (not `command`), so a QUOTED paren/
+    // backtick/`$` — genuinely inert literal data in real bash — can never
+    // be misread as substitution syntax (see that function's own comment
+    // for the fix-wave findings this inherits for free by reusing the same
+    // technique).
+    if (!inBacktick && gch === '(') { parenDepth++; continue; }
+    if (!inBacktick && parenDepth > 0 && gch === ')') { parenDepth--; continue; }
+    if (parenDepth === 0 && gch === '`') { inBacktick = !inBacktick; continue; }
+    // The '$' that INTRODUCES a '$(' is syntax, not a flag character — drop
+    // it from the skeleton too (it is already excluded from `command`
+    // between the parens; this excludes the one character outside them).
+    if (parenDepth === 0 && !inBacktick && gch === '$' && guarded[i + 1] === '(') continue;
+    if (parenDepth === 0 && !inBacktick) skelWord += ch;
+  }
+  closeWord();
+  return { text: out, ambiguous: ambiguousFound };
+}
+
+/**
  * Build the regex source for a long flag AND every unambiguous abbreviation of
  * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
  * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
@@ -965,20 +1094,31 @@ export const RULES = [
     // Short-flag collection uses the same technique as recursive-delete below:
     // the `(?:^|\s)-` anchor keeps long `--force-*` flags and mid-word dashes
     // (`feat-f`) out of the cluster so neither can spoof (or dodge) a short flag.
-    test: (c) => {
+    // #459/#495: every flag-matching regex below reads `cFlags`
+    // (descrambleFlags()'s output for THIS segment), not `c` directly — a
+    // substitution fused mid-word or glued onto a flag's start can no
+    // longer break `--force`/`--mirror`/the short-flag cluster apart, or
+    // dodge them entirely. `cFlags === c` byte-for-byte whenever the segment
+    // has no substitution syntax at all, so this is a no-op for every
+    // pre-existing pinned case (#429/#437). The verb check and `+refspec`
+    // (a different, out-of-scope fusion class — see the ticket's own named
+    // scope) deliberately still read `c`.
+    test: (c, cSpaced, cGuarded) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
-      if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cGuarded);
+      if (ambiguous) return true;
+      if (/\s--force\b(?!-with-lease|-if-includes)/.test(cFlags)) return true;
       // --mirror IS abbreviable (unlike --force above): `git push --mir` really
       // does mirror — verified against live git, it pushed every branch AND tag
       // with no refspec given. Matching only the full spelling left the exact
       // abbreviation class #429 identified as unclosable-by-enumeration wide
       // open in the very rule #429 hardened (#437, adversarial review).
-      if (PUSH_MIRROR.test(c)) return true;
+      if (PUSH_MIRROR.test(cFlags)) return true;
       if (/(?:^|\s)\+\S/.test(c)) return true;
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
-      return /f/.test(shortFlagCluster(c, { alnum: true }));
+      return /f/.test(shortFlagCluster(cFlags, { alnum: true }));
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
@@ -998,17 +1138,22 @@ export const RULES = [
     // at each verb's own empirically-measured ambiguity boundary (see the
     // longFlag/abbrev constants above): `git push --de`, `git branch --d`, and
     // `git branch --forc` are all accepted by real git and now all match.
-    test: (c) => {
+    // #459/#495: same `cFlags` swap as force-push above — every flag regex
+    // below reads the descrambled segment, `PROTECTED_BRANCHES` and the `:`
+    // refspec check deliberately still read `c`.
+    test: (c, cSpaced, cGuarded) => {
       if (!PROTECTED_BRANCHES.test(c)) return false;
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cGuarded);
+      if (ambiguous) return true;
       if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
-        if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
-        if (/d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+        if (PUSH_DELETE.test(cFlags) || /:/.test(c)) return true;
+        if (/d/.test(shortFlagCluster(cFlags, { alnum: true }))) return true;
       }
       if (/\bgit branch\b/.test(c)) {
-        const cluster = shortFlagCluster(c, { alnum: true });
+        const cluster = shortFlagCluster(cFlags, { alnum: true });
         if (/D/.test(cluster)) return true; // -D, incl. bundled (-Dq / -qD), IS delete+force
-        const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
-        const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
+        const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(cFlags);
+        const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(cFlags);
         if (hasForce && hasDelete) return true;
       }
       return false;
@@ -1053,7 +1198,19 @@ export const RULES = [
     // the dash and a literal f" case fires immediately on `--f...`, so any
     // prefix of --force matches too, not just the full word). No reordering,
     // bundling, or abbreviation gap found; left unchanged.
-    test: (c) => /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(c),
+    // #459: the mid-word edge defeats this rule's own inline flag regex too
+    // (it does not go through shortFlagCluster(), but has the identical
+    // "contiguous letters only" assumption) — `git clean -$(true)fd` broke
+    // the `f` in `-[a-zA-Z]*f` apart pre-fix. Same `cFlags` swap, verb check
+    // stays on `c`. (The #495 adjacent edge already survived here — this
+    // regex has no `(?:^|\s)` start anchor to dodge in the first place — so
+    // this closes only the one edge that was actually open.)
+    test: (c, cSpaced, cGuarded) => {
+      if (!/\bgit\b[^\n]*\bclean\b/.test(c)) return false;
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cGuarded);
+      if (ambiguous) return true;
+      return /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(cFlags);
+    },
     msg: 'git clean -f deletes untracked files irrecoverably',
   },
   {
@@ -1120,15 +1277,28 @@ export const RULES = [
       // quoting at all.
       const trustworthy = !cGuarded.includes(GUARD_SENTINEL);
       const flagsSegment = trustworthy ? beforeEndOfOptions(c, cGuarded) : c;
+      // #459/#495: `flagsSegment` is a clean PREFIX of `c` (either `c`
+      // itself, or `beforeEndOfOptions()`'s truncation at a genuine, depth-0
+      // top-level `--`), so the same-length, same-index prefix of `cGuarded`
+      // is its correct guarded reading — no re-scanning needed.
+      // `descrambleFlags()` deletes any substitution fused into a
+      // flag-shaped word before the cluster/`--recursive`/`--force` regexes
+      // ever see it, closing both the mid-word (#459) and adjacent (#495)
+      // edges; an unterminated substitution inside a flag-candidate word
+      // (`ambiguous`) is an automatic block, the same categorical-safety-net
+      // shape as the `trustworthy` gate just above.
+      const flagsGuarded = cGuarded.slice(0, flagsSegment.length);
+      const { text: flagsDescrambled, ambiguous } = descrambleFlags(flagsSegment, flagsGuarded);
+      if (ambiguous) return true;
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
       // helper. Deliberately alpha-only (default) where force-push above
       // passes `alnum: true`: git has numeric short flags (`-4`) that can
       // bundle with `-f`, `rm` has none, so widening here would buy nothing.
-      const shortFlags = shortFlagCluster(flagsSegment);
+      const shortFlags = shortFlagCluster(flagsDescrambled);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
-      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsSegment);
-      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsSegment);
+      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsDescrambled);
+      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsDescrambled);
       if (!recursive || !force) return false;
       // The `rm` slice point is found on a command-token BOUNDARY, not by
       // unanchored substring search (#454 AC.1): `cSpaced.indexOf('rm')` used

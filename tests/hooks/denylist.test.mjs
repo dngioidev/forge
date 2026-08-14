@@ -1723,6 +1723,194 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
   });
 });
 
+describe('shortFlagCluster substitution fusion (#459/#495, AC-459.*)', () => {
+  // AC-459.1 — the ticket's own reproduction, mid-word edge: a substitution
+  // fused INSIDE an already-started short-flag run breaks the contiguous
+  // letter match `shortFlagCluster()` relies on, so the truncated cluster
+  // never sees the flag on the far side of the substitution — while a real
+  // shell hands the invoked program the fully-fused, intact flag (verified
+  // against real bash in the ticket body: `printf '[%s]\n' rm -r$(true)f
+  // /tmp/nope` prints `[-rf]`, ONE argv element). Covers all four rules that
+  // share `shortFlagCluster()` (#452 established the same "all four" set for
+  // the NUL spelling), both the `$(...)` and backtick substitution forms,
+  // and both force-push spellings named explicitly by the ticket as the
+  // highest-value case: force-push is the one variant with NO remaining
+  // mitigation, since `git push` is pre-approved on ALLOWED_COMMAND_PREFIXES
+  // (#429) independent of any denylist block.
+  it('AC-459.1: a mid-word $(...) fusion is blocked across all four shortFlagCluster() consumers', () => {
+    expect(check('rm -r' + '$(true)' + 'f /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push -' + '$(true)' + 'f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push --for' + '$(true)' + 'ce origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch -' + '$(true)' + 'D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean -' + '$(true)' + 'fd')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  it('AC-459.1: the backtick spelling of the mid-word fusion is blocked too', () => {
+    expect(check('rm -r`true`f /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push -`true`f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch -`true`D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean -`true`fd')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  // AC-459.2 — #495's edge, absorbed into this ticket: a flag glued onto the
+  // END of a substitution with no preceding whitespace never satisfies
+  // shortFlagCluster()'s `(?:^|\s)-` start anchor at all, since the
+  // substitution's own characters occupy the position a real whitespace
+  // separator would need to be in. Same root cause, opposite side of the
+  // same word. Covers the same rule set (git-clean-force's own inline regex
+  // happens to survive this edge already — pinned as a control below rather
+  // than asserted here, so this block only claims what the fix must newly
+  // close).
+  it('AC-459.2: a flag glued onto the end of a substitution (no whitespace) is blocked', () => {
+    expect(check('rm ' + '$(true)' + '-rf /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('rm `true`-rf /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push ' + '$(true)' + '-f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch ' + '$(true)' + '-D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+  });
+
+  it('AC-459.2 control: git-clean-force already survives the adjacent-fusion edge (unanchored inline regex), so this pins the pre-existing behaviour rather than a new fix', () => {
+    expect(check('git clean ' + '$(true)' + '-fd')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  // AC-459.3 — no regression against the corpora #437/#446/#450/#452/#454
+  // established. Re-running representative pinned cases from each, through
+  // the SAME check() entrypoint the fix now routes flag-detection through.
+  it('AC-459.3: #437/#446/#450/#452/#454 pinned cases are unaffected', () => {
+    // #437 — bundled/abbreviated spellings still block.
+    expect(check('git push -uf origin main').rule).toBe('force-push');
+    expect(check('git reset --hard').rule).toBe('hard-reset');
+    expect(check('git branch -fd unmerged-branch').blocked).toBe(false); // no protected branch name
+    // #446 — component-anchored safe targets, per-argument judgement.
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    expect(check('rm -rf /secret/data dist').rule).toBe('recursive-delete');
+    // #450 — POSIX -- end-of-options.
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    // #452 — NUL-in-cluster spelling still blocks all four.
+    const NUL = '\0';
+    expect(check(`rm -r${NUL}f /prod-secrets`).rule).toBe('recursive-delete');
+    expect(check(`git push -u${NUL}f origin main`).rule).toBe('force-push');
+    // #454 — env-var prefix merely containing "rm" is not mistaken for the verb.
+    expect(check('TERM=xterm rm -rf dist').blocked).toBe(false);
+    expect(check('TERM=xterm rm -rf /important-template-configs').rule).toBe('recursive-delete');
+    // #454 — a -- inside a command substitution is not read as top-level end-of-options.
+    expect(check('rm $(cat -- flagfile) -rf /important-template-configs').rule).toBe('recursive-delete');
+  });
+
+  // AC-459.4 — no NEW false positive on ordinary/unrelated substitution use,
+  // plus a pre-existing false positive found during triage (same root cause:
+  // shortFlagCluster() had zero awareness of substitution boundaries in
+  // EITHER direction — it could lose a fused flag's letters, per AC.1/AC.2
+  // above, or just as wrongly pick up an UNRELATED flag sitting inside some
+  // other command's own substitution, since the flat regex does not know
+  // `$(...)`/backtick groups anything). Confirmed live on pre-fix `main`:
+  // an UNQUOTED `git push origin $(gh api -f q=1)` already blocks as
+  // force-push today, even though the `-f` belongs entirely to `gh api`'s
+  // own argument list, never to `git push`. The bounded fix (every word's
+  // own substitution spans deleted before flag-matching, never reading
+  // their interior) closes this as a direct consequence of closing
+  // AC.1/AC.2, not a separate change.
+  it('AC-459.4: an ordinary substitution in an unrelated argument position does not trip force-push', () => {
+    expect(check('git push origin "$(git rev-parse --short HEAD)"').blocked).toBe(false);
+  });
+
+  it('AC-459.4: an UNQUOTED flag-shaped letter sitting INSIDE an unrelated substitution is not read as the outer command\'s own flag (pre-existing false positive, confirmed to fail pre-fix)', () => {
+    expect(check('git push origin ' + '$(gh api ' + '-f' + ' q=1)').blocked).toBe(false);
+  });
+
+  // NOT closed, and documented as such rather than silently left untested:
+  // the identical shape written INSIDE DOUBLE QUOTES is masked by
+  // normalizeShellText()'s existing bare/protected tracking the same way a
+  // SINGLE-quoted region is (that tracking has no concept of quote TYPE,
+  // only quoted-or-not), so descrambleFlags()'s depth-tracker cannot see
+  // into it — a pre-existing, narrower gap in the shared quote-tracking
+  // infrastructure this fix reuses, not one this fix introduces. Out of
+  // this ticket's bounded scope (see descrambleFlags()'s own comment); pinned
+  // here as a known-remaining case, not silently dropped.
+  it('AC-459.4 known gap (out of scope): the double-quoted spelling of the same inner-flag-leak case is not closed by this fix', () => {
+    expect(check('git push origin "' + '$(gh api ' + '-f' + ' q=1)' + '"').blocked).toBe(true);
+  });
+
+  it('AC-459.4: rm -rf with a substitution-only target is unaffected either way (target-parsing is a separate, untouched code path)', () => {
+    // safeRmTarget() cannot certify a substitution's expansion as a safe
+    // build/temp path, so this blocks on both sides of the fix — pinned here
+    // so the fix's own regression suite records that this is deliberate and
+    // pre-existing, not a side effect of descrambleFlags().
+    expect(check('rm -rf "$(mktemp -d)"')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-459.5 — categorical block-on-ambiguity: a substitution that never
+  // closes before the segment ends leaves its word's true content unknowable
+  // — some suffix is unscanned and MAY be hiding a flag letter. Per
+  // `beforeEndOfOptions()`'s own established precedent (guessing wrong here
+  // is only safe in the BLOCKING direction), an unterminated substitution
+  // inside what already looks like a flag-candidate word is treated as an
+  // automatic hit, mirroring `recursive-delete`'s own pre-existing
+  // `trustworthy` gate for the same class of problem — never chasing the
+  // individual spelling.
+  it('AC-459.5: an unterminated substitution inside a flag-candidate word blocks categorically', () => {
+    expect(check('rm -r' + '$(true /prod-secrets').blocked).toBe(true);
+    expect(check('git push -' + '$(true origin main').blocked).toBe(true);
+    expect(check('git branch -' + '$(true main').blocked).toBe(true);
+  });
+
+  it('AC-459.5: an unterminated substitution in a NON-flag-shaped word does not force a block by itself', () => {
+    // Scoped precisely per AC.5's own text ("inside a candidate flag word") —
+    // an ordinary, non-flag word with an unresolved construction elsewhere
+    // is not itself a reason to block a command with no flags at all.
+    expect(check('git push origin unrelated' + '$(true').blocked).toBe(false);
+  });
+});
+
 describe('shared escalate message (#321, AC-321.1)', () => {
   const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
 
