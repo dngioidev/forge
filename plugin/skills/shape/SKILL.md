@@ -46,7 +46,7 @@ A `source` is grounded when it points at something real — a repo file that exi
 
 Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/gates/groundgate.mjs" --manifest .forge/shape/<issue>.sources.json`:
 
-- **clean** → write the acceptance criteria onto the ticket, move **Backlog → Ready** (`board/move.mjs --status ready`), trail `--phase spec` with the shaped summary + the sources. The ticket re-enters the autopilot queue and is delivered.
+- **clean** → write the acceptance criteria onto the ticket under a heading `isShaped()` recognises — "Acceptance"/"Acceptance criteria", optionally qualified ("Suggested acceptance criteria") — with ids spelled `AC-1`/`AC1`/`AC.1` (#491; see `plugin/scripts/autopilot/readiness.mjs`), so the ticket you just shaped doesn't get misread as unshaped on its next pass through readiness. Move **Backlog → Ready** (`board/move.mjs --status ready`), trail `--phase spec` with the shaped summary + the sources. The ticket re-enters the autopilot queue and is delivered.
 - **ungrounded** → **before returning**, write the escalation via `escalate.mjs` with the **exact** open question the gate flagged (and the recommended options if you have grounded ones), then **skip** — the loop continues with the next ticket. Do **not** promote.
 
 ## Guardrails
