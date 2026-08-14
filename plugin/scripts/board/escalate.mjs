@@ -99,19 +99,21 @@ export async function runEscalate(ctx, args, log = console.log) {
   return { ok: true, id, boardNote, pending: true };
 }
 
-// #499 AC-499.5 fix-wave (adversarial `forge:security`): resolving a decision now
-// has a real-world side effect — moving the board back into the autopilot queue —
-// so it must not fire on just any comment. GitHub's own `author_association` on
-// each comment tells us whether the replier has write-ish access to the repo;
-// OWNER/MEMBER/COLLABORATOR are the only associations that can legitimately answer
-// an escalation for a repo this size. A reply from anyone else still resolves the
-// decision file (unchanged pre-#499 behaviour) but does NOT auto-move the board —
-// the higher-consequence action stays gated on trust, closing the amplified blast
-// radius the security pass flagged without silently rewriting the pre-existing
-// resolve-detection contract in the same breath.
+// #499 AC-499.5 fix-wave (adversarial `forge:security`, ROUND 2): round 1's fix
+// gated only the board MOVE on trust and left decision-file resolution itself
+// unconditional — but resolution alone is enough to defeat AC-499.1's
+// protection (select.mjs's `pendingIssues` excludes a ticket purely by reading
+// `status === 'pending'` off the decision file), on any board with no
+// `blocked` option mapped or once status has drifted off `blocked`. So the
+// WHOLE resolve — not just the move — is gated: an untrusted reply is treated
+// as noise, not an answer, and the decision stays pending until a genuinely
+// trusted one lands. GitHub's own `author_association` on each comment (never
+// derived from caller-controlled comment text) tells us whether the replier
+// has write-ish access; OWNER/MEMBER/COLLABORATOR are the only associations
+// that can legitimately answer an escalation for a repo this size.
 const TRUSTED_REPLY_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
-/** Scan pending decisions for a human reply (a later comment with no forge marker). */
+/** Scan pending decisions for a TRUSTED human reply (a later, non-forge-marked comment from someone with write access). */
 export async function runCheck(ctx, args, log = console.log) {
   const pending = await pendingDecisions(ctx.cwd);
   const targets = args.issue ? pending.filter((d) => d.issue === args.issue) : pending;
@@ -124,8 +126,14 @@ export async function runCheck(ctx, args, log = console.log) {
     const list = await listComments(ctx.gh, ctx.owner, ctx.repo, d.issue);
     if (!list.ok) return list;
     const decisionIdx = list.comments.findIndex((c) => c.body?.includes(`forge:decision:${d.id}`));
-    const reply = list.comments.slice(decisionIdx + 1).find((c) => !c.body?.includes('<!-- forge:'));
-    if (!reply) continue;
+    const candidates = list.comments.slice(decisionIdx + 1).filter((c) => !c.body?.includes('<!-- forge:'));
+    const reply = candidates.find((c) => TRUSTED_REPLY_ASSOCIATIONS.has(c.author_association));
+    if (!reply) {
+      if (candidates.length > 0) {
+        log(`decision ${d.id} (#${d.issue}): ${candidates.length} reply/replies seen but none from a trusted author (write access) — still pending`);
+      }
+      continue;
+    }
     const answer = reply.body.trim();
     await journalAppend(ctx.cwd, 'escalation-resolved', { issue: d.issue, id: d.id, answer });
     await writeJson(join(ctx.cwd, '.forge', 'decisions', `${d.id}.json`), { ...d, status: 'resolved', answer, resolvedAt: new Date().toISOString() });
@@ -139,24 +147,18 @@ export async function runCheck(ctx, args, log = console.log) {
     // losing real progress state for no reason. `pendingIssues` (this same
     // ticket's other half, in select.mjs/server.mjs) already keeps a pending
     // ticket out of the queue independent of board status, so this move is a
-    // courtesy unblock, not the safety mechanism, and it's gated on a trusted
-    // replier too (see TRUSTED_REPLY_ASSOCIATIONS above).
-    const trusted = TRUSTED_REPLY_ASSOCIATIONS.has(reply.author_association);
+    // courtesy unblock, not the safety mechanism.
+    const found = await ctx.findItemByIssue(d.issue);
+    const currentStatus = found.ok && found.item ? ctx.itemFieldKey(found.item, 'status') : null;
     let cleared = false;
-    if (!trusted) {
-      log(`decision ${d.id} (#${d.issue}) resolved by a reply from an untrusted author (association: ${reply.author_association ?? 'unknown'}) — board NOT auto-moved; verify the answer and move #${d.issue} to backlog by hand`);
+    if (currentStatus === 'blocked') {
+      const moveRes = await runMove(ctx, { issue: d.issue, status: 'backlog' }, log);
+      if (!moveRes.ok) log(`decision ${d.id} (#${d.issue}) resolved but board move to backlog failed: ${moveRes.error} — move #${d.issue} by hand`);
+      cleared = moveRes.ok;
+    } else if (found.ok) {
+      cleared = true; // already off `blocked` (drifted, or never mapped there) — nothing to correct
     } else {
-      const found = await ctx.findItemByIssue(d.issue);
-      const currentStatus = found.ok && found.item ? ctx.itemFieldKey(found.item, 'status') : null;
-      if (currentStatus === 'blocked') {
-        const moveRes = await runMove(ctx, { issue: d.issue, status: 'backlog' }, log);
-        if (!moveRes.ok) log(`decision ${d.id} (#${d.issue}) resolved but board move to backlog failed: ${moveRes.error} — move #${d.issue} by hand`);
-        cleared = moveRes.ok;
-      } else if (found.ok) {
-        cleared = true; // already off `blocked` (drifted, or never mapped there) — nothing to correct
-      } else {
-        log(`decision ${d.id} (#${d.issue}) resolved but board status couldn't be confirmed (${found.error}) — not auto-moving (would risk demoting an in-flight ticket); verify #${d.issue} by hand`);
-      }
+      log(`decision ${d.id} (#${d.issue}) resolved but board status couldn't be confirmed (${found.error}) — not auto-moving (would risk demoting an in-flight ticket); verify #${d.issue} by hand`);
     }
     resolved.push({ id: d.id, issue: d.issue, answer, moved: cleared });
     log(`decision ${d.id} (#${d.issue}) resolved: ${answer.split(/\r?\n/)[0]}`);

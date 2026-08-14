@@ -304,11 +304,16 @@ describe('escalate (AC-3.2)', () => {
     expect(file.status).toBe('resolved'); // resolved regardless of the move outcome
   });
 
-  it('#499 security fix-wave: a reply from an untrusted author (no write access) resolves the decision but does NOT auto-move the board', async () => {
+  it('#499 security fix-wave ROUND 2: a reply from an untrusted author does NOT resolve the decision at all — it stays pending', async () => {
+    // Round-1's fix only gated the board MOVE on trust and left the decision-file
+    // resolution unconditional — but resolution alone empties select.mjs's
+    // pendingIssues, defeating AC-499.1 on any board with no 'blocked' option
+    // mapped or after status drift. So an untrusted reply must not resolve at all.
     const cwd = await cwdWithConfig();
     await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
     await writeFile(join(cwd, '.forge', 'decisions', 'esc-11-z.json'), JSON.stringify({ id: 'esc-11-z', issue: 11, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
-    // no 'project item-list'/'item-edit' route mocked — if runMove were called at all, this would throw an unrouted-call error.
+    // no 'project item-list'/'item-edit' route mocked — if a move (or even a status read) were
+    // attempted at all, this would throw an unrouted-call error.
     const f = fakeGh([
       ['repo view', REPO_VIEW],
       [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
@@ -320,16 +325,14 @@ describe('escalate (AC-3.2)', () => {
     const logs = [];
     const res = await runCheck(ctx, { issue: 11 }, (m) => logs.push(m));
     expect(res.ok).toBe(true);
-    // the decision file is still marked resolved (pre-existing behaviour, unchanged)...
-    expect(res.resolved).toEqual([{ id: 'esc-11-z', issue: 11, answer: 'drive-by opinion from a random public commenter', moved: false }]);
+    expect(res.resolved).toEqual([]); // NOT resolved — an untrusted reply is treated as noise, not an answer
     const file = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', 'esc-11-z.json'), 'utf8'));
-    expect(file.status).toBe('resolved');
-    // ...but runMove was never invoked — no board mutation from an untrusted commenter.
-    expect(f.calls.some((c) => c.includes('item-list') || c.includes('item-edit'))).toBe(false);
-    expect(logs.join(' ')).toMatch(/untrusted author.*NONE.*board NOT auto-moved/);
+    expect(file.status).toBe('pending'); // still pending — pendingIssues (select.mjs) still excludes it
+    expect(f.calls.some((c) => c.includes('item-list') || c.includes('item-edit'))).toBe(false); // board never even read
+    expect(logs.join(' ')).toMatch(/none from a trusted author.*still pending/);
   });
 
-  it('#499 security fix-wave: a reply with no author_association at all (fixture/legacy shape) is treated as untrusted, not silently allowed', async () => {
+  it('#499 security fix-wave ROUND 2: a reply with no author_association at all (fixture/legacy shape) is treated as untrusted — still pending', async () => {
     const cwd = await cwdWithConfig();
     await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
     await writeFile(join(cwd, '.forge', 'decisions', 'esc-12-w.json'), JSON.stringify({ id: 'esc-12-w', issue: 12, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
@@ -342,7 +345,33 @@ describe('escalate (AC-3.2)', () => {
     ]);
     const ctx = await makeBoardCtx({ gh: f.gh, cwd });
     const res = await runCheck(ctx, { issue: 12 }, noop);
-    expect(res.resolved).toEqual([{ id: 'esc-12-w', issue: 12, answer: 'no association field on this comment at all', moved: false }]);
+    expect(res.resolved).toEqual([]);
+    const file = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', 'esc-12-w.json'), 'utf8'));
+    expect(file.status).toBe('pending');
     expect(f.calls.some((c) => c.includes('item-list') || c.includes('item-edit'))).toBe(false);
+  });
+
+  it('#499 security fix-wave ROUND 2: an untrusted reply is skipped, not blocking — a LATER trusted reply still resolves', async () => {
+    const cwd = await cwdWithConfig();
+    await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
+    await writeFile(join(cwd, '.forge', 'decisions', 'esc-13-t.json'), JSON.stringify({ id: 'esc-13-t', issue: 13, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
+    let status = 'Blocked / Needs decision';
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
+        { id: 501, body: '<!-- forge:decision:esc-13-t -->\n🚩 Decision needed' },
+        { id: 502, body: 'random passerby opinion', author_association: 'NONE' },
+        { id: 503, body: 'go with option b', author_association: 'OWNER' },
+      ]) }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT13', content: { number: 13 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Backlog'; return { stdout: '' }; }],
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    const res = await runCheck(ctx, { issue: 13 }, noop);
+    // resolves on the OWNER's reply (the trusted one), not the untrusted passerby comment.
+    expect(res.resolved).toEqual([{ id: 'esc-13-t', issue: 13, answer: 'go with option b', moved: true }]);
+    const file = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', 'esc-13-t.json'), 'utf8'));
+    expect(file.status).toBe('resolved');
+    expect(file.answer).toBe('go with option b');
   });
 });
