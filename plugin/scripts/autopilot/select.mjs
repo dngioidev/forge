@@ -119,7 +119,10 @@ if (isMain) {
     }
     // #499 AC-499.1: exclude any ticket with a pending decision, independent of board status.
     const pending = await pendingDecisions(ctx.cwd);
-    const pendingIssues = new Set(pending.map((d) => d.issue));
+    // Number(): a hand-edited/migrated decision file's `issue` isn't schema-enforced the
+    // way the CLI/MCP writers are (Number.isInteger / {type:'integer'}) — normalize so a
+    // stray string id can't silently fail the Set.has() match below and fail OPEN (#499 security pass).
+    const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
     const next = selectNext(tickets, { area, shape, pendingIssues });
     if (!next) { console.log('autopilot: no actionable ticket — board is clear'); process.exit(0); }
     console.log(`next: #${next.ticket.number} [${next.ticket.status}/${next.ticket.priority ?? '—'}] → ${next.action} — ${next.ticket.title}`);

@@ -479,7 +479,9 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
             // #499 AC-499.1: exclude any ticket with a pending decision, independent of board status —
             // this is the MCP twin of select.mjs's own CLI wiring; both real call sites must thread it.
             const pending = await deps.pendingDecisions(ctx.cwd);
-            const pendingIssues = new Set(pending.map((d) => d.issue));
+            // Number(): see select.mjs's matching comment — normalize so a stray
+            // string `issue` in a hand-edited decision file can't fail-open the exclusion.
+            const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
             const opts = { area: args.area ?? null, shape: args.shape ?? false, pendingIssues };
             const next = deps.selectNext(tickets, opts);
             const queue = deps.actionableQueue(tickets, opts);

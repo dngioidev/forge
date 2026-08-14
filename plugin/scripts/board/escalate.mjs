@@ -99,6 +99,18 @@ export async function runEscalate(ctx, args, log = console.log) {
   return { ok: true, id, boardNote, pending: true };
 }
 
+// #499 AC-499.5 fix-wave (adversarial `forge:security`): resolving a decision now
+// has a real-world side effect — moving the board back into the autopilot queue —
+// so it must not fire on just any comment. GitHub's own `author_association` on
+// each comment tells us whether the replier has write-ish access to the repo;
+// OWNER/MEMBER/COLLABORATOR are the only associations that can legitimately answer
+// an escalation for a repo this size. A reply from anyone else still resolves the
+// decision file (unchanged pre-#499 behaviour) but does NOT auto-move the board —
+// the higher-consequence action stays gated on trust, closing the amplified blast
+// radius the security pass flagged without silently rewriting the pre-existing
+// resolve-detection contract in the same breath.
+const TRUSTED_REPLY_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
 /** Scan pending decisions for a human reply (a later comment with no forge marker). */
 export async function runCheck(ctx, args, log = console.log) {
   const pending = await pendingDecisions(ctx.cwd);
@@ -118,16 +130,35 @@ export async function runCheck(ctx, args, log = console.log) {
     await journalAppend(ctx.cwd, 'escalation-resolved', { issue: d.issue, id: d.id, answer });
     await writeJson(join(ctx.cwd, '.forge', 'decisions', `${d.id}.json`), { ...d, status: 'resolved', answer, resolvedAt: new Date().toISOString() });
     // #499 AC-499.5: `blocked` is a hard TIER exclusion in selectNext (select.mjs)
-    // with no code path off it — marking the decision resolved is not enough,
-    // the ticket is otherwise stranded forever. Move it back to `backlog` so it
-    // re-enters the queue on the next pass with no manual board move. A move
-    // failure (e.g. board has no mapped status, or a transient GitHub error) is
-    // degraded to a warning, not a hard failure — the decision is still resolved
-    // and the human can move the board by hand, same as runEscalate's own
-    // no-'blocked'-option degrade.
-    const moved = await runMove(ctx, { issue: d.issue, status: 'backlog' }, log);
-    if (!moved.ok) log(`decision ${d.id} (#${d.issue}) resolved but board move to backlog failed: ${moved.error} — move #${d.issue} by hand`);
-    resolved.push({ id: d.id, issue: d.issue, answer, moved: moved.ok });
+    // with no code path off it, so a resolved decision left there is stranded
+    // forever. Clear it — but ONLY when the ticket is genuinely sitting at
+    // `blocked` right now (adversarial `forge:reviewer` fix-wave): blindly
+    // forcing every resolved ticket to `backlog` would demote one that's
+    // actually in-flight (`inProgress`/`inReview`) or was never moved off its
+    // original status at all (a board with no `blocked` option mapped, #27) —
+    // losing real progress state for no reason. `pendingIssues` (this same
+    // ticket's other half, in select.mjs/server.mjs) already keeps a pending
+    // ticket out of the queue independent of board status, so this move is a
+    // courtesy unblock, not the safety mechanism, and it's gated on a trusted
+    // replier too (see TRUSTED_REPLY_ASSOCIATIONS above).
+    const trusted = TRUSTED_REPLY_ASSOCIATIONS.has(reply.author_association);
+    let cleared = false;
+    if (!trusted) {
+      log(`decision ${d.id} (#${d.issue}) resolved by a reply from an untrusted author (association: ${reply.author_association ?? 'unknown'}) — board NOT auto-moved; verify the answer and move #${d.issue} to backlog by hand`);
+    } else {
+      const found = await ctx.findItemByIssue(d.issue);
+      const currentStatus = found.ok && found.item ? ctx.itemFieldKey(found.item, 'status') : null;
+      if (currentStatus === 'blocked') {
+        const moveRes = await runMove(ctx, { issue: d.issue, status: 'backlog' }, log);
+        if (!moveRes.ok) log(`decision ${d.id} (#${d.issue}) resolved but board move to backlog failed: ${moveRes.error} — move #${d.issue} by hand`);
+        cleared = moveRes.ok;
+      } else if (found.ok) {
+        cleared = true; // already off `blocked` (drifted, or never mapped there) — nothing to correct
+      } else {
+        log(`decision ${d.id} (#${d.issue}) resolved but board status couldn't be confirmed (${found.error}) — not auto-moving (would risk demoting an in-flight ticket); verify #${d.issue} by hand`);
+      }
+    }
+    resolved.push({ id: d.id, issue: d.issue, answer, moved: cleared });
     log(`decision ${d.id} (#${d.issue}) resolved: ${answer.split(/\r?\n/)[0]}`);
   }
   if (resolved.length === 0) log(`${targets.length} decision(s) still pending`);
