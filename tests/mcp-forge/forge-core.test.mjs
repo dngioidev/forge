@@ -226,6 +226,26 @@ describe('AC-288.2: every tool is callable and returns its documented structured
     expect(out.queue.map((q) => q.ticket.number)).toEqual([5, 6]);
   });
 
+  it('#499 AC-499.1: autopilot_select (the MCP call site) excludes a ticket with a pending decision, mirroring select.mjs\'s own CLI', async () => {
+    const items = [
+      { content: { number: 5 }, kind: 'ready-p1' },
+      { content: { number: 6 }, kind: 'backlog' },
+    ];
+    const norm = (_c, i) => (i.kind === 'ready-p1'
+      ? { number: 5, title: 'ready one', status: 'ready', priority: 'p1', type: 'item' }
+      : { number: 6, title: 'backlog one', status: 'backlog', priority: 'p2', type: 'item' });
+    const ctx = { ...okCtx, listItems: async () => ({ ok: true, items }) };
+    const h = build({
+      getCtx: async () => ctx,
+      deps: { normalize: norm, isShaped: () => true, pendingDecisions: async () => [{ issue: 5, status: 'pending' }] },
+    });
+    const out = body(await call(h, 'autopilot_select', {}));
+    expect(out.ok).toBe(true);
+    // #5 would normally win (ready beats backlog) but has a pending decision — #6 is next instead.
+    expect(out.next.ticket.number).toBe(6);
+    expect(out.queue.map((q) => q.ticket.number)).toEqual([6]);
+  });
+
   it('AC-288.2: malformed args are rejected with a teaching -32602 error', async () => {
     const h = build();
     expect((await call(h, 'board_move', { issue: 288 })).error.message).toMatch(/invalid arguments for board_move: missing required 'status'/);

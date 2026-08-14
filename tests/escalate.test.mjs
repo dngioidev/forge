@@ -89,6 +89,8 @@ describe('escalate (AC-3.2)', () => {
     await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
     await writeFile(join(cwd, '.forge', 'decisions', 'esc-3-abc.json'), JSON.stringify({ id: 'esc-3-abc', issue: 3, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
 
+    // stateful board (like the "open" test above) so the #178 verify-after-move re-read sees the mutation land
+    let status = 'Blocked / Needs decision';
     const f = fakeGh([
       ['repo view', REPO_VIEW],
       [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
@@ -97,11 +99,16 @@ describe('escalate (AC-3.2)', () => {
         { id: 502, body: '<!-- forge:trail:note -->\nanother bot comment' },
         { id: 503, body: 'Option 2 — redesign it, and keep the gate.' },
       ]) }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT3', content: { number: 3 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Backlog'; return { stdout: '' }; }],
     ]);
     const ctx = await makeBoardCtx({ gh: f.gh, cwd });
     const res = await runCheck(ctx, { issue: 3 }, noop);
     expect(res.resolved.length).toBe(1);
     expect(res.resolved[0].answer).toContain('Option 2');
+    // #499 AC-499.5: resolving also moves the board off `blocked` — no manual move needed.
+    expect(res.resolved[0].moved).toBe(true);
+    expect(f.calls.some((c) => c.includes('--single-select-option-id sb'))).toBe(true); // backlog
 
     const file = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', 'esc-3-abc.json'), 'utf8'));
     expect(file.status).toBe('resolved');
@@ -117,16 +124,21 @@ describe('escalate (AC-3.2)', () => {
     await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(cfg), 'utf8');
     await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
     await writeFile(join(cwd, '.forge', 'decisions', 'esc-9-nb.json'), JSON.stringify({ id: 'esc-9-nb', issue: 9, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
+    // no 'blocked' option on this board, so the ticket never left its original status —
+    // the resolve path still moves it to 'backlog' (that option IS mapped, #27's own point).
+    let status = 'In progress';
     const f = fakeGh([
       ['repo view', REPO_VIEW],
       [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
         { id: 501, body: '<!-- forge:decision:esc-9-nb -->\n🚩 Decision needed' },
         { id: 502, body: 'option 1' },
       ]) }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT9', content: { number: 9 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Backlog'; return { stdout: '' }; }],
     ]);
     const ctx = await makeBoardCtx({ gh: f.gh, cwd });
     const res = await runCheck(ctx, { issue: 9 }, noop);
-    expect(res.resolved).toEqual([{ id: 'esc-9-nb', issue: 9, answer: 'option 1' }]);
+    expect(res.resolved).toEqual([{ id: 'esc-9-nb', issue: 9, answer: 'option 1', moved: true }]);
   });
 
   it('AC-300.1: array option elements are not re-split on "|" (embedded pipe cannot fabricate options)', async () => {
@@ -224,5 +236,48 @@ describe('escalate (AC-3.2)', () => {
     expect(res.resolved).toEqual([]);
     const file = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', 'esc-3-x.json'), 'utf8'));
     expect(file.status).toBe('pending');
+  });
+
+  it('AC-499.5: resolve moves a drifted (already off-blocked) ticket to backlog too — the fix does not assume blocked', async () => {
+    // #438-shaped case: the decision file is pending but the board already drifted to backlog
+    // BEFORE the human answered. Resolving should still land (idempotently) at backlog.
+    const cwd = await cwdWithConfig();
+    await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
+    await writeFile(join(cwd, '.forge', 'decisions', 'esc-438-x.json'), JSON.stringify({ id: 'esc-438-x', issue: 438, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
+        { id: 501, body: '<!-- forge:decision:esc-438-x -->\n🚩 Decision needed' },
+        { id: 502, body: 'go with option a' },
+      ]) }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT438', content: { number: 438 }, status: 'Backlog' }] }) })],
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    const res = await runCheck(ctx, { issue: 438 }, noop);
+    expect(res.resolved).toEqual([{ id: 'esc-438-x', issue: 438, answer: 'go with option a', moved: true }]);
+    // runMove no-ops (changed:false) when already at the target status — no item-edit call needed/mocked.
+    expect(f.calls.some((c) => c.includes('item-edit'))).toBe(false);
+  });
+
+  it('AC-499.5: a board-move failure on resolve degrades to a warning — the decision still resolves', async () => {
+    const cwd = await cwdWithConfig();
+    await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
+    await writeFile(join(cwd, '.forge', 'decisions', 'esc-7-y.json'), JSON.stringify({ id: 'esc-7-y', issue: 7, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
+    // no 'project item-list' route mocked — findItemByIssue (inside runMove) fails.
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
+        { id: 501, body: '<!-- forge:decision:esc-7-y -->\n🚩 Decision needed' },
+        { id: 502, body: 'answer' },
+      ]) }],
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    const logs = [];
+    const res = await runCheck(ctx, { issue: 7 }, (m) => logs.push(m));
+    expect(res.ok).toBe(true);
+    expect(res.resolved).toEqual([{ id: 'esc-7-y', issue: 7, answer: 'answer', moved: false }]);
+    expect(logs.join(' ')).toMatch(/resolved but board move to backlog failed/);
+    const file = JSON.parse(await readFile(join(cwd, '.forge', 'decisions', 'esc-7-y.json'), 'utf8'));
+    expect(file.status).toBe('resolved'); // resolved regardless of the move outcome
   });
 });

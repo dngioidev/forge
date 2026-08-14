@@ -117,7 +117,17 @@ export async function runCheck(ctx, args, log = console.log) {
     const answer = reply.body.trim();
     await journalAppend(ctx.cwd, 'escalation-resolved', { issue: d.issue, id: d.id, answer });
     await writeJson(join(ctx.cwd, '.forge', 'decisions', `${d.id}.json`), { ...d, status: 'resolved', answer, resolvedAt: new Date().toISOString() });
-    resolved.push({ id: d.id, issue: d.issue, answer });
+    // #499 AC-499.5: `blocked` is a hard TIER exclusion in selectNext (select.mjs)
+    // with no code path off it — marking the decision resolved is not enough,
+    // the ticket is otherwise stranded forever. Move it back to `backlog` so it
+    // re-enters the queue on the next pass with no manual board move. A move
+    // failure (e.g. board has no mapped status, or a transient GitHub error) is
+    // degraded to a warning, not a hard failure — the decision is still resolved
+    // and the human can move the board by hand, same as runEscalate's own
+    // no-'blocked'-option degrade.
+    const moved = await runMove(ctx, { issue: d.issue, status: 'backlog' }, log);
+    if (!moved.ok) log(`decision ${d.id} (#${d.issue}) resolved but board move to backlog failed: ${moved.error} — move #${d.issue} by hand`);
+    resolved.push({ id: d.id, issue: d.issue, answer, moved: moved.ok });
     log(`decision ${d.id} (#${d.issue}) resolved: ${answer.split(/\r?\n/)[0]}`);
   }
   if (resolved.length === 0) log(`${targets.length} decision(s) still pending`);

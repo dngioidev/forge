@@ -69,6 +69,48 @@ describe('autopilot selection (#128, AC-1/AC-2)', () => {
   });
 });
 
+describe('#499: selection consults pending decisions, not just board status', () => {
+  it('AC-499.1/.2: a ticket at backlog with a pending decision is excluded regardless of status; resolved (absent from the set) it is selected again', () => {
+    // The observed #438 case: board status drifted to backlog while the decision was still pending.
+    const tickets = [t(438, 'backlog', 'p1')];
+    expect(selectNext(tickets, { pendingIssues: new Set([438]) })).toBeNull();
+    // once resolved, the caller's pendingIssues set no longer contains it — selectable again.
+    expect(selectNext(tickets, { pendingIssues: new Set() }).ticket.number).toBe(438);
+    expect(selectNext(tickets).ticket.number).toBe(438); // pendingIssues defaults to empty
+  });
+
+  it('AC-499.1: exclusion holds regardless of board status, not just backlog', () => {
+    for (const status of ['inProgress', 'inReview', 'ready', 'backlog']) {
+      expect(selectNext([t(1, status)], { pendingIssues: new Set([1]) })).toBeNull();
+    }
+  });
+
+  it('AC-499.1: a pending decision only excludes ITS OWN ticket, not others in the pool', () => {
+    const tickets = [t(1, 'ready', 'p0'), t(2, 'ready', 'p0')];
+    const pick = selectNext(tickets, { pendingIssues: new Set([1]) });
+    expect(pick.ticket.number).toBe(2);
+  });
+
+  it('AC-499.4: pendingIssues is threaded in, never mutated or read from elsewhere — same Set, repeatable, pure', () => {
+    const pendingIssues = new Set([9]);
+    const tickets = [t(9, 'backlog')];
+    expect(selectNext(tickets, { pendingIssues })).toBeNull();
+    expect(selectNext(tickets, { pendingIssues })).toBeNull(); // idempotent — no hidden state advances
+    expect(pendingIssues).toEqual(new Set([9])); // untouched by the call
+  });
+
+  it('AC-499.3: an empty/omitted pendingIssues degrades safely — nothing is blocked and selection is unchanged', () => {
+    const tickets = [t(1, 'ready', 'p0'), t(2, 'backlog', 'p1')];
+    expect(selectNext(tickets, { pendingIssues: new Set() }).ticket.number).toBe(1);
+    expect(selectNext(tickets).ticket.number).toBe(1);
+    expect(actionableQueue(tickets, { pendingIssues: new Set() }).map((q) => q.ticket.number)).toEqual([1, 2]);
+  });
+
+  it('blocked status stays hard-excluded even with no pending decision (the blanket exclusion is deliberately retained, not dropped)', () => {
+    expect(selectNext([t(1, 'blocked')], { pendingIssues: new Set() })).toBeNull();
+  });
+});
+
 describe('umbrella-type exclusion (#175, AC1/AC2)', () => {
   const u = (number, status, type) => ({ ...t(number, status), type });
 
