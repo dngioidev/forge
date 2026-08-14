@@ -172,15 +172,59 @@ function shortFlagCluster(command, { alnum = false } = {}) {
  * (space/tab/newline, not JS's wider `\s`; see that function's longer note on
  * why), applied to the flag half instead. Everything from the marker onward
  * is dropped; a command with no `--` at all is returned unchanged.
+ *
+ * NESTING-AWARE, and not by accident: the full-branch adversarial review of
+ * the first version of this function found a real bypass, not a cosmetic
+ * one. A flat whitespace-token scan cannot tell a TOP-LEVEL `--` from one
+ * sitting inside a command substitution — `rm $(cat -- flagfile) -rf
+ * /important-template-configs` puts a `--` that belongs entirely to the
+ * INNER `cat` invocation before the real `-rf`, which is genuinely never
+ * end-of-options for `rm` at all. The flat scan cut the string right after
+ * that inner `--`, before the real `-rf` it was supposed to see, and the
+ * rule returned not-blocked for a live, dangerous `rm -rf`. Verified: `main`
+ * (pre-this-fix) correctly blocks `rm $(cat -- flagfile) -rf
+ * /important-template-configs` and `` rm `cat -- flagfile` -rf
+ * /important-template-configs ``; the flat-scan version of this function
+ * wrongly allowed both.
+ *
+ * Fixed by tracking `$(...)`/backtick nesting depth (the same substitution
+ * forms `eval-exec`'s own SUBSTITUTION regex already treats as one unit) and
+ * only recognising a `--` as the end-of-options marker at depth 0. Consumed
+ * depth changes take priority over the marker check on the very same
+ * character position, so a `--` that starts exactly where `$(`/`` ` `` closes
+ * is still read as inside. Ambiguity always resolves toward STILL scanning
+ * for flags past the point in doubt (an unterminated `$(` with no matching
+ * `)` never returns to depth 0, so the marker search simply finds nothing
+ * and the whole command is returned unchanged) — the safe direction for a
+ * denylist that fails open, never the direction that could hide a flag.
  */
 function beforeEndOfOptions(command) {
-  const tokens = command.split(/([ \t\n]+)/);
-  let out = '';
-  for (const tok of tokens) {
-    if (tok === '--') break;
-    out += tok;
+  let parenDepth = 0;
+  let inBacktick = false;
+  const n = command.length;
+  for (let i = 0; i < n; i++) {
+    const ch = command[i];
+    if (!inBacktick && ch === '$' && command[i + 1] === '(') {
+      parenDepth++;
+      i++; // consume the '(' too, so a literal ')' right after can't double-count
+      continue;
+    }
+    if (!inBacktick && parenDepth > 0 && ch === ')') {
+      parenDepth--;
+      continue;
+    }
+    if (parenDepth === 0 && ch === '`') {
+      inBacktick = !inBacktick;
+      continue;
+    }
+    if (parenDepth === 0 && !inBacktick && ch === '-' && command[i + 1] === '-') {
+      const beforeOk = i === 0 || /[ \t\n]/.test(command[i - 1]);
+      const afterIdx = i + 2;
+      const afterOk = afterIdx >= n || /[ \t\n]/.test(command[afterIdx]);
+      if (beforeOk && afterOk) return command.slice(0, i);
+    }
   }
-  return out;
+  return command;
 }
 
 /**

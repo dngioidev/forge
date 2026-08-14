@@ -655,6 +655,36 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
     expect(check('rm -rf -- -prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
   });
 
+  // AC-454.5 (fix wave — full-branch adversarial reviewer finding) — a bare
+  // `--` sitting INSIDE a command substitution belongs entirely to the INNER
+  // command, never to the outer `rm`, and must not be read as end-of-options
+  // for `rm`'s own flags. The first version of `beforeEndOfOptions()` did a
+  // flat whitespace-token scan with no nesting awareness, so `rm $(cat --
+  // flagfile) -rf /important-template-configs` truncated flag detection
+  // right after the INNER `--`, before the real `-rf` — a live, dangerous
+  // `rm -rf` on a target #446 already pins as unsafe, wrongly ALLOWED. This
+  // is the critical-direction regression the ticket itself named as the risk
+  // to guard against; confirmed to reproduce against the flat-scan version
+  // and closed by the nesting-aware rewrite (tracks `$(...)`/backtick depth,
+  // only recognises `--` as the marker at depth 0).
+  it('AC-454.5: a -- embedded inside $(...) or backticks is not read as top-level end-of-options', () => {
+    for (const cmd of [
+      'rm $(cat -- flagfile) -rf /important-template-configs',
+      'rm `cat -- flagfile` -rf /important-template-configs',
+      'rm $(git config -- foo) -rf /important-template-configs',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-454.5 — a GENUINE top-level `--` still works correctly even when a
+  // command substitution appears earlier in the same segment (the nesting
+  // tracker must return to depth 0 once the substitution closes, not stay
+  // stuck "inside" and swallow the rest of the line).
+  it('AC-454.5: a real top-level -- after a closed command substitution is still honoured', () => {
+    expect(check('rm $(echo hi) -- -rf target').blocked).toBe(false);
+  });
+
   // AC-454.6 — no regression on #450's own `--` handling of the TARGET half:
   // a genuinely dangerous target spelled with a leading dash after `--`,
   // alongside a decoy safe target, must still block.

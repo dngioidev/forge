@@ -42,6 +42,29 @@ lines — separate branches patching overlapping lines would conflict.
 
 Both fixes only touch `recursive-delete`; no other rule is modified.
 
+## Fix wave: full-branch adversarial reviewer finding, closed
+
+The first version of `beforeEndOfOptions()` did a flat whitespace-token
+scan of the whole segment for a bare `--`, with no awareness that the
+segment can contain a command substitution (`$(...)` or backticks) whose
+OWN `--` belongs entirely to the inner command, never to the outer `rm`.
+`forge:reviewer`, run adversarially on the full branch diff, found this was
+a live under-blocking bypass, not a cosmetic gap: `rm $(cat -- flagfile)
+-rf /important-template-configs` truncated flag detection right after the
+inner `--`, before the real `-rf`, so a genuinely dangerous `rm -rf` on an
+#446-pinned-unsafe target came back `blocked: false` — verified against
+both the flat-scan version (wrongly allowed) and `main` pre-#454 (correctly
+blocked). Closed by rewriting `beforeEndOfOptions()` to track `$(...)`/
+backtick nesting depth and only recognise `--` as the end-of-options marker
+at depth 0 — the same substitution forms `eval-exec`'s own `SUBSTITUTION`
+regex already treats as one unit. Ambiguity (e.g. an unterminated `$(`)
+resolves toward continuing to scan for flags, never toward hiding one — the
+safe direction for a hook that fails open. Regression-pinned as
+`AC-454.5: a -- embedded inside $(...) or backticks is not read as
+top-level end-of-options` plus a paired "genuine top-level -- after a closed
+substitution still works" case, both in
+`tests/hooks/denylist.test.mjs`.
+
 ## AC map
 
 - **AC-454.1** `rm` slice point found on a command-token boundary.
