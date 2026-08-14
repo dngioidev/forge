@@ -265,6 +265,22 @@ describe('#491: readiness gate honors "Suggested"-qualified headings and dot-sep
     // crazy mode: must not waste a shape spawn either.
     expect(selectNext([ticket], { shape: true }).action).not.toBe('shape');
   });
+
+  // AC-491.4: the accepted conventions are documented where a ticket
+  // author/shaper meets them, so nobody is guessing which spelling the gate
+  // honours. Mechanical check, not a vibe check: the skill prose must
+  // actually name the qualifier-heading and dotted-id conventions.
+  it('AC-491.4: triage and shape skill prose document the accepted heading/id conventions', async () => {
+    const pluginRoot = fileURLToPath(new URL('../../plugin/', import.meta.url));
+    const triage = await readFile(join(pluginRoot, 'skills/triage/SKILL.md'), 'utf8');
+    const shape = await readFile(join(pluginRoot, 'skills/shape/SKILL.md'), 'utf8');
+    for (const doc of [triage, shape]) {
+      expect(doc).toMatch(/isShaped/);
+      expect(doc).toMatch(/Suggested acceptance criteria/);
+      expect(doc).toMatch(/AC\.1/);
+      expect(doc).toMatch(/#491/);
+    }
+  });
 });
 
 describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
