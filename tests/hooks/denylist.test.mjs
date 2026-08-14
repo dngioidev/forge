@@ -1723,6 +1723,404 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
   });
 });
 
+describe('shortFlagCluster substitution fusion (#459/#495, AC-459.*)', () => {
+  // AC-459.1 — the ticket's own reproduction, mid-word edge: a substitution
+  // fused INSIDE an already-started short-flag run breaks the contiguous
+  // letter match `shortFlagCluster()` relies on, so the truncated cluster
+  // never sees the flag on the far side of the substitution — while a real
+  // shell hands the invoked program the fully-fused, intact flag (verified
+  // against real bash in the ticket body: `printf '[%s]\n' rm -r$(true)f
+  // /tmp/nope` prints `[-rf]`, ONE argv element). Covers all four rules that
+  // share `shortFlagCluster()` (#452 established the same "all four" set for
+  // the NUL spelling), both the `$(...)` and backtick substitution forms,
+  // and both force-push spellings named explicitly by the ticket as the
+  // highest-value case: force-push is the one variant with NO remaining
+  // mitigation, since `git push` is pre-approved on ALLOWED_COMMAND_PREFIXES
+  // (#429) independent of any denylist block.
+  it('AC-459.1: a mid-word $(...) fusion is blocked across all four shortFlagCluster() consumers', () => {
+    expect(check('rm -r' + '$(true)' + 'f /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push -' + '$(true)' + 'f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push --for' + '$(true)' + 'ce origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch -' + '$(true)' + 'D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean -' + '$(true)' + 'fd')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  it('AC-459.1: the backtick spelling of the mid-word fusion is blocked too', () => {
+    expect(check('rm -r`true`f /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push -`true`f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch -`true`D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean -`true`fd')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  // AC-459.1 fix wave — round-3 full-branch adversarial forge:security
+  // finding: `+refspec` is force-push's OWN 4th documented spelling (see
+  // that rule's own comment), inside the exact same "substitution assumed
+  // to expand to empty" threat model this whole fix already relies on for
+  // `--force`/`--mirror`/the short-flag cluster — but an earlier version of
+  // this fix left it reading raw `c` on the theory that `+refspec` fusion
+  // was a separate, out-of-scope class. `git push origin $(true)+main` (or
+  // the backtick spelling) fuses to a genuine, live `+main` refspec in real
+  // bash argv, and NO rule caught it: not this one (unfused `+refspec`
+  // check), and not `env-branch-delete` either, since the pushed branch
+  // need not be a PROTECTED one for a force-push to matter. Given
+  // force-push is this ticket's own named highest-value target (zero
+  // remaining mitigation on `ALLOWED_COMMAND_PREFIXES`), this was a live
+  // gap, not a defensible scope boundary. Confirmed to fail against the
+  // pre-fix-wave source.
+  it('AC-459.1 fix wave: a fused +refspec (force-push\'s own 4th documented spelling) is blocked too', () => {
+    expect(check('git push origin ' + '$(true)' + '+release-1.0')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push origin `true`+release-1.0')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    // Control: an ordinary branch name with no leading + stays allowed.
+    expect(check('git push origin release-1.0').blocked).toBe(false);
+  });
+
+  // AC-459.2 — #495's edge, absorbed into this ticket: a flag glued onto the
+  // END of a substitution with no preceding whitespace never satisfies
+  // shortFlagCluster()'s `(?:^|\s)-` start anchor at all, since the
+  // substitution's own characters occupy the position a real whitespace
+  // separator would need to be in. Same root cause, opposite side of the
+  // same word. Covers the same rule set (git-clean-force's own inline regex
+  // happens to survive this edge already — pinned as a control below rather
+  // than asserted here, so this block only claims what the fix must newly
+  // close).
+  it('AC-459.2: a flag glued onto the end of a substitution (no whitespace) is blocked', () => {
+    expect(check('rm ' + '$(true)' + '-rf /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('rm `true`-rf /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push ' + '$(true)' + '-f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch ' + '$(true)' + '-D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+  });
+
+  it('AC-459.2 control: git-clean-force already survives the adjacent-fusion edge (unanchored inline regex), so this pins the pre-existing behaviour rather than a new fix', () => {
+    expect(check('git clean ' + '$(true)' + '-fd')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  // AC-459.3 — no regression against the corpora #437/#446/#450/#452/#454
+  // established. Re-running representative pinned cases from each, through
+  // the SAME check() entrypoint the fix now routes flag-detection through.
+  it('AC-459.3: #437/#446/#450/#452/#454 pinned cases are unaffected', () => {
+    // #437 — bundled/abbreviated spellings still block.
+    expect(check('git push -uf origin main').rule).toBe('force-push');
+    expect(check('git reset --hard').rule).toBe('hard-reset');
+    expect(check('git branch -fd unmerged-branch').blocked).toBe(false); // no protected branch name
+    // #446 — component-anchored safe targets, per-argument judgement.
+    expect(check('rm -rf node_modules').blocked).toBe(false);
+    expect(check('rm -rf dist build coverage').blocked).toBe(false);
+    expect(check('rm -rf /secret/data dist').rule).toBe('recursive-delete');
+    // #450 — POSIX -- end-of-options.
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    // #452 — NUL-in-cluster spelling still blocks all four.
+    const NUL = '\0';
+    expect(check(`rm -r${NUL}f /prod-secrets`).rule).toBe('recursive-delete');
+    expect(check(`git push -u${NUL}f origin main`).rule).toBe('force-push');
+    // #454 — env-var prefix merely containing "rm" is not mistaken for the verb.
+    expect(check('TERM=xterm rm -rf dist').blocked).toBe(false);
+    expect(check('TERM=xterm rm -rf /important-template-configs').rule).toBe('recursive-delete');
+    // #454 — a -- inside a command substitution is not read as top-level end-of-options.
+    expect(check('rm $(cat -- flagfile) -rf /important-template-configs').rule).toBe('recursive-delete');
+  });
+
+  // AC-459.1 fix wave — adversarial finding, full-branch security re-review:
+  // an early version of this fix fed descrambleFlags() `guardedText`, which
+  // masks a quoted `$`/`(`/`)`/backtick identically regardless of quote
+  // TYPE. That reopened the ORIGINAL bypass behind the most ordinary
+  // possible evasion — simply double-quoting the fused flag — since real
+  // bash still expands `$(...)`/backtick syntax inside double quotes (only
+  // word-splitting of an empty result is suppressed, which is moot for a
+  // deterministically-empty substitution like `$(true)`).
+  // `rm "-r$(true)f" /prod-secrets` executes identically to the unquoted
+  // spelling in real bash. Fixed by a SEPARATE, quote-type-aware masking
+  // (`substGuardedText`, see `normalizeShellText()`'s own comment) that
+  // keeps a double-quoted substitution visible to the depth tracker while
+  // still correctly masking a SINGLE-quoted or `$'…'`-ANSI-C one (genuinely
+  // inert data in real bash — no expansion occurs there at all).
+  it('AC-459.1 fix wave: double-quoting the fused flag does not reopen the original bypass, across all four rules', () => {
+    expect(check('rm "-r' + '$(true)' + 'f" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push "-' + '$(true)' + 'f" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push "--for' + '$(true)' + 'ce" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch "-' + '$(true)' + 'D" main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean "-' + '$(true)' + 'fd"')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+    // the #495 adjacent edge, double-quoted too.
+    expect(check('rm "' + '$(true)' + '-rf" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  it('AC-459.1 fix wave control: a SINGLE-quoted fused flag is genuinely inert data in real bash (no expansion occurs), so it correctly stays unblocked here — never a live bypass on either side of this fix', () => {
+    // `rm '-r$(true)f' /prod-secrets` hands rm the literal 9-character
+    // argument `-r$(true)f` (bash performs zero expansion inside single
+    // quotes); GNU rm's short-option parser rejects `$`/`(`/`)` outright
+    // ("invalid option"), so it refuses to run — safe by construction, not
+    // by luck, and not part of this fix's own claim.
+    expect(check('rm \'-r' + '$(true)' + 'f\' /prod-secrets').blocked).toBe(false);
+  });
+
+  // AC-459.4 — no NEW false positive on ordinary/unrelated substitution use,
+  // plus a pre-existing false positive found during triage (same root cause:
+  // shortFlagCluster() had zero awareness of substitution boundaries in
+  // EITHER direction — it could lose a fused flag's letters, per AC.1/AC.2
+  // above, or just as wrongly pick up an UNRELATED flag sitting inside some
+  // other command's own substitution, since the flat regex does not know
+  // `$(...)`/backtick groups anything). Confirmed live on pre-fix `main`:
+  // `git push origin $(gh api -f q=1)` already blocks as force-push today
+  // (both unquoted AND double-quoted), even though the `-f` belongs
+  // entirely to `gh api`'s own argument list, never to `git push`. The
+  // bounded fix (every word's own substitution spans deleted before
+  // flag-matching, never reading their interior) closes the UNQUOTED
+  // spelling as a direct consequence of closing AC.1/AC.2, not a separate
+  // change. The DOUBLE-QUOTED spelling is closed too, but via fix wave 3's
+  // (now-unconditional) ambiguity signal rather than a clean descramble —
+  // see that test below for why: `wordDivergent` cannot distinguish "an
+  // ordinary double-quoted substitution" from "one with a nested-quote-
+  // reuse decoy inside it" without solving the exact problem fix wave 3
+  // shows is unsafe to solve narrowly, so EVERY double-quoted substitution
+  // now reads as ambiguous, not only decoy-laden ones. Accepted
+  // deliberately (see descrambleFlags()'s own comment) — this only ever
+  // narrows BARE substitution use, which stays exactly as permissive as
+  // before.
+  it('AC-459.4: an ordinary UNQUOTED substitution in an unrelated argument position does not trip force-push', () => {
+    expect(check('git push origin $(git rev-parse --short HEAD)').blocked).toBe(false);
+  });
+
+  it('AC-459.4 fix-wave-3 consequence: the DOUBLE-QUOTED spelling of the same ordinary substitution now blocks too (ambiguous, not a false positive in the classic sense — see descrambleFlags()\'s own comment for why this is accepted)', () => {
+    expect(check('git push origin "$(git rev-parse --short HEAD)"').blocked).toBe(true);
+  });
+
+  it('AC-459.4: a flag-shaped letter sitting INSIDE an unrelated UNQUOTED substitution is not read as the outer command\'s own flag (pre-existing false positive, confirmed to fail pre-fix)', () => {
+    expect(check('git push origin ' + '$(gh api ' + '-f' + ' q=1)').blocked).toBe(false);
+  });
+
+  it('AC-459.4: the identical shape, double-quoted, also now blocks (ambiguous) — same fix-wave-3 consequence, still strictly safer than pre-fix (which blocked this too, just via a plain match rather than the ambiguity net)', () => {
+    expect(check('git push origin "' + '$(gh api ' + '-f' + ' q=1)' + '"').blocked).toBe(true);
+  });
+
+  it('AC-459.4: rm -rf with a substitution-only target is unaffected either way (target-parsing is a separate, untouched code path)', () => {
+    // safeRmTarget() cannot certify a substitution's expansion as a safe
+    // build/temp path, so this blocks on both sides of the fix — pinned here
+    // so the fix's own regression suite records that this is deliberate and
+    // pre-existing, not a side effect of descrambleFlags().
+    expect(check('rm -rf "$(mktemp -d)"')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-459.5 — categorical block-on-ambiguity, TWO independent signals (both
+  // fix-wave findings from round-2 adversarial forge:security, not part of
+  // the original design — see descrambleFlags()'s own comment for the full
+  // mechanism of each).
+  it('AC-459.5: an unterminated substitution inside a flag-candidate word blocks categorically', () => {
+    expect(check('rm -r' + '$(true /prod-secrets').blocked).toBe(true);
+    expect(check('git push -' + '$(true origin main').blocked).toBe(true);
+    expect(check('git branch -' + '$(true main').blocked).toBe(true);
+  });
+
+  // AC-459.5 fix wave 1 — full-branch adversarial forge:security finding:
+  // a truly UNTERMINATED substitution now blocks UNCONDITIONALLY, not only
+  // when the word that starts it already looks flag-shaped. A standalone,
+  // never-closing live paren/backtick (a lone double-quoted "(" is enough —
+  // no `$(...)`/backtick pair at all) swallows every LATER word too, since
+  // word-boundary detection is itself gated on the same depth returning to
+  // zero — including a genuine, otherwise fully ordinary flag several
+  // tokens later. Real bash still splits this into separate argv tokens
+  // (`(` is just a literal one-character word), so the flag downstream is
+  // very much still live. The word that STARTS the unresolved span is never
+  // itself flag-shaped in this construction (its own skeleton never
+  // advances past empty), so the OLD, narrowly-scoped check silently never
+  // fired. Confirmed to fail against the pre-fix-wave source (stash the
+  // `guardedLegacy`/unconditional-signal-1 change, re-run, restore).
+  it('AC-459.5 fix wave 1: a standalone unmatched quoted paren/backtick swallows and hides a later, genuine flag — now caught unconditionally', () => {
+    expect(check('git push "(" -f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push "(" --force origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch "(" -D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git "(" clean -f')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+    expect(check('rm "(" -rf /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  it('AC-459.5 fix wave 1, revised scope: an unterminated substitution in an otherwise flagless command now also blocks (broadened from the earlier, narrower design)', () => {
+    // Superseded expectation: an earlier version of this fix scoped the
+    // unterminated-substitution signal to "only inside a candidate flag
+    // word," so this exact command was pinned as staying allowed. The
+    // fix-wave finding above shows that scoping is unsafe in general — an
+    // unresolved span can hide LATER, unrelated flag content the scanner
+    // has no way to rule out — so the categorical net was broadened to fire
+    // on ANY truly unterminated substitution, unconditionally. This
+    // over-blocks a syntactically malformed/incomplete string (never a
+    // real, executable command to begin with), which is the safe direction.
+    expect(check('git push origin unrelated' + '$(true').blocked).toBe(true);
+  });
+
+  // AC-459.5 fix wave 2 — full-branch adversarial forge:security finding:
+  // nested-quote-reuse INSIDE a substitution that is itself already inside
+  // an outer double-quoted string. normalizeShellText() tracks quoting with
+  // a single flat `quote` variable with no concept that `$(...)` opens an
+  // independent nested quoting scope for its own inner command in real
+  // bash, so a `'` reused there is never recognised as opening its own
+  // quote — the exact bug class beforeEndOfOptions()'s own fix-wave-4/5/6
+  // already fought for guardedText/bare[], reopened one layer deeper by the
+  // NEW liveSubst[]/substGuardedText mechanism, since that hardening was
+  // never ported to it. A close-paren genuinely protected by the invisible
+  // inner quote (an inner command's own single-quoted `')'` argument)
+  // wrongly closes the OUTER substitution one paren early, corrupting the
+  // skeleton before the real flag letter is reached. NOT mitigated by
+  // recursive-delete's own pre-existing `trustworthy` gate, which only
+  // guards beforeEndOfOptions()'s truncation, never descrambleFlags()'s own
+  // depth-tracking. Confirmed to fail against the pre-fix-wave source.
+  it('AC-459.5 fix wave 2: nested-quote-reuse inside a double-quoted substitution is detected and blocks categorically', () => {
+    expect(check('rm "-r' + '$(cat \')\' )' + 'f" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push "-' + '$(cat \')\' )' + 'f" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch "-' + '$(cat \')\' )' + 'D" main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean "-' + '$(cat \')\' )' + 'fd"')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  it('AC-459.5 fix wave 2 control: the identical decoy WITHOUT an outer double-quote wrapper was already correctly handled (no regression from this fix wave)', () => {
+    // Bare (unquoted) $(...): normalizeShellText()'s flat quote-tracker
+    // correctly opens/closes a single level of quote here regardless of
+    // $(...) nesting, since there is no PRE-EXISTING outer quote for the
+    // inner one to be confused with — this is the case beforeEndOfOptions()
+    // itself already hardened (fix-wave 4).
+    expect(check('rm -r' + '$(cat \')\' )' + 'f /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-459.5 fix wave 3 — full-branch adversarial forge:security finding,
+  // the THIRD round on this mechanism: scoping signal 2 to
+  // `skelWord.startsWith('-')` (fix wave 2's own design) was itself unsafe
+  // — it implicitly assumed corruption can only happen AFTER a word's
+  // leading `-` is already captured, true for the MID-WORD shape (#459)
+  // but false for the ADJACENT shape (#495), where a decoy combined with
+  // fusion at the substitution's END leaves the real `-f` uncaptured by
+  // either AC.5 signal. Fixed by making signal 2 unconditional, matching
+  // signal 1. Confirmed to fail against the pre-fix-wave-3 source.
+  it('AC-459.5 fix wave 3: the SAME nested-quote-reuse decoy, combined with the ADJACENT (#495) fusion shape rather than mid-word, still blocks', () => {
+    expect(check('git push "' + '$(cat \')\' )' + '-f" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('rm "' + '$(cat \')\' )' + '-rf" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git branch "' + '$(cat \')\' )' + '-D" main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+  });
+
+  // AC-459.5 fix wave 3 — the detector itself must be scoped to only the
+  // FOUR structural positions descrambleFlags()'s own depth-tracker treats
+  // as meaningful (`(`, `)`, backtick-toggle, and `$` immediately before
+  // `(`), not a blanket per-character check. An earlier draft of this
+  // fix-wave checked every character, which ALSO fires for an ordinary
+  // `$VAR` reference inside double quotes (`$` not followed by `(`, never
+  // treated as substitution syntax by this function at all) — desyncing
+  // `guardedLegacy`/`guarded` identically to a real decoy and wrongly
+  // flagging #446/#454's own pinned SAFE cases (`rm -rf "$TMP/forge-test"`)
+  // as ambiguous. Re-pinned here directly, not only via the pre-existing
+  // #446/#454 describe blocks, so a future change to this detector's own
+  // scope fails this file specifically.
+  it('AC-459.5 fix wave 3: a plain $VAR reference inside double quotes is not mistaken for a substitution decoy', () => {
+    expect(check('rm -rf "$TMP/forge-test"').blocked).toBe(false);
+    expect(check('git branch "$""-D" main').blocked).toBe(false);
+  });
+});
+
 describe('shared escalate message (#321, AC-321.1)', () => {
   const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
 

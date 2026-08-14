@@ -1,0 +1,286 @@
+# Plan: #459 - a command substitution fused mid-word (or adjacent) defeats shortFlagCluster
+
+**Ticket:** #459 (board #8, child of epic #182) - **Kind:** bug - **Size:** S
+**Base:** main - **Branch:** fix/459-shortflagcluster-substitution-fusion - **Verify:** `pnpm verify`
+**Absorbs:** #495 (closed as duplicate — same flaw, opposite edge)
+
+## The gap
+
+`shortFlagCluster()` (`plugin/hooks/denylist.mjs`) collects short-flag
+letters with `(?:^|\s)-([a-zA-Z]+)` — a contiguous letter run after a dash.
+Two edges of the same flaw, both live bypasses (verified via `check()`):
+
+1. **#459 (mid-word):** a substitution fused INSIDE an already-started flag
+   run breaks the contiguous letter match at the `$`/backtick —
+   `rm -r$(true)f /prod-secrets` collects only `r`, losing `f`.
+2. **#495 (adjacent):** a flag glued onto the END of a substitution with no
+   preceding whitespace — `rm $(true)-rf /prod-secrets` — never satisfies
+   the `(?:^|\s)-` start anchor at all, since the substitution's own
+   characters sit where whitespace would need to be.
+
+Verified live on `main` (pre-fix) against all four `shortFlagCluster()`
+consumers, both spellings (`$(...)`, backtick) and both edges:
+`recursive-delete`, `force-push` (short `-f` AND long `--force`),
+`env-branch-delete`, `git-clean-force` all bypassed by the mid-word edge;
+`recursive-delete`, `force-push`, `env-branch-delete` bypassed by the
+adjacent edge too (`git-clean-force`'s own unanchored inline regex happens
+to survive the adjacent edge, but not the mid-word edge).
+
+**force-push has zero remaining mitigation**: `git push` is on
+`ALLOWED_COMMAND_PREFIXES` (pre-approved since #429), so a bypassed
+force-push here runs unattended — no denylist block AND no human
+confirmation prompt. The other three still fall back to a human prompt.
+This is why the ticket is P1.
+
+## Also found in scope: an existing, related false positive
+
+While probing, confirmed `shortFlagCluster()`'s total lack of substitution-
+boundary awareness ALSO produces a false positive today, same root cause,
+opposite direction: `git push origin "$(gh api -f q=1)"` already blocks on
+`main` (force-push) because the flat regex has no concept that the `-f`
+sits INSIDE an unrelated inner command's own substitution. The bounded fix
+below (deleting substitution spans wholesale before flag-matching, rather
+than reading their interior) closes this as a natural side effect — it is
+not a separate change.
+
+## Design
+
+New helper `descrambleFlags(command, guarded)`, built on the exact same
+`guardedText`/depth-tracking technique as `beforeEndOfOptions()` (#454's
+precedent — explicitly NOT `shell-tokenize.mjs`, per the triage trail and
+esc-449-mst7pghx staying untouched): a single linear pass that deletes every
+`$(...)`/backtick SPAN (including its own delimiters) from the text,
+wherever it appears, leaving every other character — including the literal
+letters either side of a span — untouched and in place.
+
+This is sufcient for both edges at once: deleting a span can only ever
+MERGE the literal characters immediately before and after it (never insert
+new whitespace or new dashes), so:
+- `-r$(true)f` -> `-rf` (mid-word edge closed)
+- `$(true)-rf` -> `-rf` (adjacent edge closed, since the deleted span's
+  removal exposes `-rf` sitting right where a real bash argv would also
+  fuse it)
+- an unrelated word like `$(gh api -f q=1)` (no leading `-` once its span is
+  deleted — the whole word IS the span) -> `` (empty) contributes nothing,
+  closing the false-positive found above
+- ordinary two-argument use (`rm -rf "$(mktemp -d)"`) is untouched by this
+  function specifically (target-parsing is a separate, pre-existing code
+  path — see Non-goals)
+
+**AC.5 (categorical block-on-ambiguity):** an unterminated substitution
+(depth never returns to 0 by segment end) cannot be resolved — some suffix
+is unscanned and may hide a flag letter. `descrambleFlags()` returns
+`{ text, ambiguous }`; every affected rule treats `ambiguous` as an
+automatic block, mirroring `recursive-delete`'s own existing `trustworthy`
+gate for the same class of problem.
+
+## Fix wave: adversarial security finding, closed
+
+Both `forge:security` (run adversarially against the full branch) and this
+agent's own independent verification found the same critical gap in the
+first version of `descrambleFlags()`: it read `guardedText` for its
+depth-tracking (the same input `beforeEndOfOptions()` uses), and
+`guardedText` masks a quoted `$`/`(`/`)`/backtick identically regardless of
+quote TYPE — it has no concept that double quotes and single quotes behave
+differently in real bash. Real bash still expands `$(...)`/backtick syntax
+inside DOUBLE quotes (only word-splitting of the result is suppressed,
+moot for a deterministically-empty substitution); only single quotes and
+`$'…'` ANSI-C quoting suppress it entirely.
+
+Consequence: simply double-quoting the ticket's own named reproduction —
+`rm "-r$(true)f" /prod-secrets`, `git push "-$(true)f" origin main`,
+`git push "--for$(true)ce" origin main`, `git branch "-$(true)D" main`,
+`git clean "-$(true)fd"`, and the #495 adjacent spelling — reopened the
+ORIGINAL bypass across all four rules. Verified this executes identically
+to the unquoted spelling in real bash, and that it already bypassed `main`
+pre-fix too (not a regression, a spelling the first fix draft simply didn't
+close). This is not an exotic evasion — quoting a flag argument is entirely
+ordinary shell usage.
+
+Fixed by adding a SECOND, differently-scoped masking to
+`normalizeShellText()`: `substGuardedText`, built from a new `liveSubst[]`
+per-character array tracked during the same single scan (alongside the
+existing `bare[]`). A character is "live for substitution" when it is bare
+(top-level, unquoted, unescaped) OR inside DOUBLE quotes and not itself
+individually escaped; false for single-quoted, `$'…'`-ANSI-C-quoted, or
+escaped content, regardless of surrounding quote. `descrambleFlags()` now
+reads `substGuardedText`'s segment instead of `guardedText`'s for its own
+purposes (`beforeEndOfOptions()` and `recursive-delete`'s own `trustworthy`
+gate are UNCHANGED, still reading `guardedText` — that function's own
+question, "is this whitespace/`--` genuinely bare," is correctly quote-type-
+blind). `check()` computes `substGuardedText`/`segsSubstGuarded` once,
+alongside `spacedText`/`guardedText`, and passes it as rule `test()`'s 4th
+argument.
+
+A single-quoted spelling of the same payload (`rm '-r$(true)f'
+/prod-secrets`) is correctly left unaffected either way: bash performs zero
+expansion inside single quotes, so `rm` receives the literal 9-character
+argument `-r$(true)f`, which GNU rm's own short-option parser rejects
+outright ("invalid option") — genuinely inert, not a live bypass on either
+side of this fix, and not this fix's concern.
+
+## Fix wave 2 (round 2): two more adversarial `forge:security` findings, closed
+
+Round 2 (a fresh adversarial pass launched after fix wave 1) found two
+MORE, independent critical bugs — not in fix wave 1's own quote-type-aware
+masking design itself, but in `descrambleFlags()`'s AC.5 ambiguity net,
+which was too narrowly scoped to catch either:
+
+1. **A standalone, never-closing live paren/backtick swallows and hides a
+   LATER, genuine flag.** `git push "(" -f origin main` — a lone
+   double-quoted `"("` (no `$(...)`/backtick pair at all) opens
+   `parenDepth`, which then never returns to 0, so word-boundary detection
+   (itself gated on `parenDepth === 0`) stops firing for the REST of the
+   segment — the real `-f` several tokens later is glued into the same
+   unresolved "word" and silently dropped from the descrambled output. The
+   OLD ambiguity check only fired when the word's OWN skeleton-so-far
+   started with `-`, but this word's skeleton never advances past `''`, so
+   it silently never fired. Fixed by making the "truly unterminated at
+   end-of-scan" signal UNCONDITIONAL, not scoped to skeleton content —
+   safe, since genuinely unterminated syntax can only occur in malformed,
+   non-executable input.
+2. **Nested-quote-reuse inside a double-quoted substitution.**
+   `rm "-r$(cat ')' )f" /prod-secrets` — `normalizeShellText()`'s single
+   flat `quote` variable has no concept that `$(...)` opens an independent
+   nested quoting scope for its own inner command, so the inner `'` is
+   never recognised as opening its own quote; a close-paren genuinely
+   protected by that invisible inner quote (`cat`'s own single-quoted
+   `')'` argument) wrongly closes the OUTER substitution one paren early.
+   The exact bug class `beforeEndOfOptions()`'s own fix-wave-4/5/6 already
+   fought for `guardedText`/`bare[]`, reopened one layer deeper by fix wave
+   1's NEW `liveSubst[]`/`substGuardedText` mechanism, since that hardening
+   was never ported to it — and NOT mitigated by `recursive-delete`'s own
+   pre-existing `trustworthy` gate, which only guards
+   `beforeEndOfOptions()`'s truncation, never `descrambleFlags()`'s own
+   depth-tracking. Fixed with a second, deliberately SCOPED signal: a
+   `$`/`(`/`)`/backtick character masked under the OLD, quote-type-BLIND
+   `guardedText` but NOT masked under the quote-type-AWARE
+   `substGuardedText` is exactly the fingerprint of a decoy — this
+   divergence is tracked per-word (via a new `guardedLegacy` 3rd parameter
+   to `descrambleFlags()`, threaded from each rule's existing `cGuarded`)
+   and, when found within a flag-candidate word, forces `ambiguous: true`.
+   Scoped (unlike signal 1) to avoid blanket-blocking ordinary
+   double-quoted substitution use in a non-flag argument position
+   (`git push origin "$(git rev-parse --short HEAD)"`, AC.3).
+
+Both verified: blocked on `main`, allowed pre-fix-wave-2 on this branch,
+across all four rules; new tests confirmed to fail against the pre-fix-
+wave-2 source (stash/restore) before landing.
+
+Consequence for AC.5's OWN text: the "unterminated substitution" signal is
+now unconditional (broadened from "only inside a candidate flag word"),
+since the standalone-paren finding showed that scoping was unsafe — an
+unresolved span can hide LATER, unrelated flag content the scanner has no
+way to rule out. The divergence signal (round 2's second finding) initially
+kept the flag-candidate-word scoping — round 3 (below) found that scoping
+unsafe too and removed it.
+
+## Fix wave 3 (round 3): two more findings, one from each adversarial role
+
+**Reviewer finding — the divergence signal's own scoping was unsafe.**
+`skelWord.startsWith('-')` (fix wave 2's scoping for signal 2) implicitly
+assumed corruption can only happen AFTER a word's leading `-` is already
+captured — true for the MID-WORD shape (`-r$(cat ')' )f`) but false for
+the ADJACENT shape (`#495`'s own edge): `$(cat ')' )-f` has no literal `-`
+before the substitution at all, so the corrupted skeleton never starts with
+`-`, and signal 1 doesn't fire either (the miscounted depth wrongly
+returns to exactly 0, not stuck `> 0`). `git push "$(cat ')' )-f" origin
+main` (and the `rm`/`git branch` equivalents) bypassed with the scoped
+version. Rather than add a THIRD, narrower special case (the exact
+whack-a-mole AC.5 exists to stop), signal 2 was made unconditional too,
+matching signal 1.
+
+A first attempt at "unconditional" checked EVERY character for divergence,
+which was immediately far too broad: it also fires for an ordinary `$VAR`
+reference inside double quotes (`"$TMP/forge-test"` — the `$` is not even
+followed by `(`, never treated as substitution syntax by this function at
+all), wrongly flagging #446/#454's own pinned SAFE cases. Fixed by scoping
+the divergence CHECK (not the resulting ambiguity signal) to only the four
+structural positions `descrambleFlags()`'s own depth-tracker treats as
+meaningful (`(`, `)`, backtick-toggle, `$` immediately before `(`).
+
+Net effect, accepted deliberately: an ordinary double-quoted substitution
+with NO decoy at all (`git push origin "$(git rev-parse --short HEAD)"`)
+now also reads as `ambiguous` and blocks — `wordDivergent` cannot
+distinguish "ordinary" from "decoy-laden" double-quoted substitutions
+without solving the exact problem shown unsafe to solve narrowly. This
+only narrows DOUBLE-QUOTED substitution use (bare/unquoted substitution use
+is completely unaffected, and every pre-existing pinned corpus stays
+green) — accepted given three consecutive adversarial rounds found a live
+P1 bypass in the previous, narrower scoping.
+
+**Security finding — force-push's own `+refspec` check was never wired to
+`cFlags`.** An earlier version of this fix left `+refspec` (force-push's
+OWN 4th documented spelling, per that rule's own comment) reading raw `c`,
+on the theory that `+refspec` fusion was a separate, out-of-scope class.
+That was wrong: it sits inside the exact same "substitution assumed to
+expand to empty" threat model every other check in this rule already
+relies on. `git push origin $(true)+release-1.0` (or the backtick
+spelling) fuses to a genuine, live `+release-1.0` refspec in real bash
+argv, caught by NO rule — not `force-push` (unfused check), and not
+`env-branch-delete` either, since the branch need not be a PROTECTED one.
+Given force-push is this ticket's own named highest-value target (zero
+remaining mitigation on `ALLOWED_COMMAND_PREFIXES`), this was a live gap.
+Fixed with the same one-line `.test(c)` → `.test(cFlags)` swap already used
+for `--force`/`--mirror` in the same rule — no new mechanism.
+
+Both verified against real bash and `check()`; new tests confirmed to fail
+against the pre-fix-wave-3 source (stash/restore) before landing.
+
+## Tasks
+
+### T1 — descrambleFlags() + wire into all four rules (bug)
+
+**Files:** `plugin/hooks/denylist.mjs`, `tests/hooks/denylist.test.mjs`
+
+Add `descrambleFlags()`; wire it into `force-push`, `env-branch-delete`,
+`git-clean-force` (via a per-segment 4th `test()` argument from `check()`,
+same pattern as `spacedText`/`guardedText`) and into `recursive-delete`
+(applied to its own post-`beforeEndOfOptions()` `flagsSegment`, since that
+rule already does its own segment-narrowing). New `describe` block,
+AC-459.* tests, in `tests/hooks/denylist.test.mjs`.
+
+**AC-IDs:** AC.1, AC.2, AC.3, AC.4, AC.5
+
+**Test plan:** see below.
+
+## Non-goals / explicitly out of scope
+
+- `safeRmTarget()`'s target-parsing (a DIFFERENT, pre-existing code path)
+  is not touched. It already treats an unresolvable substitution-as-target
+  as unsafe (blocks) — consistent with this ticket's own block-on-ambiguity
+  philosophy, but it is not this ticket's Sources and not touched here.
+- No tokenizer integration (`shell-tokenize.mjs`) — the triage trail is
+  explicit this is a bounded, hand-rolled fix, not Phase 2.
+- No change to branch-name fusion, verb-spelling fusion, or `+refspec`
+  fusion — out of the ticket's named scope (shortFlagCluster + the
+  affected rules' own flag-matching regexes only).
+
+## AC map
+
+- AC.1 (absorbs #495): mid-word and adjacent fusion, all four rules, both
+  substitution spellings, force-push spellings pinned explicitly.
+- AC.2: #437/#446/#450/#452/#454 corpora re-run, no regression.
+- AC.3: no new false positive on ordinary/unrelated substitution use;
+  additionally closes the pre-existing `-f`-inside-an-unrelated-
+  substitution false positive found during triage.
+- AC.4: tests confirmed to fail pre-fix (stash/restore discipline); any
+  latency assertion is a wall-clock ceiling, never a ratio (#486).
+- AC.5: categorical block-on-ambiguity for an unterminated substitution
+  inside a flag-candidate word.
+
+## Test plan
+
+New `describe('shortFlagCluster substitution fusion (#459/#495, AC-459.*)')`
+block in `tests/hooks/denylist.test.mjs`:
+- AC-459.1: mid-word `$(...)`/backtick fusion blocks recursive-delete,
+  force-push (both spellings), env-branch-delete, git-clean-force.
+- AC-459.2: adjacent (#495) fusion blocks the same four.
+- AC-459.3: #437/#446/#450/#452/#454 pinned cases re-run unchanged.
+- AC-459.4: no new false positive — ordinary substitution in an unrelated
+  argument position, AND the inner-flag-leakage case found during triage.
+- AC-459.5: an unterminated substitution inside a flag-candidate word
+  blocks categorically, across the affected rules.
+
+All new tests confirmed to fail against pre-fix `denylist.mjs` (stash the
+source change, re-run, restore) before the fix lands.

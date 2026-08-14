@@ -304,6 +304,254 @@ function beforeEndOfOptions(command, guarded) {
 }
 
 /**
+ * Delete every SUBSTITUTION span (`$(...)` or `` `...` ``, including its own
+ * delimiters) from every IFS-whitespace-bounded WORD of `command` — always,
+ * regardless of what the word's surviving literal characters turn out to
+ * spell. Built on the same depth-tracking TECHNIQUE as `beforeEndOfOptions()`
+ * above (#454's precedent — deliberately NOT the argv-tokenizer module's flat
+ * `Token` shape (see `plugin/scripts/lib/`), whose own NON-GOALS comment
+ * already says cannot represent this; see #459's own triage trail), but NOT
+ * fed `guardedText` itself — see the `guarded` parameter note below and
+ * `substGuardedText`'s own comment in `normalizeShellText()` for why a
+ * SEPARATE masking was required.
+ *
+ * `guarded` MUST be `substGuardedText`'s segment, not `guardedText`'s
+ * (adversarial finding, fix wave 1): `guardedText` masks a quoted
+ * `$`/`(`/`)`/backtick identically regardless of quote TYPE, which is right
+ * for `beforeEndOfOptions()`'s question but wrong for this one — real bash
+ * still expands `$(...)`/backtick syntax inside DOUBLE quotes (only
+ * word-splitting of the result is suppressed), so `rm "-r$(true)f"
+ * /prod-secrets` is exactly as dangerous as the unquoted spelling, yet an
+ * early version of this function fed `guardedText` and missed it: the masked
+ * `$`/`(`/`)` were invisible to the depth-tracker below, so the substitution
+ * was never recognised as one at all and the ORIGINAL #459 bypass reopened
+ * behind the most mundane possible evasion — quoting the flag. Verified
+ * fixed once callers switched to `substGuardedText`.
+ *
+ * Closes BOTH edges of the same `shortFlagCluster()` flaw at once (#459
+ * absorbs #495), because they are the same root cause read two ways:
+ * `shortFlagCluster()` (and the specific literal `--force`/`--recursive`/
+ * `+refspec`/`longFlag()`-built regexes this ticket's own AC.1 names —
+ * `force-push`'s `--force`/`--mirror`, `env-branch-delete`'s
+ * `PUSH_DELETE`/`BRANCH_DELETE`/`BRANCH_FORCE`, `recursive-delete`'s
+ * `--recursive`/`--force`, `git-clean-force`'s inline `-f` regex) assume a
+ * flag word is bounded by real whitespace and made of letters only, when
+ * real bash word-splitting only cares about IFS whitespace — anything
+ * glued together (letters, one or more substitutions, in any combination
+ * or order) is ONE word, and a real shell hands the invoked program that
+ * word fully assembled, substitutions expanded. NOT every `longFlag()`
+ * consumer in this file is wired to this function — `hard-reset`'s
+ * `HARD_RESET` is the same helper family but outside AC.1's own named
+ * scope (it is not a `shortFlagCluster()` consumer); tracked separately,
+ * not silently left unaddressed — see the ticket trail.
+ *
+ * - **#459 (mid-word):** `-r$(true)f` — a substitution breaks the letter run
+ *   the flat regex needs to be contiguous. Deleting the span merges the
+ *   letters either side back into `-rf`, exactly as a real shell would if
+ *   the substitution expands to nothing (`true`'s stdout, or any other
+ *   deterministically-empty spelling an attacker controls) — the ONLY
+ *   assumption this function makes about a substitution's unknown output,
+ *   and the conservative one: it is also the shape that preserves valid
+ *   flag syntax, i.e. the shape an attacker needs for the bypass to work at
+ *   all, so assuming it is never a missed catch, only ever a (harmless)
+ *   over-match if the true output turns out non-empty — a case GNU
+ *   getopt-style parsers reject outright as an invalid option anyway (see
+ *   the docstring on the affected rules for detail), never a silent escape.
+ * - **#495 (adjacent):** `$(true)-rf` — the flag never even reaches
+ *   `shortFlagCluster()`'s `(?:^|\s)-` start anchor, because the
+ *   substitution's own characters occupy the position real whitespace would
+ *   need to be. Deleting the span exposes the `-rf` sitting right where a
+ *   real shell would also fuse it into one argv word.
+ *
+ * Every word — not only ones that already look flag-shaped — is replaced by
+ * its own SKELETON (literal characters, spans removed, in order): a word
+ * whose skeleton does not start with `-` was never going to match any flag
+ * regex here regardless (deleting characters can only ever REMOVE a `-…`
+ * anchor point, never create one that was not already present in the
+ * surviving literal text — see the AC.3 note below), so descrambling it too
+ * costs nothing and closes an adjacent, same-root-cause false positive for
+ * free: an UNRELATED word like `$(gh api -f q=1)` (some OTHER command's own
+ * argument, entirely inside a substitution) has an EMPTY skeleton — the
+ * whole word IS the span — so its `-f` never survives into the output text
+ * at all, and is never read as this word's own flag. (Verified this exact
+ * shape is a live, PRE-EXISTING false positive on `main` today, for the
+ * identical reason in the opposite direction: the flat regex has no concept
+ * of substitution grouping whatsoever. Closing it is a direct consequence of
+ * this function's own design, not a separate change. Reaches BOTH the
+ * unquoted and double-quoted spellings, since `substGuardedText` — unlike
+ * `guardedText` — keeps a double-quoted `$(...)` visible to the depth
+ * tracker; a SINGLE-quoted or `$'…'`-ANSI-C-quoted one is genuinely inert
+ * data in real bash — no expansion occurs at all — so it is correctly left
+ * out of scope here regardless: it was never live substitution syntax to
+ * begin with, on either side of this fix.)
+ *
+ * AC.5, categorical block-on-ambiguity — TWO independent signals, both
+ * fix-wave findings from a full-branch adversarial `forge:security` pass,
+ * not part of the original design:
+ *
+ * 1. **Truly unterminated at end-of-scan** (`parenDepth > 0 || inBacktick`
+ *    when the LAST word closes — this can only happen at the final call,
+ *    since every mid-loop `closeWord()` call is itself gated on
+ *    `parenDepth === 0`): UNCONDITIONAL, regardless of what `skelWord`
+ *    contains. An earlier version scoped this to "only when the word's own
+ *    skeleton-so-far starts with `-`" — plausible, since AC.5's own text
+ *    says "inside a candidate flag word" — but that missed a live bypass:
+ *    a lone, never-closing live paren/backtick (e.g. a double-quoted `"("`
+ *    or `` "`" ``, with no real match anywhere in the segment) swallows
+ *    EVERY later word too, since the whitespace-boundary check is itself
+ *    gated on `parenDepth === 0` — including a genuine, otherwise fully
+ *    ordinary flag several tokens later (`git push "(" -f origin main`
+ *    real bash argv: `git`, `push`, `(`, `-f`, `origin`, `main` — four
+ *    separate tokens, `-f` very much still forces). The word that STARTS
+ *    the unresolved span is never itself flag-shaped in this construction
+ *    (`skelWord` stays `''` the whole time after the initial `(`), so the
+ *    old scoped check silently never fired and the swallowed `-f` vanished
+ *    from `cFlags` with no compensating signal at all. Verified: blocked
+ *    on `main`, allowed on this branch pre-fix, across all four rules.
+ *    Dropping the scoping for THIS signal costs nothing on ordinary,
+ *    well-formed input — a truly unterminated substitution can only occur
+ *    in genuinely malformed/incomplete syntax, which is never a real,
+ *    executable command to begin with.
+ * 2. **Nested-quote-reuse divergence, UNCONDITIONAL** (not scoped to
+ *    `skelWord.startsWith('-')` — see the fix-wave-3 note below for why
+ *    that scoping, tried first, was itself unsafe): a `$`/`(`/`)`/backtick
+ *    character that is masked (quote-protected) under the OLD,
+ *    quote-type-BLIND `guardedText` but NOT masked (live) under the
+ *    quote-type-AWARE `substGuardedText` this function reads is exactly
+ *    the fingerprint of a decoy — `normalizeShellText()` still tracks
+ *    quoting with a SINGLE flat `quote` variable, with no concept that
+ *    `$(...)` opens a genuinely INDEPENDENT nested quoting scope for its
+ *    OWN inner command in real bash — so a `'` reused INSIDE a substitution
+ *    that is itself already inside an OUTER double-quoted string is never
+ *    recognised as opening its own quote at all (a `'` has no meaning
+ *    inside `"..."` — correct, in isolation — but real bash parses
+ *    `$(...)`'s content in its OWN fresh quoting context, so the `'` DOES
+ *    open a real nested scope there). A close-paren genuinely protected by
+ *    that invisible inner quote (`cat`'s own single-quoted `')'` argument)
+ *    then wrongly closes the OUTER substitution one paren early —
+ *    `rm "-r$(cat ')' )f" /prod-secrets` (real bash argv: `rm`, `-rf`,
+ *    `/prod-secrets` — a genuine `rm -rf`) — the exact bug class
+ *    `beforeEndOfOptions()`'s own fix-wave-4/5/6 already fought for
+ *    `guardedText`/`bare[]`, reopened one layer deeper by the NEW
+ *    `liveSubst[]`/`substGuardedText` mechanism this ticket adds, since
+ *    that fix-wave hardening was never ported to it. NOT mitigated by
+ *    `recursive-delete`'s own pre-existing `trustworthy` gate, which only
+ *    guards `beforeEndOfOptions()`'s truncation, never this function's own
+ *    depth-tracking.
+ *
+ *    **Fix-wave 3, full-branch adversarial `forge:security` finding:**
+ *    scoping signal 2 to `skelWord.startsWith('-')` — plausible, mirroring
+ *    AC.5's own "candidate flag word" text, and correct for the MID-WORD
+ *    shape (`-r$(cat ')' )f`, where the literal `-` is captured into
+ *    `skelWord` before any corruption can occur) — missed the ADJACENT
+ *    shape (`#495`'s edge) combined with the SAME decoy:
+ *    `$(cat ')' )-f` (no literal `-` before the substitution at all). The
+ *    corruption there leaves stray characters in `skelWord` BEFORE the
+ *    real `-f` ever arrives, so `skelWord` never starts with `-`, and
+ *    signal 1 does not fire either (the miscounted depth wrongly returns
+ *    to exactly 0, not stuck `> 0`). Verified live:
+ *    `git push "$(cat ')' )-f" origin main`,
+ *    `rm "$(cat ')' )-rf" /prod-secrets`,
+ *    `git branch "$(cat ')' )-D" main` all bypassed with the scoped
+ *    version. Rather than add a THIRD, narrower special case chasing this
+ *    specific combination (the exact whack-a-mole AC.5 exists to stop),
+ *    signal 2 is now unconditional: it is not possible to determine, in
+ *    general, whether a nested-quote-reuse decoy sits before or after the
+ *    word's own eventual `-`, since that determination is exactly what the
+ *    decoy itself corrupts. This DOES mean an ordinary double-quoted
+ *    substitution with no decoy at all (`git push origin
+ *    "$(git rev-parse --short HEAD)"`) now also reads as `ambiguous` and
+ *    blocks, a narrowing from AC.3's original framing — accepted
+ *    deliberately: `wordDivergent` only ever fires for a double-quoted
+ *    substitution character in the first place (a bare/unquoted one has no
+ *    `guardedText`/`substGuardedText` divergence to trigger it, so the vast
+ *    majority of real usage, and every one of this file's own pre-existing
+ *    pinned corpora, is completely unaffected), and three consecutive
+ *    adversarial rounds finding a live P1 bypass in the previous, narrower
+ *    scoping is a stronger signal than one hypothetical false positive on
+ *    an unusual construction (a double-quoted, dynamically-substituted
+ *    argument to a destructive-command-adjacent verb).
+ *
+ * Both signals mirror `recursive-delete`'s own pre-existing `trustworthy`
+ * gate in spirit (cannot certify the parse → treat it as maximally
+ * dangerous), and every affected rule treats a returned `ambiguous: true`
+ * as an automatic hit.
+ */
+function descrambleFlags(command, guarded, guardedLegacy) {
+  const n = command.length;
+  const isIfsWs = (gch) => gch === ' ' || gch === '\t' || gch === '\n';
+  let out = '';
+  let rawWord = '';
+  let skelWord = '';
+  let wordDivergent = false; // signal 2 — see the function comment above
+  let parenDepth = 0;
+  let inBacktick = false;
+  let ambiguousFound = false;
+
+  // Flush the word accumulated so far: EVERY word is replaced by its own
+  // skeleton (spans deleted, everything else kept, in order) — see the
+  // function comment for why that is safe even for a word that turns out
+  // not to be flag-shaped. Only ever called with
+  // `parenDepth === 0 && !inBacktick` (the mid-loop call site is itself
+  // gated on that), EXCEPT the final call after the loop ends — see the
+  // function comment's two AC.5 signals for what a still-nonzero
+  // depth/backtick state, or an accumulated divergence, mean there.
+  const closeWord = () => {
+    if (rawWord === '') return;
+    out += skelWord;
+    if (parenDepth > 0 || inBacktick) ambiguousFound = true; // signal 1: unconditional
+    else if (wordDivergent) ambiguousFound = true; // signal 2: also unconditional (fix wave 3)
+    rawWord = '';
+    skelWord = '';
+    wordDivergent = false;
+  };
+
+  for (let i = 0; i < n; i++) {
+    const ch = command[i];
+    const gch = guarded[i];
+    if (parenDepth === 0 && !inBacktick && isIfsWs(gch)) {
+      closeWord();
+      out += ch;
+      continue;
+    }
+    rawWord += ch;
+    // Signal 2's own detector: checked ONLY at the same four positions the
+    // depth-tracker below actually treats as structurally meaningful — NOT
+    // for every `$`/`(`/`)`/backtick character in the word. A blanket
+    // per-character check (an earlier version of this fix-wave) was WAY
+    // over-broad: it also fires for an ordinary `$VAR` reference inside
+    // double quotes (`"$TMP/forge-test"` — the `$` there is not even
+    // followed by `(`, so it was never treated as substitution syntax by
+    // this function at all), which desynced `guardedLegacy`/`guarded`
+    // identically to a REAL decoy and wrongly flagged #446/#454's own
+    // pinned SAFE cases as ambiguous. Scoping the check to fire only
+    // inside the branches that actually CONSUME a character as syntax
+    // keeps the signal precise: it can only ever trigger where the
+    // depth-tracker's own decision is actually at risk of being wrong.
+    const isDivergent = () => guardedLegacy[i] === GUARD_SENTINEL && gch !== GUARD_SENTINEL;
+    // Same depth-tracking as beforeEndOfOptions(): ANY bare '(' counts, and
+    // every check reads `guarded` (not `command`), so a QUOTED paren/
+    // backtick/`$` — genuinely inert literal data in real bash — can never
+    // be misread as substitution syntax (see that function's own comment
+    // for the fix-wave findings this inherits for free by reusing the same
+    // technique).
+    if (!inBacktick && gch === '(') { if (isDivergent()) wordDivergent = true; parenDepth++; continue; }
+    if (!inBacktick && parenDepth > 0 && gch === ')') { if (isDivergent()) wordDivergent = true; parenDepth--; continue; }
+    if (parenDepth === 0 && gch === '`') { if (isDivergent()) wordDivergent = true; inBacktick = !inBacktick; continue; }
+    // The '$' that INTRODUCES a '$(' is syntax, not a flag character — drop
+    // it from the skeleton too (it is already excluded from `command`
+    // between the parens; this excludes the one character outside them).
+    if (parenDepth === 0 && !inBacktick && gch === '$' && guarded[i + 1] === '(') {
+      if (isDivergent()) wordDivergent = true;
+      continue;
+    }
+    if (parenDepth === 0 && !inBacktick) skelWord += ch;
+  }
+  closeWord();
+  return { text: out, ambiguous: ambiguousFound };
+}
+
+/**
  * Build the regex source for a long flag AND every unambiguous abbreviation of
  * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
  * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
@@ -564,16 +812,36 @@ export function normalizeShellText(rawCommand) {
   // after quotes are stripped — see `guardedText` below for why that
   // distinction is load-bearing, not cosmetic.
   const bare = [];
+  // One boolean per emitted character (#459 — `descrambleFlags()`'s own
+  // quote-TYPE-aware need, distinct from `bare[]` above): true when this
+  // character could still be part of GENUINE, live `$(...)`/backtick
+  // substitution syntax in real bash — i.e. it is `bare[i]`-bare, OR it sits
+  // inside DOUBLE quotes and was not itself individually escaped. `bare[]`
+  // alone cannot answer this: it collapses every quote TYPE to the same
+  // "protected" bit, but real bash does not — double quotes still expand
+  // `$(...)` (only word-splitting of the RESULT is suppressed), single
+  // quotes and `$'…'` ANSI-C quoting do not expand it at all, and an escaped
+  // character is inert regardless of what quote (if any) surrounds it. See
+  // `substGuardedText` below for what this closes.
+  const liveSubst = [];
   let endsDollar = false; // does the output currently end with `$`?
   let quote = null;    // the active quote character, or null
   let ansiC = false;   // the active single-quote region was opened as `$'…'`
   let litDollar = false; // the `$` just emitted came from `\$`, so it is DATA
   /** Append one character, keeping `endsDollar` true to the output. */
-  const push = (ch, isBare = false) => { parts.push(ch); bare.push(isBare); endsDollar = ch === '$'; };
+  const push = (ch, isBare = false, isLiveSubst = false) => {
+    parts.push(ch);
+    bare.push(isBare);
+    liveSubst.push(isLiveSubst);
+    endsDollar = ch === '$';
+  };
   // A separator that survived escaping/quoting is inert as a separator, so
   // emit a space rather than the character itself — splitSegments() is blind
-  // to quoting and would otherwise split the command around it.
-  const emit = (ch) => push(SEPARATOR_CHARS.test(ch) ? ' ' : ch);
+  // to quoting and would otherwise split the command around it. `isLiveSubst`
+  // defaults false (correct for every escaped/decoded call site below); the
+  // one call site where it is NOT false is the generic in-quote fallback,
+  // which passes `quote === '"'` explicitly — see there for why.
+  const emit = (ch, isLiveSubst = false) => push(SEPARATOR_CHARS.test(ch) ? ' ' : ch, false, isLiveSubst);
   // An ESCAPED character, i.e. one that appeared after a backslash. Almost all
   // of them are just data and go through emit() — but a backslash-NEWLINE is
   // bash's LINE CONTINUATION, and bash deletes BOTH bytes with no replacement,
@@ -645,6 +913,7 @@ export function normalizeShellText(rawCommand) {
           const oldLen = parts.length;
           parts.pop(); // drop the `$`: it was quoting syntax, not data
           bare.pop(); // keep `bare` in lockstep with `parts` (#454 AC-454.5 fix wave)
+          liveSubst.pop(); // same lockstep requirement, for `liveSubst` (#459)
           endsDollar = parts[parts.length - 1] === '$';
           // A marker recorded for a NUL sitting between that `$` and this
           // quote char (e.g. `$<NUL>'`) was stamped with `oldLen` — the
@@ -665,8 +934,11 @@ export function normalizeShellText(rawCommand) {
       }
       // The ONLY bare push in this whole scan: unquoted, unescaped, ordinary
       // top-level data. Everything else routes through `emit()`/`emitEscaped()`/
-      // `emitCodePoint()`, all of which default `isBare` to `false`.
-      push(ch, true);
+      // `emitCodePoint()`, all of which default `isBare` to `false`. Bare is
+      // always live-for-substitution too (#459): top-level `$(...)`/backtick
+      // syntax is the ordinary, unquoted case every other rule in this file
+      // already assumes.
+      push(ch, true, true);
       litDollar = false;
       continue;
     }
@@ -764,7 +1036,14 @@ export function normalizeShellText(rawCommand) {
         continue;
       }
     }
-    emit(ch);
+    // The generic in-quote fallback (#459): reached only for a character
+    // that is inside SOME quote (`quote !== null`, the only way to arrive
+    // here — every `quote === null` path above `continue`s) and was not
+    // itself escaped or decoded. Live-for-substitution exactly when that
+    // quote is DOUBLE — real bash still expands `$(...)`/backtick syntax
+    // inside `"..."`, only single quotes and `$'…'` ANSI-C quoting (both
+    // `quote === "'"`) suppress it entirely.
+    emit(ch, quote === '"');
   }
   const text = parts.join('');
   // `guardedText` (#454, AC-454.5 fix wave): `text` with every PROTECTED
@@ -846,6 +1125,50 @@ export function normalizeShellText(rawCommand) {
     guardedChars[i] = !bare[i] && maskable ? GUARD_SENTINEL : ch;
   }
   const guardedText = guardedChars.join('');
+  // `substGuardedText` (#459): a SECOND, differently-scoped masking, same
+  // length/index space as `text`/`guardedText`. `guardedText` above answers
+  // "was this whitespace/`$`/`(`/`)`/backtick character reached completely
+  // bare?" — a single yes/no that treats every quote TYPE identically,
+  // which is exactly right for `beforeEndOfOptions()`'s end-of-options
+  // question (a quoted `--`, of EITHER quote type, is never genuine
+  // end-of-options syntax) but WRONG for `descrambleFlags()`'s question
+  // ("could this still be LIVE `$(...)`/backtick substitution syntax in
+  // real bash?"), because real bash does not treat every quote type the
+  // same way for that purpose: double quotes still expand `$(...)` (only
+  // word-splitting of the RESULT is suppressed), while single quotes and
+  // `$'…'` ANSI-C quoting suppress the expansion entirely, and an escaped
+  // character is inert regardless of what quote (if any) surrounds it.
+  //
+  // Discovered adversarially, not preemptively: an early version of
+  // `descrambleFlags()` read `guardedText` for its own depth-tracking,
+  // exactly as `beforeEndOfOptions()` does — plausible, since it reuses
+  // that function's technique deliberately. But `rm "-r$(true)f"
+  // /prod-secrets` (the ORIGINAL #459 bypass, merely wrapped in double
+  // quotes — real bash still executes this as `rm -rf /prod-secrets`,
+  // identically to the unquoted spelling, since double quotes only affect
+  // word-splitting of an EMPTY substitution's output, which is moot) still
+  // bypassed: `guardedText` masks the `$`/`(`/`)` inside ANY quote to the
+  // sentinel, so `descrambleFlags()`'s depth-tracker never recognised the
+  // substitution as one at all, and the bypass this ticket exists to close
+  // reopened via the most ordinary possible evasion — quoting the flag.
+  // Verified: blocked once `substGuardedText` (below) is used instead.
+  //
+  // Whitespace masking is UNCHANGED from `guardedText` (still `!bare[i]`,
+  // any quote type protects it, matching real bash word-splitting
+  // suppression under EITHER quote type) — only the `$`/`(`/`)`/backtick
+  // rule differs, keyed off the new `liveSubst[]` tracked during the scan
+  // above (true for a bare character, OR one reached via the generic
+  // in-quote fallback while `quote === '"'` — i.e. unescaped double-quoted
+  // content; false for anything escaped, ANSI-C-decoded, or single-quoted).
+  const substGuardedChars = new Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const isWs = ch === ' ' || ch === '\t' || ch === '\n';
+    const isSubstChar = ch === '$' || ch === '(' || ch === ')' || ch === '`';
+    const masked = (isWs && !bare[i]) || (isSubstChar && !liveSubst[i]);
+    substGuardedChars[i] = masked ? GUARD_SENTINEL : ch;
+  }
+  const substGuardedText = substGuardedChars.join('');
   // `spacedText`: insert one space at every recorded marker position, in a
   // single linear pass (never repeated slicing — same O(n²) trap this file's
   // own chunked-`parts` design exists to avoid, see the comment above). Pure
@@ -933,7 +1256,7 @@ export function normalizeShellText(rawCommand) {
     }
     spacedText = spacedParts.join('');
   }
-  return { text, spacedText, guardedText };
+  return { text, spacedText, guardedText, substGuardedText };
 }
 
 // Every rule's `test()` reads `text` (the canonical parse — quotes stripped,
@@ -965,20 +1288,50 @@ export const RULES = [
     // Short-flag collection uses the same technique as recursive-delete below:
     // the `(?:^|\s)-` anchor keeps long `--force-*` flags and mid-word dashes
     // (`feat-f`) out of the cluster so neither can spoof (or dodge) a short flag.
-    test: (c) => {
+    // #459/#495: every flag-matching regex below reads `cFlags`
+    // (descrambleFlags()'s output for THIS segment), not `c` directly — a
+    // substitution fused mid-word or glued onto a flag's start can no
+    // longer break `--force`/`--mirror`/`+refspec`/the short-flag cluster
+    // apart, or dodge them entirely. `cFlags === c` byte-for-byte whenever
+    // the segment has no substitution syntax at all, so this is a no-op for
+    // every pre-existing pinned case (#429/#437). Only the verb check
+    // deliberately still reads `c` (out of scope: fusing "git"/"push"
+    // themselves is a different bypass class this ticket does not cover).
+    //
+    // `+refspec` fix wave (round-3 full-branch adversarial `forge:security`
+    // finding): an EARLIER version of this rule left `+refspec` reading `c`
+    // deliberately, on the theory that force-push already has three OTHER
+    // hardened spellings and `+refspec` fusion was a separate, out-of-scope
+    // class. That reasoning was wrong: `+refspec` is force-push's OWN 4th
+    // documented spelling (see this rule's own comment above), inside the
+    // exact same "substitution assumed to expand to empty" threat model
+    // every other check here already relies on — `git push origin
+    // $(true)+release-1.0` (or the backtick spelling) fuses to a genuine,
+    // live `+release-1.0` refspec in real bash argv (verified), and NO
+    // rule caught it: not `force-push` (this check, reading unfused `c`),
+    // and not `env-branch-delete` either, since the pushed branch need not
+    // be `main`/`master`/`staging`/`production` for a force-push to matter.
+    // Given force-push is this ticket's own named highest-value target
+    // (zero remaining mitigation on `ALLOWED_COMMAND_PREFIXES`), leaving
+    // one of its four documented spellings unfused was a live gap, not a
+    // defensible scope boundary. Fixed by the same one-line swap already
+    // used for `--force`/`--mirror` above — no new mechanism.
+    test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
-      if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
+      if (ambiguous) return true;
+      if (/\s--force\b(?!-with-lease|-if-includes)/.test(cFlags)) return true;
       // --mirror IS abbreviable (unlike --force above): `git push --mir` really
       // does mirror — verified against live git, it pushed every branch AND tag
       // with no refspec given. Matching only the full spelling left the exact
       // abbreviation class #429 identified as unclosable-by-enumeration wide
       // open in the very rule #429 hardened (#437, adversarial review).
-      if (PUSH_MIRROR.test(c)) return true;
-      if (/(?:^|\s)\+\S/.test(c)) return true;
+      if (PUSH_MIRROR.test(cFlags)) return true;
+      if (/(?:^|\s)\+\S/.test(cFlags)) return true;
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
-      return /f/.test(shortFlagCluster(c, { alnum: true }));
+      return /f/.test(shortFlagCluster(cFlags, { alnum: true }));
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
@@ -998,17 +1351,22 @@ export const RULES = [
     // at each verb's own empirically-measured ambiguity boundary (see the
     // longFlag/abbrev constants above): `git push --de`, `git branch --d`, and
     // `git branch --forc` are all accepted by real git and now all match.
-    test: (c) => {
+    // #459/#495: same `cFlags` swap as force-push above — every flag regex
+    // below reads the descrambled segment, `PROTECTED_BRANCHES` and the `:`
+    // refspec check deliberately still read `c`.
+    test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!PROTECTED_BRANCHES.test(c)) return false;
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
+      if (ambiguous) return true;
       if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
-        if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
-        if (/d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+        if (PUSH_DELETE.test(cFlags) || /:/.test(c)) return true;
+        if (/d/.test(shortFlagCluster(cFlags, { alnum: true }))) return true;
       }
       if (/\bgit branch\b/.test(c)) {
-        const cluster = shortFlagCluster(c, { alnum: true });
+        const cluster = shortFlagCluster(cFlags, { alnum: true });
         if (/D/.test(cluster)) return true; // -D, incl. bundled (-Dq / -qD), IS delete+force
-        const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
-        const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
+        const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(cFlags);
+        const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(cFlags);
         if (hasForce && hasDelete) return true;
       }
       return false;
@@ -1053,7 +1411,19 @@ export const RULES = [
     // the dash and a literal f" case fires immediately on `--f...`, so any
     // prefix of --force matches too, not just the full word). No reordering,
     // bundling, or abbreviation gap found; left unchanged.
-    test: (c) => /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(c),
+    // #459: the mid-word edge defeats this rule's own inline flag regex too
+    // (it does not go through shortFlagCluster(), but has the identical
+    // "contiguous letters only" assumption) — `git clean -$(true)fd` broke
+    // the `f` in `-[a-zA-Z]*f` apart pre-fix. Same `cFlags` swap, verb check
+    // stays on `c`. (The #495 adjacent edge already survived here — this
+    // regex has no `(?:^|\s)` start anchor to dodge in the first place — so
+    // this closes only the one edge that was actually open.)
+    test: (c, cSpaced, cGuarded, cSubstGuarded) => {
+      if (!/\bgit\b[^\n]*\bclean\b/.test(c)) return false;
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
+      if (ambiguous) return true;
+      return /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(cFlags);
+    },
     msg: 'git clean -f deletes untracked files irrecoverably',
   },
   {
@@ -1082,7 +1452,7 @@ export const RULES = [
     // `cGuarded` — that SAME segment's guardedText reading — drives the
     // end-of-options BOUNDARY check only, so a quoted decoy can't fake a
     // real `--` (see `beforeEndOfOptions()`'s own comment).
-    test: (c, cSpaced, cGuarded) => {
+    test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!/\brm\b/.test(c)) return false;
       // Flag detection must stop at a bare `--` (POSIX end-of-options, #454
       // AC.5): every token after it is a filename, never a flag, so it must
@@ -1120,15 +1490,32 @@ export const RULES = [
       // quoting at all.
       const trustworthy = !cGuarded.includes(GUARD_SENTINEL);
       const flagsSegment = trustworthy ? beforeEndOfOptions(c, cGuarded) : c;
+      // #459/#495: `flagsSegment` is a clean PREFIX of `c` (either `c`
+      // itself, or `beforeEndOfOptions()`'s truncation at a genuine, depth-0
+      // top-level `--`), so the same-length, same-index prefix of
+      // `cSubstGuarded` — NOT `cGuarded`, see `substGuardedText`'s own
+      // comment for why the two differ — is its correct quote-type-aware
+      // guarded reading, no re-scanning needed. `descrambleFlags()` deletes
+      // any substitution fused into a flag-shaped word before the
+      // cluster/`--recursive`/`--force` regexes ever see it, closing both
+      // the mid-word (#459) and adjacent (#495) edges — including when the
+      // fused flag is itself wrapped in double quotes, which `cGuarded`
+      // alone cannot see through; an unterminated substitution inside a
+      // flag-candidate word (`ambiguous`) is an automatic block, the same
+      // categorical-safety-net shape as the `trustworthy` gate just above.
+      const flagsSubstGuarded = cSubstGuarded.slice(0, flagsSegment.length);
+      const flagsGuardedLegacy = cGuarded.slice(0, flagsSegment.length);
+      const { text: flagsDescrambled, ambiguous } = descrambleFlags(flagsSegment, flagsSubstGuarded, flagsGuardedLegacy);
+      if (ambiguous) return true;
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
       // helper. Deliberately alpha-only (default) where force-push above
       // passes `alnum: true`: git has numeric short flags (`-4`) that can
       // bundle with `-f`, `rm` has none, so widening here would buy nothing.
-      const shortFlags = shortFlagCluster(flagsSegment);
+      const shortFlags = shortFlagCluster(flagsDescrambled);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
-      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsSegment);
-      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsSegment);
+      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsDescrambled);
+      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsDescrambled);
       if (!recursive || !force) return false;
       // The `rm` slice point is found on a command-token BOUNDARY, not by
       // unanchored substring search (#454 AC.1): `cSpaced.indexOf('rm')` used
@@ -1216,35 +1603,41 @@ export function check(command) {
   // scan with no recursion, so this should be unreachable — but "should be
   // unreachable" is exactly the reasoning that failed twice on this branch,
   // and the guard costs nothing.
-  let text, spacedText, guardedText;
+  let text, spacedText, guardedText, substGuardedText;
   try {
-    ({ text, spacedText, guardedText } = normalizeShellText(command));
+    ({ text, spacedText, guardedText, substGuardedText } = normalizeShellText(command));
   } catch {
     text = command;
     spacedText = command;
     guardedText = command;
+    substGuardedText = command;
   }
   const segs = segments(text);
-  // `segsSpaced`/`segsGuarded` are PROVABLY the same length/order as `segs` —
-  // spacedText is built from text by pure character insertion, and
-  // guardedText by pure character substitution, both at positions that are
-  // never one of the `;|&\n` separators segments() splits on (#452 v2, #454
-  // AC-454.5; see normalizeShellText()'s function-level comment for the full
-  // argument, and the AC-452.5 regression test for empirical pins). The
-  // `?? seg` fallbacks below are therefore defensive only, never load-bearing.
+  // `segsSpaced`/`segsGuarded`/`segsSubstGuarded` are PROVABLY the same
+  // length/order as `segs` — spacedText is built from text by pure character
+  // insertion, and guardedText/substGuardedText by pure character
+  // substitution, both at positions that are never one of the `;|&\n`
+  // separators segments() splits on (#452 v2, #454 AC-454.5, #459; see
+  // normalizeShellText()'s function-level comment for the full argument, and
+  // the AC-452.5 regression test for empirical pins). The `?? seg` fallbacks
+  // below are therefore defensive only, never load-bearing.
   const segsSpaced = segments(spacedText);
   const segsGuarded = segments(guardedText);
+  const segsSubstGuarded = segments(substGuardedText);
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
     // that segments() splits on); all others test each split sub-command. Every
     // rule's test() gets `text`'s segment as its first argument, the
-    // corresponding `spacedText` segment as its second, and the corresponding
-    // `guardedText` segment as its third — only `recursive-delete` reads the
-    // second or third at all (its own target/flag-boundary parsing, see its
-    // own comment).
+    // corresponding `spacedText` segment as its second, the corresponding
+    // `guardedText` segment as its third, and the corresponding
+    // `substGuardedText` segment as its fourth — only `recursive-delete`
+    // reads the second or third at all (its own target/flag-boundary
+    // parsing), and only `force-push`/`env-branch-delete`/`git-clean-force`/
+    // `recursive-delete` read the fourth (`descrambleFlags()`'s own
+    // quote-type-aware input, see that function's comment).
     const hit = rule.scope === 'full'
-      ? rule.test(text, spacedText, guardedText)
-      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg, segsGuarded[i] ?? seg));
+      ? rule.test(text, spacedText, guardedText, substGuardedText)
+      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg, segsGuarded[i] ?? seg, segsSubstGuarded[i] ?? seg));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
