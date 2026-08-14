@@ -155,6 +155,118 @@ describe('crazy-mode readiness routing (#142, AC-1)', () => {
   });
 });
 
+describe('#491: readiness gate honors "Suggested"-qualified headings and dot-separated AC ids', () => {
+  // AC-491.1: the two incidental spellings that defeated isShaped() before the
+  // fix — a qualifier word ("Suggested") ahead of the heading term, and a
+  // dot-separated id (AC.1) rather than dash-separated (AC-1).
+  it('AC-491.1: a qualified heading and dot-separated ids are recognised', () => {
+    expect(isShaped('## Suggested acceptance criteria\n\n- AC.1 do X\n- AC.2 do Y')).toBe(true);
+    expect(isShaped('needs AC.12 to hold')).toBe(true);
+    // dash-separated ids still work (unchanged behavior).
+    expect(isShaped('needs AC-12 to hold')).toBe(true);
+  });
+
+  // AC-491.2: pinned against the real corpus from #491's evidence table. The
+  // five false-negative bodies (verbatim/reconstructed from the ticket table —
+  // #486/#487/#489/#490 have since been hand-edited on the live board to a
+  // plain heading and are no longer live repros, so their table spelling is
+  // reproduced here) must classify shaped; the three true positives stay
+  // shaped; #452 is an explicit regression case.
+  const falseNegatives = {
+    // #438 — real, still-unedited body (ground truth repro named in the ticket).
+    438: [
+      '## Suggested acceptance criteria',
+      '',
+      "- AC.1 Decide the intended scope for the `node` allowlist entry: forge's own script tree only, anything inside the workspace, or anything on disk.",
+      '- AC.2 If narrowed, the guard rejects paths escaping the workspace.',
+    ].join('\n'),
+    // #486/#487/#489/#490 — reconstructed per #491's evidence table: same
+    // "Suggested acceptance criteria" heading + dotted ids convention as #438,
+    // before those four tickets were hand-edited to a plain heading mid-run.
+    486: '## Suggested acceptance criteria\n\n- AC.1 first\n- AC.3 third',
+    487: '## Suggested acceptance criteria\n\n- AC.1 first\n- AC.2 second',
+    489: '## Suggested acceptance criteria\n\n- AC.1 first\n- AC.2 second',
+    490: '## Suggested acceptance criteria\n\n- AC.1 first\n- AC.2 second',
+  };
+  const truePositives = {
+    436: '## Acceptance criteria (spike-shaped, mechanically checkable against the deliverable doc)\n\n- AC.3 ...\n- AC.6 ...',
+    447: "## Acceptance criteria (this ticket's scope)\n\n- **AC.1** ...\n- **AC.2** ...",
+    448: '## Acceptance criteria\n\n- **AC-448.1** ...\n- **AC-448.2** ...',
+  };
+
+  it('AC-491.2: the five false-negative bodies now classify as shaped', () => {
+    for (const [issue, body] of Object.entries(falseNegatives)) {
+      expect(isShaped(body), `#${issue} should be shaped`).toBe(true);
+    }
+  });
+
+  it('AC-491.2: the three true-positive bodies stay shaped', () => {
+    for (const [issue, body] of Object.entries(truePositives)) {
+      expect(isShaped(body), `#${issue} should still be shaped`).toBe(true);
+    }
+  });
+
+  it("AC-491.2: #452 is shaped on its own merits, not the AC-446 coincidence", () => {
+    // #452's real body carries a "Suggested acceptance criteria (original...)"
+    // heading and dotted ids, and separately cites `AC-446.6` from a different
+    // ticket — which is what made the OLD id-only regex pass it by accident.
+    // Strip that citation out: it must still classify shaped, via the heading.
+    const withoutCoincidence = [
+      '## Suggested acceptance criteria (original — see triage verdict below for the sharpened, superseding set)',
+      '',
+      '- AC.1 All four reproductions above are blocked.',
+      '- AC.2 The safe-target cases stay unblocked.',
+    ].join('\n');
+    expect(isShaped(withoutCoincidence)).toBe(true);
+    // and the real body (which does cite AC-446) still passes too.
+    const realBody = [
+      '## Suggested acceptance criteria (original — see triage verdict below for the sharpened, superseding set)',
+      '',
+      '- AC.1 All four reproductions above are blocked.',
+      "- AC.2 The target-path NUL splice closed by #446 (`AC-446.6`) stays blocked.",
+    ].join('\n');
+    expect(isShaped(realBody)).toBe(true);
+  });
+
+  // AC-491.3: no false positives — this is the AC most at risk from an
+  // over-eager widening, so it's tested hard, including near-miss words that
+  // must keep failing after the heading regex grows a qualifier-word allowance.
+  it('AC-491.3: a genuinely unshaped ticket (prose only) stays unshaped', () => {
+    expect(isShaped('Just a one-line idea, no shape, no criteria of any kind.')).toBe(false);
+    expect(isShaped('We should probably fix the flaky test at some point.')).toBe(false);
+    expect(isShaped('')).toBe(false);
+    expect(isShaped(undefined)).toBe(false);
+  });
+
+  it('AC-491.3: near-miss words keep failing even with the qualifier allowance', () => {
+    // the pre-existing guard case: a longer word sharing the "Acceptance" prefix.
+    expect(isShaped('## Acceptances of the plan were noted')).toBe(false);
+    // a qualifier word ahead of a near-miss word — still no real heading term.
+    expect(isShaped('## Draft Acceptances of the plan')).toBe(false);
+    // "AC" as a bare word/acronym elsewhere, not an id (no digits).
+    expect(isShaped('the AC unit in the office is broken')).toBe(false);
+    // an unrelated numbered list is not an AC id.
+    expect(isShaped('See step 1.2 in the runbook for details.')).toBe(false);
+    // a heading that is not about acceptance criteria at all.
+    expect(isShaped('## Suggested next steps\n\n- do X\n- do Y')).toBe(false);
+  });
+
+  // AC-491.5: assert the routing OUTCOME (actionFor/selectNext), not merely
+  // the predicate — a shaped ticket must not be escalate-and-skipped for a
+  // spelling reason under plain (non --shape) autopilot, the default mode.
+  it('AC-491.5: a ticket shaped only via the qualified-heading/dotted-id spelling is never escalate-and-skipped', () => {
+    const body = '## Suggested acceptance criteria\n\n- AC.1 do X\n- AC.2 do Y';
+    const ready = isShaped(body);
+    expect(ready).toBe(true);
+    const ticket = { ...t(438, 'backlog', 'p1'), ready };
+    // default mode (no --shape): must route to triage/deliver, never escalate.
+    expect(selectNext([ticket], { shape: false }).action).not.toBe('escalate');
+    expect(selectNext([ticket], { shape: false }).action).toBe('triage');
+    // crazy mode: must not waste a shape spawn either.
+    expect(selectNext([ticket], { shape: true }).action).not.toBe('shape');
+  });
+});
+
 describe('autopilot merge bar (#127, AC-3) — the trust reversal', () => {
   const allGreen = { ship: true, gates: true, reviewer: true, security: true, ci: true };
 

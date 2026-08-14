@@ -11,7 +11,16 @@
  * `## Tiêu chí chấp nhận`). Matching only the English `## Acceptance` mis-flagged
  * every shaped ticket as UNSHAPED. Recognition is now driven by a heading list:
  * built-in English + Vietnamese defaults, extensible via `readiness.acHeadings`
- * in forge.json (AC2) without a code change. The `AC-\d+` id match is unchanged.
+ * in forge.json (AC2) without a code change.
+ *
+ * #491: two ordinary, widely-used spellings on this board still defeated the
+ * gate — a *qualified* heading (`## Suggested acceptance criteria`: one
+ * qualifier word ahead of the heading term) and a dot-separated AC id
+ * (`AC.1`, not `AC-1`). Both are now recognised: the heading regex tolerates
+ * an optional single qualifier word before the heading term (a longer word
+ * sharing the same prefix, e.g. "Acceptances...", still fails — the boundary
+ * check still applies immediately after the heading term itself), and the id
+ * regex accepts `-` or `.` as the AC/number separator.
  */
 
 /**
@@ -46,11 +55,21 @@ function headingRegex(headings) {
   let re = _regexCache.get(key);
   if (!re) {
     const alt = headings.map(escapeRegExp).join('|');
-    // "#{1,6} <heading>" at (indented) line start; trailing (?![\p{L}\p{N}_]) is a
-    // Unicode-aware word boundary so "Acceptance criteria" matches but a longer
-    // word like "Acceptances" does not — parity with the old ASCII \b, safe for
-    // diacritic-carrying Vietnamese headings.
-    re = new RegExp(`(^|\\n)\\s{0,3}#{1,6}\\s*(?:${alt})(?![\\p{L}\\p{N}_])`, 'iu');
+    // "#{1,6} <heading>" at (indented) line start, tolerating an optional
+    // single qualifier word ahead of the heading term (#491: "## Suggested
+    // acceptance criteria"). The qualifier word must be followed by
+    // whitespace before the heading term is tried, so it can't itself
+    // absorb part of the heading term; trailing (?![\p{L}\p{N}_]) is a
+    // Unicode-aware word boundary so "Acceptance criteria" matches but a
+    // longer word like "Acceptances" does not — parity with the old ASCII
+    // \b, safe for diacritic-carrying Vietnamese headings. That boundary
+    // check is unaffected by the qualifier, so "## Draft Acceptances of the
+    // plan" still fails: no amount of qualifier words turns "Acceptances"
+    // into a match for the heading term "Acceptance".
+    re = new RegExp(
+      `(^|\\n)\\s{0,3}#{1,6}\\s*(?:\\p{L}[\\p{L}\\p{N}'-]*\\s+){0,1}(?:${alt})(?![\\p{L}\\p{N}_])`,
+      'iu'
+    );
     _regexCache.set(key, re);
   }
   return re;
@@ -68,6 +87,6 @@ export function isShaped(body, config = null) {
   const text = (typeof body === 'string' ? body : '').normalize('NFC');
   const headings = [...DEFAULT_AC_HEADINGS, ...configHeadings(config)].map((h) => h.normalize('NFC'));
   if (headingRegex(headings).test(text)) return true; // "## Acceptance" / localized
-  if (/\bAC-?\d+\b/.test(text)) return true;           // AC-1 / AC12 references
+  if (/\bAC[-.]?\d+\b/.test(text)) return true;        // AC-1 / AC12 / AC.1 references
   return false;
 }
