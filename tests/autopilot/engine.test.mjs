@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
-import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH } from '../../plugin/scripts/autopilot/ledger.mjs';
+import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR, sanitizePositiveInt, sanitizeIterations } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
@@ -743,32 +743,45 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     expect(run.filed).toHaveLength(1);
   });
 
-  it('loop backstop trips at board size × 2', () => {
+  // #488: the factor is now an explicit 3rd arg in these formula-shape tests (was the
+  // default) so the general board-size×factor arithmetic stays pinned regardless of what
+  // DEFAULT_RUNAWAY_FACTOR is calibrated to; the default itself is pinned separately below.
+  it('loop backstop trips at board size × factor', () => {
     const run = { ...freshRun(), iterations: 8 };
-    expect(guardTripped(run, 4)).toBe(true);   // 8 >= 4*2
-    expect(guardTripped({ ...freshRun(), iterations: 7 }, 4)).toBe(false);
+    expect(guardTripped(run, 4, 2)).toBe(true);   // 8 >= 4*2
+    expect(guardTripped({ ...freshRun(), iterations: 7 }, 4, 2)).toBe(false);
   });
 
   // #317: the backstop had no runtime caller — nextIteration is that caller. It is the
   // per-iteration guard the loop MUST call first each iteration; it delegates to
   // guardTripped and turns a trip into a halt+escalate decision (not silent continue).
   it('AC-317.1: nextIteration invokes the backstop and returns continue under the cap', () => {
-    const dec = nextIteration({ ...freshRun(), iterations: 3 }, 4); // cap = 4×2 = 8
+    const dec = nextIteration({ ...freshRun(), iterations: 3 }, 4, 2); // cap = 4×2 = 8
     expect(dec.stop).toBe(false);
     expect(dec.escalate).toBe(false);
     expect(dec.cap).toBe(8);
     expect(dec.iterations).toBe(3);
     expect(dec.reason).toBeNull();
     // it delegates to guardTripped — same verdict, under and at the cap boundary.
-    expect(dec.stop).toBe(guardTripped({ ...freshRun(), iterations: 3 }, 4));
-    expect(nextIteration({ ...freshRun(), iterations: 7 }, 4).stop).toBe(false); // 7 < 8
+    expect(dec.stop).toBe(guardTripped({ ...freshRun(), iterations: 3 }, 4, 2));
+    expect(nextIteration({ ...freshRun(), iterations: 7 }, 4, 2).stop).toBe(false); // 7 < 8
     // honours a custom factor and the boardSize floor (max(1,·)).
     expect(nextIteration({ ...freshRun(), iterations: 3 }, 1, 3).stop).toBe(true); // 3 >= 1×3
-    expect(nextIteration({ ...freshRun(), iterations: 1 }, 0).cap).toBe(2);        // floor: max(1,0)×2
+    expect(nextIteration({ ...freshRun(), iterations: 1 }, 0, 2).cap).toBe(2);        // floor: max(1,0)×2
+  });
+
+  // #488 AC.1: omitting factor now uses DEFAULT_RUNAWAY_FACTOR (4), not the old default of
+  // 2 — the old default was calibrated for pre-#468 economics (~1 iteration/ticket) and,
+  // post-#468 (2-3 iterations/ticket), sat AT the real cost instead of above it.
+  it('AC-488.1: nextIteration defaults to DEFAULT_RUNAWAY_FACTOR when no factor is given', () => {
+    expect(DEFAULT_RUNAWAY_FACTOR).toBeGreaterThan(3); // strictly above the worst known per-ticket cost
+    expect(nextIteration({ ...freshRun(), iterations: 1 }, 0).cap).toBe(DEFAULT_RUNAWAY_FACTOR); // floor: max(1,0)×factor
+    expect(guardTripped({ ...freshRun(), iterations: 4 * DEFAULT_RUNAWAY_FACTOR - 1 }, 4)).toBe(false);
+    expect(guardTripped({ ...freshRun(), iterations: 4 * DEFAULT_RUNAWAY_FACTOR }, 4)).toBe(true);
   });
 
   it('AC-317.2: a runaway loop is HALTED by the per-iteration guard at board size × factor', () => {
-    const boardSize = 3; // cap = 3×2 = 6
+    const boardSize = 3; // cap = 3×2 = 6 (factor pinned explicitly — see #488 note above)
     let run = freshRun('2026-07-26T00:00:00Z');
     let iterationsRun = 0;
     let halted = null;
@@ -776,7 +789,7 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     // that never converges — file a ticket and record an outcome every iteration, forever.
     // Without the wired guard this loops until the 1000 safety cap; with it, it halts at 6.
     for (let i = 0; i < 1000; i++) {
-      const dec = nextIteration(run, boardSize);
+      const dec = nextIteration(run, boardSize, 2);
       if (dec.stop) { halted = dec; break; }
       iterationsRun++;
       run = applyFiled(run, { issue: 500 + i, kind: 'bug', from: 1 });
@@ -788,6 +801,196 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     expect(halted.reason).toMatch(/cap of 6/);
     expect(iterationsRun).toBe(6);              // exactly board size × 2 iterations ran, then halt
     expect(run.iterations).toBe(6);
+  });
+
+  // #488 AC.2/AC.3/AC.4/AC.5 — the runaway backstop recalibration.
+  describe('#488: the runaway backstop accounts for the #468 per-ticket iteration cost', () => {
+    it('AC-488.2: a healthy full-board clear at the real #468 per-ticket cost does not trip', () => {
+      // The exact reported false positive: an 18-ticket board, 2 iterations/ticket
+      // (triage→record, deliver→record) — a PERFECT clear used to land exactly on the cap.
+      const boardSize = 18;
+      const run = { ...freshRun('2026-08-11T18:44:15.973Z'), boardSizeAtStart: boardSize, iterations: boardSize * 2 };
+      const dec = nextIteration(run, boardSize);
+      expect(dec.stop).toBe(false);
+      // even the worst-case #468 cost (3, an unshaped ticket under --shape) must clear too.
+      const shapeRun = { ...freshRun(), boardSizeAtStart: boardSize, iterations: boardSize * 3 };
+      expect(nextIteration(shapeRun, boardSize).stop).toBe(false);
+    });
+
+    it('AC-488.3a: a run that files a new ticket every iteration without closing any is still halted', () => {
+      const boardSize = 3;
+      let run = { ...freshRun('2026-08-14T00:00:00Z'), boardSizeAtStart: boardSize };
+      let halted = null;
+      for (let i = 0; i < 1000; i++) {
+        const dec = nextIteration(run, boardSize);
+        if (dec.stop) { halted = dec; break; }
+        run = applyFiled(run, { issue: 900 + i, kind: 'bug', from: 1 });
+        run = { ...run, iterations: run.iterations + 1 }; // an iteration spent, nothing ever resolved
+      }
+      expect(halted).not.toBeNull();
+      expect(halted.escalate).toBe(true);
+      expect(halted.reason).toMatch(/no progress is being made/);
+    });
+
+    it("AC-488.3b: #487's re-selection loop (same ticket reselected, no board-state change) is still halted", () => {
+      const boardSize = 5;
+      let run = { ...freshRun('2026-08-14T00:00:00Z'), boardSizeAtStart: boardSize };
+      let halted = null;
+      for (let i = 0; i < 1000; i++) {
+        const dec = nextIteration(run, boardSize);
+        if (dec.stop) { halted = dec; break; }
+        // the SAME issue re-recorded every iteration — last-write-wins means run.outcomes
+        // never grows past length 1, no matter how many iterations run (#487's shape).
+        run = applyOutcome(run, { issue: 487, outcome: 'escalated', stage: 'deliver' });
+      }
+      expect(halted).not.toBeNull();
+      expect(halted.escalate).toBe(true);
+      expect(halted.reason).toMatch(/no progress is being made/);
+    });
+
+    it('AC-488.4: the cap does not shrink as the live board count falls once anchored at run start', () => {
+      // 34 iterations in, only 2 tickets remain live — the pre-#488 bug would recompute the
+      // cap off the live count (2×factor) and trip; the anchor keeps it at the run-start size.
+      const run = { ...freshRun('2026-08-11T18:44:15.973Z'), boardSizeAtStart: 18, iterations: 34 };
+      const dec = nextIteration(run, 2); // caller still passes the live (shrunk) board size
+      expect(dec.cap).toBe(18 * DEFAULT_RUNAWAY_FACTOR); // anchor wins over the live boardSize argument
+      expect(dec.stop).toBe(false);
+    });
+
+    it('AC-488.5: reason text distinguishes no-progress from long-but-healthy at trip time', () => {
+      // no-progress shape: 20 iterations, only 1 distinct issue ever resolved (#487's shape).
+      const noProgressRun = {
+        ...freshRun(), boardSizeAtStart: 5, iterations: 20,
+        outcomes: [{ issue: 487, outcome: 'escalated', ref: null, stage: 'deliver', at: '2026-08-14T00:00:00Z' }],
+      };
+      const noProgressDec = nextIteration(noProgressRun, 5);
+      expect(noProgressDec.stop).toBe(true);
+      expect(noProgressDec.reason).toMatch(/no progress is being made/);
+      expect(noProgressDec.reason).not.toMatch(/simply been long/);
+
+      // long-but-healthy shape: most of the board resolved by trip time, still hit the cap.
+      const outcomes = Array.from({ length: 16 }, (_, i) => (
+        { issue: 2000 + i, outcome: 'merged', ref: `PR#${i}`, stage: 'deliver', at: '2026-08-14T00:00:00Z' }
+      ));
+      const longRun = { ...freshRun(), boardSizeAtStart: 5, iterations: 20, outcomes };
+      const longDec = nextIteration(longRun, 5);
+      expect(longDec.stop).toBe(true);
+      expect(longDec.reason).toMatch(/simply been long/);
+      expect(longDec.reason).not.toMatch(/no progress is being made/);
+    });
+
+    it('AC-488.4b: startRun persists boardSizeAtStart once and never recomputes it on resume', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      const started = await startRun(cwd, { boardSize: 18 });
+      expect(started.boardSizeAtStart).toBe(18);
+      await recordOutcome(cwd, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+      // board shrinks live — resume must NOT recompute the anchor down to the new size.
+      const resumed = await startRun(cwd, { boardSize: 5 });
+      expect(resumed.boardSizeAtStart).toBe(18);
+    });
+
+    it('AC-488.4c: an existing (pre-#488) ledger with no boardSizeAtStart field resumes and backfills gracefully', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      // simulate a real pre-#488 ledger on disk (mirrors the repo's own live run.json shape).
+      await writeJson(join(cwd, RUN_RELPATH), {
+        version: 1, startedAt: '2026-08-11T18:44:15.973Z', iterations: 36, outcomes: [], filed: [],
+        mergeMode: 'auto-merge', mergeReason: null,
+      });
+      const resumed = await startRun(cwd, { boardSize: 12 });
+      expect(resumed.boardSizeAtStart).toBe(12); // backfilled from the live size at first post-#488 resume
+      expect(resumed.iterations).toBe(36); // existing progress untouched
+      const resumedAgain = await startRun(cwd, { boardSize: 2 }); // a later resume must not re-anchor
+      expect(resumedAgain.boardSizeAtStart).toBe(12);
+    });
+
+    it('AC-488.4d: an un-upgraded startRun call (no boardSize opt) leaves the anchor unset — nextIteration falls back to the live boardSize argument', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      const started = await startRun(cwd);
+      expect(started.boardSizeAtStart).toBeNull();
+      expect(nextIteration(started, 4).cap).toBe(4 * DEFAULT_RUNAWAY_FACTOR);
+    });
+
+    // Adversarial security review finding (critical, fix-wave): run.json is disk state —
+    // a corrupted/hand-edited boardSizeAtStart or iterations must never silently DISABLE
+    // the backstop by making the cap comparison NaN/Infinity-always-false. Fail CLOSED
+    // (trip early) on corrupt numeric state, never fail OPEN (never trip).
+    describe('#488 security fix-wave: disk-sourced numeric state cannot silently disable the guard', () => {
+      it('sanitizePositiveInt rejects Infinity, NaN, negatives, zero, and non-numbers — only a finite positive number (or its floor) passes', () => {
+        expect(sanitizePositiveInt(18)).toBe(18);
+        expect(sanitizePositiveInt(2.9)).toBe(2); // floored
+        expect(sanitizePositiveInt(Infinity)).toBeNull();
+        expect(sanitizePositiveInt(-Infinity)).toBeNull();
+        expect(sanitizePositiveInt(NaN)).toBeNull();
+        expect(sanitizePositiveInt(0)).toBeNull();
+        expect(sanitizePositiveInt(-5)).toBeNull();
+        expect(sanitizePositiveInt('18')).toBeNull(); // wrong type, not coerced
+        expect(sanitizePositiveInt(undefined)).toBeNull();
+        expect(sanitizePositiveInt(null)).toBeNull();
+        expect(sanitizePositiveInt(undefined, 1)).toBe(1); // fallback honoured
+      });
+
+      // 2nd security pass (fix-wave re-review): a value in the open interval (0, 1) is
+      // finite and > 0 but floors to 0 — checking `value > 0` before flooring let a
+      // corrupted 0.5 silently pass as "0", contradicting "never a garbage value".
+      it('AC-488.SEC6: sanitizePositiveInt rejects a sub-1 fraction that would floor to 0, returning the fallback instead', () => {
+        expect(sanitizePositiveInt(0.5)).toBeNull();
+        expect(sanitizePositiveInt(0.999)).toBeNull();
+        expect(sanitizePositiveInt(0.5, 1)).toBe(1); // fallback honoured, never silently 0
+        // never leaks a 0 anchor into the guard: a run with a decimal-corrupted anchor
+        // must not spuriously trip on the very first iteration.
+        const run = { ...freshRun(), boardSizeAtStart: 0.5, iterations: 0 };
+        expect(nextIteration(run, 5).cap).toBe(5 * DEFAULT_RUNAWAY_FACTOR); // falls back to the live boardSize, not 0
+      });
+
+      it('sanitizeIterations fails CLOSED (Infinity, i.e. "trip now") on a corrupted run.iterations, never open', () => {
+        expect(sanitizeIterations({ iterations: 12 })).toBe(12);
+        expect(sanitizeIterations({ iterations: Infinity })).toBe(Infinity);
+        expect(sanitizeIterations({ iterations: NaN })).toBe(Infinity);
+        expect(sanitizeIterations({ iterations: -1 })).toBe(Infinity);
+        expect(sanitizeIterations({ iterations: '36' })).toBe(Infinity); // wrong type
+        expect(sanitizeIterations({})).toBe(Infinity);
+      });
+
+      it('AC-488.SEC1: a boardSizeAtStart corrupted to Infinity (valid JSON: 1e999) does NOT permanently disable the backstop', () => {
+        // The exact critical finding: JSON.parse('1e999') === Infinity, and the old
+        // Math.max(1, x) floor did not neutralize it — cap became Infinity, so the guard
+        // could never trip again for the rest of the run.
+        const run = { ...freshRun(), boardSizeAtStart: JSON.parse('1e999'), iterations: 1_000_000 };
+        expect(run.boardSizeAtStart).toBe(Infinity);
+        const dec = nextIteration(run, 5); // live boardSize also supplied, must not be trusted as the rescue path either — it IS used as fallback, but the corrupted anchor must not win by being "present"
+        expect(Number.isFinite(dec.cap)).toBe(true); // never Infinity/NaN
+        expect(dec.stop).toBe(true); // a million iterations against a sane fallback cap trips
+      });
+
+      it('AC-488.SEC2: a non-numeric boardSizeAtStart (coerces to NaN) does NOT permanently disable the backstop', () => {
+        const run = { ...freshRun(), boardSizeAtStart: 'not-a-number', iterations: 1_000_000 };
+        const dec = nextIteration(run, 5);
+        expect(Number.isFinite(dec.cap)).toBe(true);
+        expect(dec.stop).toBe(true);
+      });
+
+      it('AC-488.SEC3: a corrupted run.iterations (Infinity/NaN) trips the guard immediately (fail closed), never silently continues', () => {
+        const infRun = { ...freshRun(), boardSizeAtStart: 18, iterations: Infinity };
+        expect(nextIteration(infRun, 18).stop).toBe(true);
+        const nanRun = { ...freshRun(), boardSizeAtStart: 18, iterations: NaN };
+        expect(nextIteration(nanRun, 18).stop).toBe(true);
+      });
+
+      it('AC-488.SEC4: startRun never persists a corrupted boardSize opt as the anchor', async () => {
+        const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+        const started = await startRun(cwd, { boardSize: Infinity });
+        expect(started.boardSizeAtStart).toBeNull(); // rejected at write time, not stored as garbage
+        const startedNaN = await startRun(cwd, { boardSize: NaN });
+        expect(startedNaN.boardSizeAtStart).toBeNull(); // still null — a bad value never sneaks in via a later call either
+      });
+
+      it('AC-488.SEC5: even a genuinely-both-corrupted anchor AND live boardSize falls back to the safe minimal cap (1×factor), not Infinity/NaN', () => {
+        const run = { ...freshRun(), boardSizeAtStart: NaN, iterations: 100 };
+        const dec = nextIteration(run, Infinity); // both inputs garbage
+        expect(dec.cap).toBe(1 * DEFAULT_RUNAWAY_FACTOR); // the smallest, most conservative anchor — never Infinity/NaN
+        expect(dec.stop).toBe(true); // 100 iterations comfortably exceeds the minimal fallback cap
+      });
+    });
   });
 
   it('AC-414.4: renderReport is silent about the outbox by default (no behavior change)', () => {

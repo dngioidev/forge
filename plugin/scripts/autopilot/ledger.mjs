@@ -28,7 +28,12 @@ export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human', 'ready', 'stalled-before-pr'];
 
 export function freshRun(startedAt = null) {
-  return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null };
+  return {
+    version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null,
+    // #488 AC.4: the board size the run started at (or was first observed at, for a ledger
+    // upgraded mid-run). null until `startRun` is given a `boardSize` opt — see § startRun.
+    boardSizeAtStart: null,
+  };
 }
 
 /**
@@ -79,12 +84,107 @@ export function applyFiled(run, { issue, kind, from }) {
   return { ...run, filed: [...run.filed, { issue, kind, from }] };
 }
 
+// #488: PR #468's no-fused-routes rule made every `select.mjs` action its own spawn with
+// its own recorded outcome, so a ticket that needs triage now costs 2 iterations
+// (triage→record, deliver→record) and an unshaped ticket under `--shape` costs up to 3
+// (shape→record, then triage/deliver→record). The old default of 2 was calibrated for the
+// pre-#468 economics (~1 iteration/ticket) and, post-#468, sits AT the real cost rather than
+// above it — a perfect full clear lands exactly on the cap (the bug this ticket fixes).
+// DEFAULT_RUNAWAY_FACTOR is raised strictly above the worst known per-ticket cost (3) so a
+// healthy clear — even an all-unshaped `--shape` board — never lands exactly on the cap,
+// while a run resolving fewer than one ticket per 4 iterations is unambiguously not
+// converging at any known-healthy pace.
+export const DEFAULT_RUNAWAY_FACTOR = 4;
+
+// #488 AC.5: healthy pace resolves roughly one ticket every PER_TICKET_COST_CEILING
+// iterations (the worst known per-ticket cost, #468). HEALTHY_RATIO_FLOOR is half that
+// rate — a generous floor below which iterations are being spent without closing tickets,
+// which is what #317's backstop exists to catch (diagnostic only; does not affect the trip).
+const PER_TICKET_COST_CEILING = 3;
+const HEALTHY_RATIO_FLOOR = 1 / (PER_TICKET_COST_CEILING * 2);
+
+/**
+ * #488 security fix-wave: `run.json` is disk state, in principle writable by a prior
+ * compromised process, a crashed half-write, or a hand-edit — the same threat model the
+ * rest of this file already treats `run.iterations`/outcomes as subject to (see
+ * `readRun`'s corrupt-file handling above). A disk-sourced numeric field must never be
+ * trusted verbatim: `Math.max(1, x)` does NOT neutralize `NaN` (comparisons against NaN
+ * are always false) or `Infinity` (valid, parseable JSON — e.g. `1e999` — and `x >= Infinity`
+ * is false for any finite x), either of which would make the cap `Infinity`/`NaN` and
+ * PERMANENTLY DISABLE the runaway backstop — the exact unbounded-autopilot-with-auto-merge
+ * failure mode this guard exists to prevent. Returns `fallback` (default `null`) for
+ * anything that isn't a finite positive number, never a garbage value.
+ */
+export function sanitizePositiveInt(value, fallback = null) {
+  // #488 2nd security pass: check the FLOORED value against > 0, not the raw value — a
+  // corrupted input in the open interval (0, 1) (e.g. `boardSizeAtStart: 0.5`) is finite
+  // and > 0, but floors to 0, which is not "a finite positive number" per this function's
+  // own contract. Flooring first (then re-checking) closes that gap instead of silently
+  // returning 0 as if it were a validated anchor.
+  if (!Number.isFinite(value)) return fallback;
+  const floored = Math.floor(value);
+  return floored > 0 ? floored : fallback;
+}
+
+/**
+ * #488 AC.4 + security fix-wave: the cap must not shrink as the board shrinks — it anchors
+ * to the board size recorded at run start (`run.boardSizeAtStart`, set once by `startRun`)
+ * rather than the live count a caller passes each iteration. Falls back to the live
+ * `boardSize` argument when the run predates #488 (an older ledger with no
+ * `boardSizeAtStart` field), was never given one, or — critically — the stored anchor is
+ * corrupted (non-finite/non-positive): reading around a bad on-disk value this way means a
+ * corrupted anchor can never silently disable the guard, even though (per AC.4) it is never
+ * rewritten on disk once set. Always returns a finite positive integer; falls all the way
+ * back to `1` (the smallest possible, most conservative anchor) if BOTH the stored anchor
+ * and the live argument are garbage or absent.
+ */
+function resolveAnchorBoardSize(run, boardSize) {
+  return sanitizePositiveInt(run?.boardSizeAtStart) ?? sanitizePositiveInt(boardSize, 1);
+}
+
+/**
+ * #488 security fix-wave: `run.iterations` is the same disk-sourced trust boundary as the
+ * anchor above. A corrupted value (non-finite, negative, wrong type) must FAIL CLOSED — read
+ * as "trip the guard now" (`Infinity`), not "never trip" — because the latter is the harm
+ * this backstop exists to prevent; a false-positive halt+escalate on genuinely corrupt state
+ * is the safe direction to err in, an unbounded auto-merge-authorized loop is not.
+ */
+export function sanitizeIterations(run) {
+  return Number.isFinite(run?.iterations) && run.iterations >= 0 ? run.iterations : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * #488 AC.5: at trip time, distinguish "no progress is being made" from "this run has
+ * simply been long" using state `run.outcomes` already carries — no new tracking. Counts
+ * distinct issues with a recorded outcome (already deduplicated per-issue, last-write-wins,
+ * by `applyOutcome`); `stalled-before-pr` is excluded because it is a stall awaiting
+ * resume/respawn, not resolved progress (see the OUTCOMES comment above) — a run stuck
+ * respawning the same ticket must not read as "long but healthy".
+ */
+function progressRatio(run) {
+  const resolvedIssues = new Set(
+    (run.outcomes ?? []).filter((o) => o.outcome !== 'stalled-before-pr').map((o) => o.issue),
+  ).size;
+  const iterations = sanitizeIterations(run);
+  return { resolvedIssues, ratio: iterations > 0 ? resolvedIssues / iterations : 0 };
+}
+
 /**
  * Loop backstop (spec §8): a pathological file-a-ticket-per-iteration run must
- * not loop forever. Once iterations exceed board size × factor, stop and escalate.
+ * not loop forever. Once iterations exceed the anchored board size × factor, stop and
+ * escalate. `boardSize` is the live count the caller passes; `resolveAnchorBoardSize`
+ * prefers `run.boardSizeAtStart` when present (#488 AC.4) and both it and
+ * `sanitizeIterations` fail closed against corrupted disk state (#488 security fix-wave).
  */
-export function guardTripped(run, boardSize, factor = 2) {
-  return run.iterations >= Math.max(1, boardSize) * factor;
+/** Shared cap computation — the single place `guardTripped`/`nextIteration` derive the
+ * anchored, sanitized cap from, so the two never risk computing it differently (#488
+ * reviewer note). */
+function capFor(run, boardSize, factor) {
+  return resolveAnchorBoardSize(run, boardSize) * factor;
+}
+
+export function guardTripped(run, boardSize, factor = DEFAULT_RUNAWAY_FACTOR) {
+  return sanitizeIterations(run) >= capFor(run, boardSize, factor);
 }
 
 /**
@@ -97,18 +197,29 @@ export function guardTripped(run, boardSize, factor = 2) {
  * When it trips, the loop is runaway and must HALT + ESCALATE rather than loop forever;
  * otherwise the loop continues. It never mutates the run — the iteration counter it reads
  * is owned by `applyOutcome`, so the natural stop (board clear) and `--limit` are intact.
+ *
+ * #488: the cap anchors to `run.boardSizeAtStart` when set (AC.4) and the `reason` text
+ * distinguishes a no-progress runaway from a merely-long healthy run (AC.5) via
+ * `progressRatio` — diagnostic only, it never changes whether the guard trips.
  */
-export function nextIteration(run, boardSize, factor = 2) {
-  const cap = Math.max(1, boardSize) * factor;
-  const stop = guardTripped(run, boardSize, factor);
+export function nextIteration(run, boardSize, factor = DEFAULT_RUNAWAY_FACTOR) {
+  const cap = capFor(run, boardSize, factor);
+  const stop = sanitizeIterations(run) >= cap;
+  const anchor = resolveAnchorBoardSize(run, boardSize); // for the reason text only — same value capFor used
+  const { resolvedIssues, ratio } = progressRatio(run);
+  const healthyButLong = ratio >= HEALTHY_RATIO_FLOOR;
   return {
     stop,
     escalate: stop, // the only reason this guard stops is the runaway backstop → escalate
-    iterations: run.iterations,
+    iterations: run.iterations, // raw, for human/report visibility — even if corrupted, never silently reshaped
     cap,
     reason: stop
       ? `runaway backstop tripped: ${run.iterations} iteration(s) reached the cap of ${cap} ` +
-        `(board size ${Math.max(1, boardSize)} × ${factor}) — halting the loop and escalating`
+        `(board size ${anchor} × ${factor}, anchored at run start) — ` +
+        (healthyButLong
+          ? `${resolvedIssues} issue(s) resolved in that span — this run has simply been long, not stalled — `
+          : `only ${resolvedIssues} issue(s) resolved in that span — no progress is being made — `) +
+        `halting the loop and escalating`
       : null,
   };
 }
@@ -155,19 +266,37 @@ export async function recordFiled(cwd, entry) {
  * NOT file-backed — a resumed/restarted session is a new session and must re-obtain
  * a live grant — so on resume we keep the original start time but REFRESH the mode
  * from the freshly re-run preflight (absent an `authorized` opt, resume is untouched).
+ *
+ * #488 AC.4: when `opts` carries a `boardSize`, it is persisted as `boardSizeAtStart`
+ * — but ONLY ONCE. A fresh run sets it; a resume BACKFILLS it if absent (an existing
+ * ledger written before this fix) but NEVER recomputes an anchor that's already set —
+ * the whole point is that the cap must not shrink as the live board shrinks. Omitting
+ * `boardSize` (an un-upgraded call site) leaves the anchor unset, same as before this
+ * ticket — `nextIteration`/`guardTripped` fall back to the live boardSize argument.
+ *
+ * #488 security fix-wave: `opts.boardSize` is sanitized (`sanitizePositiveInt`) before
+ * it's ever written to disk — a non-finite/non-positive value (e.g. a buggy upstream
+ * board-count computation) is never persisted as a corrupted anchor in the first place.
+ * `nextIteration`/`guardTripped` additionally sanitize on every READ, so even a
+ * `boardSizeAtStart` that predates this write-time guard (or was hand-edited) can never
+ * silently disable the backstop — see `resolveAnchorBoardSize`/`sanitizeIterations`.
  */
 export async function startRun(cwd, opts = {}) {
   const hasAuth = Object.prototype.hasOwnProperty.call(opts, 'authorized');
+  const sanitizedBoardSize = sanitizePositiveInt(opts.boardSize); // null if absent or garbage — never persisted either way
   const preflight = hasAuth ? mergeAuthPreflight(opts) : null;
   const decision = preflight ? { mergeMode: preflight.mode, mergeReason: preflight.reason } : {};
   const existing = await readRun(cwd);
   if (existing?.startedAt) {
-    if (!preflight) return existing; // resume — keep the original start, no new decision
-    const run = { ...existing, ...decision }; // resume — re-run the (non-file-backed) preflight
+    const needsAnchor = existing.boardSizeAtStart == null && sanitizedBoardSize != null;
+    const anchor = needsAnchor ? { boardSizeAtStart: sanitizedBoardSize } : {};
+    if (!preflight && !needsAnchor) return existing; // pure resume — no new decision, nothing to backfill
+    const run = { ...existing, ...decision, ...anchor }; // resume — re-run preflight and/or backfill the anchor
     await writeJson(join(cwd, RUN_RELPATH), run);
     return run;
   }
-  const run = { ...freshRun(new Date().toISOString()), ...decision };
+  const anchor = sanitizedBoardSize != null ? { boardSizeAtStart: sanitizedBoardSize } : {};
+  const run = { ...freshRun(new Date().toISOString()), ...decision, ...anchor };
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
 }

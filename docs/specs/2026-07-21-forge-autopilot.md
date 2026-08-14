@@ -98,7 +98,7 @@ Filed tickets enter the queue and are picked up in a later iteration by §5 — 
 - **`--limit N`:** stop after N merges.
 - **Kill switch:** honours the per-repo **situation gate** (`gates/situationgate.mjs`) — while the repo is in an **open incident** or **security-response** (security hold) situation the gate pauses shipping, so autopilot spawns no new delivery until it clears. Clearing the situation is always a human action (close the incident / lift the security hold), never automated.
 - **Interrupt:** Ctrl-C between tickets is clean (the run ledger is the resume point); mid-ticket, deliver's own resume protocol recovers.
-- **Loop backstop:** a max-iterations guard (default = board size × 2) prevents a pathological file-a-ticket-per-iteration runaway; hitting it escalates rather than looping forever.
+- **Loop backstop:** a max-iterations guard (default = board size, anchored at run start, × 4 — #488) prevents a pathological file-a-ticket-per-iteration runaway; hitting it escalates rather than looping forever. The escalation reason distinguishes "no progress is being made" from "this run has simply been long" (#488 AC.5) so a healthy long clear is never misreported as a runaway.
 
 ## 9. Future: parallel (deferred, designed-for)
 
