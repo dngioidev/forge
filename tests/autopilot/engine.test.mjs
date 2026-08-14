@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
-import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR } from '../../plugin/scripts/autopilot/ledger.mjs';
+import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR, sanitizePositiveInt, sanitizeIterations } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
@@ -908,6 +908,75 @@ describe('autopilot run ledger (#129, AC-6)', () => {
       const started = await startRun(cwd);
       expect(started.boardSizeAtStart).toBeNull();
       expect(nextIteration(started, 4).cap).toBe(4 * DEFAULT_RUNAWAY_FACTOR);
+    });
+
+    // Adversarial security review finding (critical, fix-wave): run.json is disk state —
+    // a corrupted/hand-edited boardSizeAtStart or iterations must never silently DISABLE
+    // the backstop by making the cap comparison NaN/Infinity-always-false. Fail CLOSED
+    // (trip early) on corrupt numeric state, never fail OPEN (never trip).
+    describe('#488 security fix-wave: disk-sourced numeric state cannot silently disable the guard', () => {
+      it('sanitizePositiveInt rejects Infinity, NaN, negatives, zero, and non-numbers — only a finite positive number (or its floor) passes', () => {
+        expect(sanitizePositiveInt(18)).toBe(18);
+        expect(sanitizePositiveInt(2.9)).toBe(2); // floored
+        expect(sanitizePositiveInt(Infinity)).toBeNull();
+        expect(sanitizePositiveInt(-Infinity)).toBeNull();
+        expect(sanitizePositiveInt(NaN)).toBeNull();
+        expect(sanitizePositiveInt(0)).toBeNull();
+        expect(sanitizePositiveInt(-5)).toBeNull();
+        expect(sanitizePositiveInt('18')).toBeNull(); // wrong type, not coerced
+        expect(sanitizePositiveInt(undefined)).toBeNull();
+        expect(sanitizePositiveInt(null)).toBeNull();
+        expect(sanitizePositiveInt(undefined, 1)).toBe(1); // fallback honoured
+      });
+
+      it('sanitizeIterations fails CLOSED (Infinity, i.e. "trip now") on a corrupted run.iterations, never open', () => {
+        expect(sanitizeIterations({ iterations: 12 })).toBe(12);
+        expect(sanitizeIterations({ iterations: Infinity })).toBe(Infinity);
+        expect(sanitizeIterations({ iterations: NaN })).toBe(Infinity);
+        expect(sanitizeIterations({ iterations: -1 })).toBe(Infinity);
+        expect(sanitizeIterations({ iterations: '36' })).toBe(Infinity); // wrong type
+        expect(sanitizeIterations({})).toBe(Infinity);
+      });
+
+      it('AC-488.SEC1: a boardSizeAtStart corrupted to Infinity (valid JSON: 1e999) does NOT permanently disable the backstop', () => {
+        // The exact critical finding: JSON.parse('1e999') === Infinity, and the old
+        // Math.max(1, x) floor did not neutralize it — cap became Infinity, so the guard
+        // could never trip again for the rest of the run.
+        const run = { ...freshRun(), boardSizeAtStart: JSON.parse('1e999'), iterations: 1_000_000 };
+        expect(run.boardSizeAtStart).toBe(Infinity);
+        const dec = nextIteration(run, 5); // live boardSize also supplied, must not be trusted as the rescue path either — it IS used as fallback, but the corrupted anchor must not win by being "present"
+        expect(Number.isFinite(dec.cap)).toBe(true); // never Infinity/NaN
+        expect(dec.stop).toBe(true); // a million iterations against a sane fallback cap trips
+      });
+
+      it('AC-488.SEC2: a non-numeric boardSizeAtStart (coerces to NaN) does NOT permanently disable the backstop', () => {
+        const run = { ...freshRun(), boardSizeAtStart: 'not-a-number', iterations: 1_000_000 };
+        const dec = nextIteration(run, 5);
+        expect(Number.isFinite(dec.cap)).toBe(true);
+        expect(dec.stop).toBe(true);
+      });
+
+      it('AC-488.SEC3: a corrupted run.iterations (Infinity/NaN) trips the guard immediately (fail closed), never silently continues', () => {
+        const infRun = { ...freshRun(), boardSizeAtStart: 18, iterations: Infinity };
+        expect(nextIteration(infRun, 18).stop).toBe(true);
+        const nanRun = { ...freshRun(), boardSizeAtStart: 18, iterations: NaN };
+        expect(nextIteration(nanRun, 18).stop).toBe(true);
+      });
+
+      it('AC-488.SEC4: startRun never persists a corrupted boardSize opt as the anchor', async () => {
+        const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+        const started = await startRun(cwd, { boardSize: Infinity });
+        expect(started.boardSizeAtStart).toBeNull(); // rejected at write time, not stored as garbage
+        const startedNaN = await startRun(cwd, { boardSize: NaN });
+        expect(startedNaN.boardSizeAtStart).toBeNull(); // still null — a bad value never sneaks in via a later call either
+      });
+
+      it('AC-488.SEC5: even a genuinely-both-corrupted anchor AND live boardSize falls back to the safe minimal cap (1×factor), not Infinity/NaN', () => {
+        const run = { ...freshRun(), boardSizeAtStart: NaN, iterations: 100 };
+        const dec = nextIteration(run, Infinity); // both inputs garbage
+        expect(dec.cap).toBe(1 * DEFAULT_RUNAWAY_FACTOR); // the smallest, most conservative anchor — never Infinity/NaN
+        expect(dec.stop).toBe(true); // 100 iterations comfortably exceeds the minimal fallback cap
+      });
     });
   });
 
