@@ -538,6 +538,147 @@ describe('recursive-delete honors POSIX -- end-of-options (#450, AC-450.*)', () 
   });
 });
 
+describe('recursive-delete rm slice is command-token-anchored, not substring (#454, AC-454.1)', () => {
+  // AC-454.1 — the ticket's exact reproduction: `cSpaced.indexOf('rm')` finds
+  // the FIRST occurrence of the letters "rm" anywhere in the segment, so an
+  // env-var prefix that merely CONTAINS "rm" (xterm, affirm) moves the slice
+  // point before the real `rm` and the rule judges the wrong span. Verified
+  // directly against `check()` on `main` before this fix: both are wrongly
+  // blocked. Env-prefixed commands are ordinary in scripts and Makefiles.
+  it('AC-454.1: an env-var prefix merely containing "rm" does not false-positive', () => {
+    expect(check('TERM=xterm rm -rf dist').blocked).toBe(false);
+    expect(check('X=affirm rm -rf dist').blocked).toBe(false);
+  });
+
+  // AC-454.1 — the false positive is not limited to a bare dangerous-looking
+  // target; the same wrong-span mis-slice would also wrongly ALLOW a genuinely
+  // dangerous target if the prefix pushed the slice start past it, so the fix
+  // is pinned in both directions, not just the ticket's headline case.
+  it('AC-454.1: an env-var prefix containing "rm" still blocks a real dangerous target', () => {
+    expect(check('TERM=xterm rm -rf /important-template-configs')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-454.2 — no regression in what #446 closed: re-run its blocked and
+  // allowed cases verbatim, by name, so a regression here is never mistaken
+  // for an unrelated failure.
+  it('AC-454.2: #446\'s dangerous-target cases stay blocked', () => {
+    for (const cmd of [
+      'rm -rf /important-template-configs',
+      'rm -rf ~/my-distribution-of-prod-secrets',
+      'rm -rf ./coverage-notes-prod-db',
+      'rm -rf /srv/scratchpad-lookalike-prod',
+      'rm -rf /secret/data dist',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  it('AC-454.2: #446\'s safe-target cases stay allowed', () => {
+    for (const cmd of ['rm -rf dist', 'rm -rf node_modules', 'rm -rf dist build coverage', 'rm -rf "$TMP/forge-test"']) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: false });
+    }
+  });
+
+  // AC-454.3 — both AC.1 and AC.5's fixes are pinned in BOTH directions (the
+  // false positive now allowed, a genuinely dangerous shape of the same
+  // spelling still blocked) in one place, under this AC's own name. Per the
+  // #437/#446 discipline, these exact assertions were run against the
+  // pre-fix source first and confirmed to fail (stashing the source change):
+  // both `blocked: false` assertions below failed with `expected true to be
+  // false` before `beforeEndOfOptions()`/the `\brm\b`-anchored slice existed.
+  it('AC-454.3: both fixes are pinned in the allow direction AND the block direction, confirmed to fail pre-fix', () => {
+    // AC.1 direction pins.
+    expect(check('TERM=xterm rm -rf dist').blocked).toBe(false);
+    expect(check('TERM=xterm rm -rf /important-template-configs')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    // AC.5 direction pins.
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
+describe('AC-454.4: no other rule locates a command verb via unanchored indexOf', () => {
+  // AC.4 — audited the whole plugin tree for the same defect class:
+  // `<segment>.indexOf('<verb>')` fed straight into `.slice()` to re-locate a
+  // command verb by unanchored substring search, the exact shape AC.1 fixed
+  // in recursive-delete. None found elsewhere — every other `.indexOf(` hit
+  // in the tree is a CLI-argv flag-value lookup (`--question`, `--out`,
+  // `--issue`, `--base`, ...), a different, non-buggy class (a pre-tokenized
+  // argv array, not raw shell text). Asserted here as a real regression
+  // guard, not just a plan-doc claim, so a future rule reintroducing this
+  // exact pattern anywhere under plugin/ fails CI rather than waiting for
+  // the next adversarial pass to notice.
+  it('AC-454.4: no `<expr>.indexOf(\'<verb>\')` sliced directly to locate a verb exists under plugin/', async () => {
+    const { readdir, readFile } = await import('node:fs/promises');
+    const pluginRoot = join(repoRoot, 'plugin');
+    const offenders = [];
+    const BAD_PATTERN = /\.slice\([^)]*\.indexOf\(['"][a-zA-Z][a-zA-Z-]*['"]\)/;
+    async function walk(dir) {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules') continue;
+          await walk(full);
+        } else if (entry.isFile() && entry.name.endsWith('.mjs')) {
+          const content = await readFile(full, 'utf8');
+          if (BAD_PATTERN.test(content)) offenders.push(full);
+        }
+      }
+    }
+    await walk(pluginRoot);
+    expect(offenders, `unanchored verb-locating indexOf found in: ${offenders.join(', ')}`).toEqual([]);
+  });
+});
+
+describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#456, AC-454.5)', () => {
+  // AC-454.5 — the ticket's exact reproduction: `shortFlagCluster()` and the
+  // `--recursive`/`--force` regexes scan the WHOLE segment, ignoring a bare
+  // `--` marker, so a real `rm -- -rf target` (which POSIX-correctly deletes
+  // a literal file named "-rf", never recursively or forcibly) reads the `-rf`
+  // after the marker as real flags and over-blocks a safe, non-recursive
+  // delete. Same for spelled-out long flags after the marker.
+  it('AC-454.5: flag-looking tokens AFTER a bare -- are not read as flags', () => {
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -- --recursive --force target').blocked).toBe(false);
+  });
+
+  // AC-454.5 — real flags BEFORE the marker still count; pairing that with a
+  // dash-leading real target after the marker isolates that the block below
+  // is coming from safeRmTarget()'s existing --  handling (#450), not from
+  // flag detection reading past the marker.
+  it('AC-454.5: real flags before -- still combine with a real target after it', () => {
+    expect(check('rm -rf -- -prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-454.6 — no regression on #450's own `--` handling of the TARGET half:
+  // a genuinely dangerous target spelled with a leading dash after `--`,
+  // alongside a decoy safe target, must still block.
+  it('AC-454.6: #450\'s -- target-half regression case stays blocked', () => {
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-454.6 — no regression on #437's bundled/abbreviated force-push,
+  // hard-reset, and env-branch-delete spellings; this ticket only touches
+  // recursive-delete.
+  it('AC-454.6: #437\'s force-push/hard-reset/env-branch-delete spellings are unaffected', () => {
+    expect(check('git push -uf origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git reset --hard')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+    expect(check('git branch -D main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+  });
+
+  // AC-454.6 — ordinary flag detection without any -- marker is unaffected:
+  // a real rm -rf on an unsafe target still blocks exactly as before.
+  it('AC-454.6: ordinary (no --) recursive-delete detection is unaffected', () => {
+    expect(check('rm -rf /important-template-configs')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('rm -rf dist').blocked).toBe(false);
+  });
+});
+
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
   // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
   // and `--hard`, in either order, and regardless of a global git flag before

@@ -158,6 +158,32 @@ function shortFlagCluster(command, { alnum = false } = {}) {
 }
 
 /**
+ * The portion of a command BEFORE a bare `--` token (#454, AC-454.5).
+ *
+ * POSIX end-of-options means every token after a standalone `--` is a
+ * filename, never a flag, no matter how flag-like it looks — `rm -- -rf
+ * target` deletes a literal file named "-rf" (non-recursively, non-forcibly),
+ * it does not enable `-r`/`-f`. `recursive-delete`'s flag detection
+ * (`shortFlagCluster()` and the `--recursive`/`--force` regexes) used to scan
+ * the WHOLE segment, so a flag-shaped token planted after `--` still tripped
+ * them and over-blocked a command that, read as real argv, does nothing
+ * dangerous. This mirrors `safeRmTarget()`'s own `--` handling for the TARGET
+ * half of the same rule (#450) — same marker, same bash-IFS token split
+ * (space/tab/newline, not JS's wider `\s`; see that function's longer note on
+ * why), applied to the flag half instead. Everything from the marker onward
+ * is dropped; a command with no `--` at all is returned unchanged.
+ */
+function beforeEndOfOptions(command) {
+  const tokens = command.split(/([ \t\n]+)/);
+  let out = '';
+  for (const tok of tokens) {
+    if (tok === '--') break;
+    out += tok;
+  }
+  return out;
+}
+
+/**
  * Build the regex source for a long flag AND every unambiguous abbreviation of
  * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
  * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
@@ -841,17 +867,35 @@ export const RULES = [
     // AC-446.6's pinned tests need no edits.
     test: (c, cSpaced) => {
       if (!/\brm\b/.test(c)) return false;
+      // Flag detection must stop at a bare `--` (POSIX end-of-options, #454
+      // AC.5): every token after it is a filename, never a flag, so it must
+      // never be read as one. Mirrors safeRmTarget()'s own `--` handling for
+      // the target half — see beforeEndOfOptions() above.
+      const flagsSegment = beforeEndOfOptions(c);
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
       // helper. Deliberately alpha-only (default) where force-push above
       // passes `alnum: true`: git has numeric short flags (`-4`) that can
       // bundle with `-f`, `rm` has none, so widening here would buy nothing.
-      const shortFlags = shortFlagCluster(c);
+      const shortFlags = shortFlagCluster(flagsSegment);
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
-      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(c);
-      const force = /f/.test(shortFlags) || /\B--force\b/.test(c);
+      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsSegment);
+      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsSegment);
       if (!recursive || !force) return false;
-      const rest = cSpaced.slice(cSpaced.indexOf('rm'));
+      // The `rm` slice point is found on a command-token BOUNDARY, not by
+      // unanchored substring search (#454 AC.1): `cSpaced.indexOf('rm')` used
+      // to find the first occurrence of the LETTERS "rm" anywhere in the
+      // segment, so an env-var prefix that merely contains "rm" (`TERM=xterm`,
+      // `X=affirm`) moved the slice point before the real `rm` token and the
+      // rule judged the wrong span. `\brm\b` requires "rm" to sit between
+      // non-word characters (or string start/end) on both sides, which
+      // "xterm"/"affirm" never do (the "rm" there directly abuts a word
+      // character, "e"/"i"), while a real standalone `rm` token always does.
+      // Falls back to the start of the segment if, somehow, no boundary-
+      // anchored "rm" is found (defensive only: `c`'s own `\brm\b` guard
+      // above already establishes one exists in the sibling `text` reading).
+      const rmMatch = /\brm\b/.exec(cSpaced);
+      const rest = cSpaced.slice(rmMatch ? rmMatch.index : 0);
       // EVERY target must be safe, not merely one of them (#446) — see
       // safeRmTarget(): a single safe-looking decoy argument used to exempt
       // the whole command, however many real targets sat beside it.
