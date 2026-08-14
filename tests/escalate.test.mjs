@@ -304,6 +304,27 @@ describe('escalate (AC-3.2)', () => {
     expect(file.status).toBe('resolved'); // resolved regardless of the move outcome
   });
 
+  it('AC-499.5: resolve when the ticket is not on the board at all (ok:true, item:null) logs a note but still resolves cleanly (#499 reviewer round-3 polish)', async () => {
+    const cwd = await cwdWithConfig();
+    await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
+    await writeFile(join(cwd, '.forge', 'decisions', 'esc-8-q.json'), JSON.stringify({ id: 'esc-8-q', issue: 8, reason: 'r', options: ['a', 'b'], status: 'pending' }), 'utf8');
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('/comments?'), { stdout: JSON.stringify([
+        { id: 501, body: '<!-- forge:decision:esc-8-q -->\n🚩 Decision needed' },
+        { id: 502, body: 'answer', author_association: 'OWNER' },
+      ]) }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [] }) })], // no match — falls back to the issue-side lookup
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }], // ...which also finds nothing
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd });
+    const logs = [];
+    const res = await runCheck(ctx, { issue: 8 }, (m) => logs.push(m));
+    expect(res.resolved).toEqual([{ id: 'esc-8-q', issue: 8, answer: 'answer', moved: true }]);
+    expect(logs.join(' ')).toMatch(/issue not found on the board, nothing to move/);
+    expect(f.calls.some((c) => c.includes('item-edit'))).toBe(false);
+  });
+
   it('#499 security fix-wave ROUND 2: a reply from an untrusted author does NOT resolve the decision at all — it stays pending', async () => {
     // Round-1's fix only gated the board MOVE on trust and left the decision-file
     // resolution unconditional — but resolution alone empties select.mjs's

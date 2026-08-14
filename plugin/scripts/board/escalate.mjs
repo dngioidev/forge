@@ -155,8 +155,14 @@ export async function runCheck(ctx, args, log = console.log) {
       const moveRes = await runMove(ctx, { issue: d.issue, status: 'backlog' }, log);
       if (!moveRes.ok) log(`decision ${d.id} (#${d.issue}) resolved but board move to backlog failed: ${moveRes.error} — move #${d.issue} by hand`);
       cleared = moveRes.ok;
-    } else if (found.ok) {
+    } else if (found.ok && found.item) {
       cleared = true; // already off `blocked` (drifted, or never mapped there) — nothing to correct
+    } else if (found.ok) {
+      // found.ok but item is null: the issue isn't on the board at all — nothing to move,
+      // but unlike the genuinely-confirmed-not-blocked case above, this was never actually
+      // verified, so it gets its own (still non-fatal) note rather than silent success.
+      log(`decision ${d.id} (#${d.issue}) resolved — issue not found on the board, nothing to move`);
+      cleared = true;
     } else {
       log(`decision ${d.id} (#${d.issue}) resolved but board status couldn't be confirmed (${found.error}) — not auto-moving (would risk demoting an in-flight ticket); verify #${d.issue} by hand`);
     }
