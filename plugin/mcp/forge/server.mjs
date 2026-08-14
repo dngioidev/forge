@@ -37,6 +37,7 @@ import { runDigest } from '../../scripts/board/digest.mjs';
 import { runReparent } from '../../scripts/board/reparent.mjs';
 import { runClose, REASONS as CLOSE_REASONS } from '../../scripts/board/close.mjs';
 import { selectNext, actionableQueue, normalize } from '../../scripts/autopilot/select.mjs';
+import { pendingDecisions } from '../../scripts/lib/situation.mjs';
 import { isShaped } from '../../scripts/autopilot/readiness.mjs';
 import { evaluateMergeBar, runMerge } from '../../scripts/autopilot/merge.mjs';
 import { computeReadiness } from '../../scripts/release/readiness.mjs';
@@ -249,7 +250,7 @@ export const TOOLS = [
 export const DEFAULT_DEPS = {
   runMove, runComment, runCreate, runEscalate, runStatus,
   runReceipt, runLog, runDigest, runReparent, runClose,
-  selectNext, actionableQueue, normalize, isShaped,
+  selectNext, actionableQueue, normalize, isShaped, pendingDecisions,
   evaluateMergeBar, runMerge, computeReadiness, loadConfig,
   execFn: run,
   gates: { ac: runAcGate, conventions: runConventions, dep: runDepGuard, docsync: runDocSync, ground: runGroundGate, license: runLicenseGate, plandrift: runPlanDrift, situation: runSituationGate, testintent: runTestIntent },
@@ -475,7 +476,13 @@ export function makeHandler({ root, getCtx, deps = DEFAULT_DEPS }) {
               const view = await ctx.gh(['issue', 'view', String(t.number), '--json', 'body'], { parseJson: true });
               t.ready = view.ok ? deps.isShaped(view.json?.body, ctx.config) : null;
             }
-            const opts = { area: args.area ?? null, shape: args.shape ?? false };
+            // #499 AC-499.1: exclude any ticket with a pending decision, independent of board status —
+            // this is the MCP twin of select.mjs's own CLI wiring; both real call sites must thread it.
+            const pending = await deps.pendingDecisions(ctx.cwd);
+            // Number(): see select.mjs's matching comment — normalize so a stray
+            // string `issue` in a hand-edited decision file can't fail-open the exclusion.
+            const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
+            const opts = { area: args.area ?? null, shape: args.shape ?? false, pendingIssues };
             const next = deps.selectNext(tickets, opts);
             const queue = deps.actionableQueue(tickets, opts);
             return toolText(id, { ok: true, next: next ?? null, queue });

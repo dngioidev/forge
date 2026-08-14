@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { isShaped } from './readiness.mjs';
+import { pendingDecisions } from '../lib/situation.mjs';
 
 // Tier: lower runs first. Resume-in-flight beats fresh work; ready beats backlog.
 const TIER = { inProgress: 0, inReview: 0, ready: 1, backlog: 2 };
@@ -44,11 +45,22 @@ export function actionFor(status, { shape = false, ready = null } = {}) {
  * `{ number, title, status, priority, area? }`. Returns `{ ticket, action }`
  * or `null` when nothing is actionable. Order: tier, then priority, then
  * FIFO (issue number as a creation-order stand-in).
+ *
+ * `pendingIssues` (#499, AC-499.1/.4): a `Set<number>` of tickets that have an
+ * unresolved entry in `.forge/decisions/`, threaded in by the caller (never
+ * read from disk here — that would break the pure/hermetic contract, AC-499.4).
+ * A ticket in this set is excluded regardless of board status, because the
+ * board move that normally parks it at `blocked` can drift or fail silently
+ * (#499) — the decision file is the source of truth, the board status is only
+ * its usual shadow. Callers build this set from `pendingDecisions()`
+ * (`lib/situation.mjs`), which already degrades a missing/unreadable
+ * `.forge/decisions/` to "no pending decisions" (AC-499.3).
  */
-export function selectNext(tickets, { area = null, shape = false } = {}) {
+export function selectNext(tickets, { area = null, shape = false, pendingIssues = new Set() } = {}) {
   const actionable = tickets
     .filter((t) => !SKIP.has(t.status) && TIER[t.status] !== undefined)
     .filter((t) => !UMBRELLA_TYPES.has(t.type)) // #175: umbrella items are containers, never deliverable
+    .filter((t) => !pendingIssues.has(t.number)) // #499 AC-499.1: pending decision excludes regardless of status
     .filter((t) => (area ? t.area === area : true))
     .sort((a, b) =>
       (TIER[a.status] - TIER[b.status]) ||
@@ -105,11 +117,17 @@ if (isMain) {
       const view = await ctx.gh(['issue', 'view', String(t.number), '--json', 'body'], { parseJson: true });
       t.ready = view.ok ? isShaped(view.json?.body, ctx.config) : null;
     }
-    const next = selectNext(tickets, { area, shape });
+    // #499 AC-499.1: exclude any ticket with a pending decision, independent of board status.
+    const pending = await pendingDecisions(ctx.cwd);
+    // Number(): a hand-edited/migrated decision file's `issue` isn't schema-enforced the
+    // way the CLI/MCP writers are (Number.isInteger / {type:'integer'}) — normalize so a
+    // stray string id can't silently fail the Set.has() match below and fail OPEN (#499 security pass).
+    const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
+    const next = selectNext(tickets, { area, shape, pendingIssues });
     if (!next) { console.log('autopilot: no actionable ticket — board is clear'); process.exit(0); }
     console.log(`next: #${next.ticket.number} [${next.ticket.status}/${next.ticket.priority ?? '—'}] → ${next.action} — ${next.ticket.title}`);
     if (process.argv.includes('--dry-run')) {
-      const q = actionableQueue(tickets, { area, shape });
+      const q = actionableQueue(tickets, { area, shape, pendingIssues });
       console.log(`\nqueue (${q.length})${shape ? ' — crazy mode (--shape)' : ''}:`);
       for (const { ticket, action } of q) console.log(`  #${ticket.number} [${ticket.status}/${ticket.priority ?? '—'}] → ${action} — ${ticket.title}`);
     }
