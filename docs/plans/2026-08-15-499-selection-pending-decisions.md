@@ -141,6 +141,40 @@ Both fixes landed in the same commit; `pnpm verify` re-run green (1268/1268:
 1256 baseline + 12 new — 6 pure `selectNext` predicate tests, 6 `runCheck`
 round-trip/trust-gate tests) and `ac-gate` re-confirmed all 5 ACs mapped.
 
+## Fix wave: adversarial `forge:reviewer` + `forge:security`, round 2
+
+Re-ran both, full branch, after the round-1 fixes:
+
+- **reviewer: `pass`** — confirmed the current-status gate genuinely stops
+  the demotion (verified `optionKey()`'s label mapping directly), the new
+  tests would catch a regression, and the widened `AC-B1.2` assertion is a
+  legitimate strengthening. One informational/non-blocking note: a
+  TOCTOU gap between `runCheck`'s pre-check status read and `runMove`'s own
+  internal re-read, bounded by `boardctx.mjs`'s existing 15s `listItems()`
+  cache — accepted as-is, consistent with the codebase's existing tolerance
+  for board eventual-consistency (`#414`).
+- **security: `fail` (critical)** — round 1's fix gated only the board
+  *move* on `author_association`, but left the decision-file *resolution*
+  itself unconditional. Since `select.mjs`'s `pendingIssues` exclusion
+  (AC-499.1) is built purely from `pendingDecisions()` reading
+  `status === 'pending'` off the file, resolving it at all — independent of
+  whether the board move fires — empties the exclusion. On a board with no
+  `blocked` option mapped, or once status has drifted off `blocked`, an
+  untrusted commenter's reply still let the ticket back into the
+  autonomous queue: round 1's own fix reopened the exact risk under
+  realistic, code-acknowledged conditions (the no-`blocked`-option degrade,
+  #27, and status drift, the #438 case this whole ticket is about).
+  **Fix:** gate the WHOLE resolve, not just the move — `runCheck` now scans
+  the non-forge-marked replies after the decision marker for the first one
+  from a trusted author, skipping untrusted ones as noise rather than
+  treating the first one as the answer. A decision with only untrusted
+  replies (or none) stays pending; a later trusted reply still resolves it
+  correctly even after an untrusted comment in between (new test pins
+  this).
+
+`pnpm verify` re-run green (1269/1269: 1256 baseline + 13 new). This is
+round 2 of the adversarial cycle — within the ticket's own four-round cap.
+
 ## Task 4 (docs): route index
 
 Add this plan to `docs/README.md`'s plan index.
