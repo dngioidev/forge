@@ -140,6 +140,17 @@ function safeRmTarget(rest) {
 const PROTECTED_BRANCHES = /\b(main|master|staging|production)\b/;
 
 /**
+ * The sentinel character `guardedText` substitutes for a PROTECTED (quoted
+ * or escaped) whitespace/`$`/`(`/`)`/backtick — see `normalizeShellText()`'s
+ * own comment on `guardedText`. Shared as a named constant (rather than an
+ * inline literal in two places) so `beforeEndOfOptions()`'s masking and
+ * `recursive-delete`'s own "is this segment even safe to trust the
+ * end-of-options parse on at all" gate (see that rule's comment, #454 fix
+ * wave 6) can never drift to different characters.
+ */
+const GUARD_SENTINEL = '\x01';
+
+/**
  * Collect every single-dash SHORT flag cluster in a command into one string of
  * letters (and, when `alnum`, digits) — e.g. "git push -uf origin main" -> "uf".
  * The `(?:^|\s)-` anchor keeps GNU/git long `--flag` (double dash) and mid-word
@@ -832,7 +843,7 @@ export function normalizeShellText(rawCommand) {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     const maskable = ch === ' ' || ch === '\t' || ch === '\n' || ch === '$' || ch === '(' || ch === ')' || ch === '`';
-    guardedChars[i] = !bare[i] && maskable ? '\x01' : ch;
+    guardedChars[i] = !bare[i] && maskable ? GUARD_SENTINEL : ch;
   }
   const guardedText = guardedChars.join('');
   // `spacedText`: insert one space at every recorded marker position, in a
@@ -1077,7 +1088,38 @@ export const RULES = [
       // AC.5): every token after it is a filename, never a flag, so it must
       // never be read as one. Mirrors safeRmTarget()'s own `--` handling for
       // the target half — see beforeEndOfOptions() above.
-      const flagsSegment = beforeEndOfOptions(c, cGuarded);
+      //
+      // CATEGORICAL SAFETY NET (#454 fix wave 6, full-branch adversarial
+      // reviewer finding, the deepest of six adversarial rounds on this
+      // mechanism): only TRUST `beforeEndOfOptions()`'s truncation when this
+      // segment has NO quote-protected syntactically-relevant character at
+      // all — i.e. `cGuarded` contains no `GUARD_SENTINEL` anywhere.
+      // `normalizeShellText()` tracks quoting with a SINGLE flat `quote`
+      // variable, with no concept that `$(...)`/backticks open a genuinely
+      // INDEPENDENT quoting scope in real bash — so a segment where the
+      // SAME quote character is reused both outside and inside a
+      // substitution (`rm "$(cat " -- ")" -rf /important-secrets`, where the
+      // inner argument's own `"` delimiters are indistinguishable, to that
+      // flat scan, from the outer quote's) desyncs the scanner's quote
+      // parity itself, not merely one character's masking — producing WRONG
+      // `bare[]` values that no per-character masking fix (fix waves 2-5, all
+      // of which patched one specific character class within an assumed-
+      // correctly-tracked quote) can catch, because the underlying tracking
+      // was already wrong before any masking ran. Verified: `main` blocks
+      // the reproduction above; this branch's tip through fix wave 5 did
+      // not. Rather than chase a seventh, eighth, Nth variant of "which
+      // exact nested-quote-reuse shape breaks the flat scan next", any
+      // segment with EVEN ONE quote-protected space/`$`/`(`/`)`/backtick is
+      // conservatively treated as too ambiguous to trust for the end-of-
+      // options *relaxation*, falling back to the historical, always-scan-
+      // the-whole-segment behaviour (`main`'s exact pre-#454 approach,
+      // already secured by #446/#437) — this can only ever OVER-block
+      // (never weakens a dangerous-case block), and it does not affect
+      // either of AC.5's own named cases (`rm -- -rf target`, `rm --
+      // --recursive --force target`), neither of which involves any
+      // quoting at all.
+      const trustworthy = !cGuarded.includes(GUARD_SENTINEL);
+      const flagsSegment = trustworthy ? beforeEndOfOptions(c, cGuarded) : c;
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
       // helper. Deliberately alpha-only (default) where force-push above
       // passes `alnum: true`: git has numeric short flags (`-4`) that can

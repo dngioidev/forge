@@ -208,6 +208,71 @@ Regression-pinned as `AC-454.5: a bare paren construct (process
 substitution) nested inside $(...) does not desync the nesting-depth
 tracker`. Full suite green (1211/1211: 1192 pre-existing + 19 new).
 
+## Fix wave 6: full-branch adversarial REVIEWER re-review finding — closed CATEGORICALLY, not with a seventh per-case patch
+
+A third `forge:reviewer` re-dispatch (run in parallel with fix wave 5's
+security re-dispatch, both explicitly briefed as a deciding round) found a
+SIXTH bug — and this one is architecturally different from the first five,
+not merely another instance of the same shape. `normalizeShellText()`
+tracks quoting with a SINGLE flat `quote` variable, with no concept that
+`$(...)`/backticks open a genuinely INDEPENDENT quoting scope in real bash.
+When the SAME quote character is reused both OUTSIDE and INSIDE a
+substitution — `rm "$(cat " -- ")" -rf /important-secrets`, where the inner
+argument's own `"` delimiters are, to a flat scan, indistinguishable from
+the outer quote's — the scanner's quote PARITY itself desyncs, not merely
+one character's masking. That produces WRONG `bare[]` values for the
+content between the mistoggled positions, which no per-character masking
+fix (fix waves 2-5, each of which patched one specific character class
+within an ASSUMED-correctly-tracked quote) could catch, because the
+underlying tracking was already wrong before any masking logic ever ran.
+
+Verified against real bash (`set -x`): the whole `$(...)` in the
+reproduction expands to an empty string (the inner `cat " -- "` call fails
+harmlessly — no such file), so the outer double-quoted argument becomes one
+empty-string argv element, and the ACTUAL argv reaching `rm` is `["",
+"-rf", "/important-secrets"]` — a genuine, live recursive-force delete.
+`main` blocks it; this branch's tip through fix wave 5 did not.
+
+**Scope decision, made rather than continuing to patch narrower cases:**
+six rounds of real, distinct adversarial findings on the SAME underlying
+mechanism (flattened-text approximation of nested quote/substitution
+parsing) is a strong signal that chasing a seventh, eighth, Nth variant of
+"which exact nested-quote-reuse shape breaks the flat scan next" would not
+converge — each fix wave had already gotten progressively more general
+(fix wave 5's uniform-paren-counting closed a whole CLASS, not one
+spelling), but finding 6 shows even that generality has a limit the current
+architecture cannot reach without becoming the full argv tokenizer #457
+explicitly defers. Per the escalation criteria ("a guard-behaviour tradeoff
+for the owner... reviewer↔implementer deadlock or the same gate failing
+twice"), this was weighed against escalating — but the resolution below is
+NOT a guard-behaviour tradeoff (it weakens no dangerous-case block) and
+closes the entire bug class rather than one more instance of it, so it was
+implemented directly rather than parked.
+
+**Fix:** `recursive-delete`'s `test()` now only TRUSTS
+`beforeEndOfOptions()`'s truncation when the segment has NO quote-protected
+syntactically-relevant character anywhere — checked via
+`cGuarded.includes(GUARD_SENTINEL)` (`GUARD_SENTINEL`, a new shared `'\x01'`
+constant, replaces the inline sentinel literal `guardedText` already used).
+Whenever that check trips, flag detection falls back to scanning the WHOLE
+segment unconditionally — `main`'s exact pre-#454 behaviour, already
+secured by #446/#437, inheriting all of its existing correctness with zero
+new risk. This is strictly a NARROWING of where the AC.5 relaxation
+applies, never a weakening: it does not affect either of AC.5's own named
+cases (`rm -- -rf target`, `rm -- --recursive --force target`), neither of
+which involves any quoting at all, and it re-verified as still correctly
+blocking every one of findings 1-6's own reproductions (re-checked directly
+against `check()`, not merely inferred) — those cases now correctly block
+via the categorical fallback rather than via each finding's own specific
+mechanism, which remains in place as defense-in-depth for the no-quoting
+case it was always sound for.
+
+Regression-pinned as `AC-454.5: a same-quote-character reused both outside
+and inside a command substitution does not desync quote tracking` plus `AC-
+454.5: the categorical quote-protection gate does not affect AC.5's own
+quote-free named cases`. Full suite green (1213/1213: 1192 pre-existing +
+21 new).
+
 ## AC map
 
 - **AC-454.1** `rm` slice point found on a command-token boundary.

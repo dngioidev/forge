@@ -734,6 +734,48 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
     });
   });
 
+  // AC-454.5 (fix wave 6 — full-branch adversarial REVIEWER re-review
+  // finding, the deepest of six adversarial rounds) — `normalizeShellText()`
+  // tracks quoting with a SINGLE flat `quote` variable, with no concept that
+  // `$(...)`/backticks open a genuinely INDEPENDENT quoting scope in real
+  // bash. When the SAME quote character is reused both OUTSIDE and INSIDE a
+  // substitution — `rm "$(cat " -- ")" -rf /important-secrets`, where the
+  // inner argument's own `"` delimiters are, to a flat scan, indistinguishable
+  // from the outer quote's — the flat scanner's quote PARITY itself desyncs,
+  // not merely one character's masking, producing WRONG `bare[]` values that
+  // no per-character masking fix (fix waves 2-5, each of which assumed the
+  // underlying quote tracking was already correct) could catch. Verified
+  // against real bash (`set -x`): the whole `$(...)` here expands to an empty
+  // string (the inner `cat " -- "` call fails harmlessly, no such file), so
+  // the outer double-quoted argument becomes one empty-string argv element,
+  // and the ACTUAL argv reaching `rm` is `["", "-rf", "/important-secrets"]`
+  // — a genuine, live recursive-force delete. `main` blocks it; this
+  // branch's tip through fix wave 5 did not.
+  //
+  // Rather than chase a seventh variant of "which nested-quote-reuse shape
+  // breaks the flat scan next", this is closed CATEGORICALLY: `recursive-
+  // delete`'s `test()` now refuses to trust `beforeEndOfOptions()`'s
+  // truncation at all whenever the segment has ANY quote-protected
+  // syntactically-relevant character (`cGuarded.includes(GUARD_SENTINEL)`),
+  // falling back to the historical, always-scan-the-whole-segment behaviour
+  // instead — the same behaviour `main` already had, and the same one AC.5's
+  // own named cases (both quote-free) never needed relaxed in the first
+  // place.
+  it('AC-454.5: a same-quote-character reused both outside and inside a command substitution does not desync quote tracking', () => {
+    expect(check('rm "$(cat " -- ")" -rf /important-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-454.5 (fix wave 6) — the categorical gate must not regress AC.5's own
+  // named, quote-free cases: neither involves any quoting at all, so
+  // `beforeEndOfOptions()`'s truncation is still trusted and still applies.
+  it('AC-454.5: the categorical quote-protection gate does not affect AC.5\'s own quote-free named cases', () => {
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -- --recursive --force target').blocked).toBe(false);
+  });
+
   // AC-454.5 (fix wave 2 — full-branch adversarial SECURITY finding) — a
   // QUOTED argument that merely CONTAINS "--" (with a quoted literal space
   // around it) is not a real POSIX end-of-options marker. `'X --'` is ONE
