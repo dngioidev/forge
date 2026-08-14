@@ -197,8 +197,24 @@ function shortFlagCluster(command, { alnum = false } = {}) {
  * `)` never returns to depth 0, so the marker search simply finds nothing
  * and the whole command is returned unchanged) — the safe direction for a
  * denylist that fails open, never the direction that could hide a flag.
+ *
+ * `guarded` (#454 AC-454.5, second fix wave) is `command`'s own segment of
+ * `guardedText` — the SAME text, character-for-character, except a
+ * PROTECTED whitespace character (one that came from inside a quote or an
+ * escape, per `normalizeShellText()`'s `bare` tracking) is replaced by a
+ * sentinel that cannot match `[ \t\n]`. The boundary checks below read
+ * `guarded`, not `command`, so a `--`-shaped substring whose surrounding
+ * whitespace is REAL only counts as end-of-options when that whitespace
+ * is genuinely unquoted/unescaped — see `guardedText`'s own comment for the
+ * full adversarial finding this closes (`rm 'X --' -rf
+ * /important-template-configs`, where the space between "X" and "--" is
+ * quoted, i.e. part of the SAME argv element, not a real separator). The
+ * `--`-vs-`ch==='-'` character test itself still reads `command`, not
+ * `guarded`: hyphens are never masked, since a QUOTED flag is still a real
+ * flag to the invoked program (see `guardedText`'s comment) and masking one
+ * would trade this false negative for a different one.
  */
-function beforeEndOfOptions(command) {
+function beforeEndOfOptions(command, guarded) {
   let parenDepth = 0;
   let inBacktick = false;
   const n = command.length;
@@ -218,9 +234,9 @@ function beforeEndOfOptions(command) {
       continue;
     }
     if (parenDepth === 0 && !inBacktick && ch === '-' && command[i + 1] === '-') {
-      const beforeOk = i === 0 || /[ \t\n]/.test(command[i - 1]);
+      const beforeOk = i === 0 || /[ \t\n]/.test(guarded[i - 1]);
       const afterIdx = i + 2;
-      const afterOk = afterIdx >= n || /[ \t\n]/.test(command[afterIdx]);
+      const afterOk = afterIdx >= n || /[ \t\n]/.test(guarded[afterIdx] ?? '');
       if (beforeOk && afterOk) return command.slice(0, i);
     }
   }
@@ -479,12 +495,21 @@ export function normalizeShellText(rawCommand) {
   // the function-level comment above for why that ordering is what makes the
   // two readings provably segment identically.
   const nulMarkers = [];
+  // One boolean per emitted character (#454, AC-454.5 fix wave): true only
+  // for a character that reached `parts` completely BARE — outside any quote
+  // region AND not the target of a backslash escape. Every other path
+  // (inside `"`/`'`/`$'…'`, or immediately after a backslash) marks `false`.
+  // This is what lets `beforeEndOfOptions()` tell a GENUINE, syntactically
+  // active whitespace/`--` boundary apart from one that merely LOOKS like it
+  // after quotes are stripped — see `guardedText` below for why that
+  // distinction is load-bearing, not cosmetic.
+  const bare = [];
   let endsDollar = false; // does the output currently end with `$`?
   let quote = null;    // the active quote character, or null
   let ansiC = false;   // the active single-quote region was opened as `$'…'`
   let litDollar = false; // the `$` just emitted came from `\$`, so it is DATA
   /** Append one character, keeping `endsDollar` true to the output. */
-  const push = (ch) => { parts.push(ch); endsDollar = ch === '$'; };
+  const push = (ch, isBare = false) => { parts.push(ch); bare.push(isBare); endsDollar = ch === '$'; };
   // A separator that survived escaping/quoting is inert as a separator, so
   // emit a space rather than the character itself — splitSegments() is blind
   // to quoting and would otherwise split the command around it.
@@ -559,6 +584,7 @@ export function normalizeShellText(rawCommand) {
         if (introducer) {
           const oldLen = parts.length;
           parts.pop(); // drop the `$`: it was quoting syntax, not data
+          bare.pop(); // keep `bare` in lockstep with `parts` (#454 AC-454.5 fix wave)
           endsDollar = parts[parts.length - 1] === '$';
           // A marker recorded for a NUL sitting between that `$` and this
           // quote char (e.g. `$<NUL>'`) was stamped with `oldLen` — the
@@ -577,7 +603,10 @@ export function normalizeShellText(rawCommand) {
         litDollar = false;
         continue;
       }
-      push(ch);
+      // The ONLY bare push in this whole scan: unquoted, unescaped, ordinary
+      // top-level data. Everything else routes through `emit()`/`emitEscaped()`/
+      // `emitCodePoint()`, all of which default `isBare` to `false`.
+      push(ch, true);
       litDollar = false;
       continue;
     }
@@ -678,6 +707,51 @@ export function normalizeShellText(rawCommand) {
     emit(ch);
   }
   const text = parts.join('');
+  // `guardedText` (#454, AC-454.5 fix wave): `text` with every PROTECTED
+  // whitespace character (one that came from inside a quote/`$'…'` region, or
+  // immediately after a backslash escape — i.e. `bare[i] === false`) replaced
+  // by a sentinel that cannot match `[ \t\n]`. Same length as `text`, built by
+  // pure character SUBSTITUTION at positions that are never one of the
+  // `;|&\n` separators `segments()` splits on (a separator surviving inside a
+  // quote is ALREADY converted to a plain space by `emit()`'s own
+  // SEPARATOR_CHARS check, before it ever reaches `push()` — so a `bare:
+  // false` position is never one of those characters to begin with) — the
+  // exact same "insertion/substitution can only ever merge segments, never
+  // split or reorder them" argument `spacedText` above already makes, applied
+  // to substitution instead of insertion. `segments(guardedText)` is
+  // therefore guaranteed to split identically to `segments(text)`.
+  //
+  // WHY: a full-branch adversarial security review found that `text` alone
+  // cannot distinguish a GENUINE, syntactically active whitespace boundary
+  // from one that merely LOOKS like it after `normalizeShellText()` strips
+  // quote characters — `'X --'` (one shell argv token, a literal space
+  // between "X" and "--") and a real ` -- ` (two/three separate tokens)
+  // render as IDENTICAL text once quotes are gone. `recursive-delete`'s
+  // `beforeEndOfOptions()` used exactly that flattened text to decide where
+  // POSIX end-of-options begins, so `rm 'X --' -rf /important-template-configs`
+  // — a REAL, dangerous `rm -rf` (bash's own default option permutation keeps
+  // `-rf` live no matter what non-flag operand precedes it) — was wrongly
+  // read as ending at the quoted `--`, hiding the real `-rf` from flag
+  // detection entirely and returning not-blocked. Verified: `main` (no
+  // end-of-options concept at all, pre-#454) correctly blocks it; the
+  // flattened-text-only version of `beforeEndOfOptions()` wrongly allowed it.
+  //
+  // Deliberately NOT masking `-` (hyphen) characters, only whitespace: a
+  // QUOTED flag is still a REAL flag to the invoked program (`rm '-rf' target`
+  // really does pass an `-rf` argv element — quoting affects the SHELL's
+  // word-splitting, not whether the invoked program's own option parser reads
+  // the resulting argument as an option), and `main` already relies on that
+  // by matching flags in the flattened, quote-stripped text. Masking hyphens
+  // too would have REGRESSED that existing, correct behaviour into a new
+  // false negative instead of fixing the reported one. Masking only the
+  // boundary whitespace is exactly the minimal, correct distinction: a
+  // standalone `--` token (bare OR entirely inside one pair of quotes, since
+  // quoting an ENTIRE token has no INTERNAL protected whitespace either way)
+  // still has genuinely bare whitespace on both sides and is still honoured —
+  // pinned by `AC-454.5: a bare quoted -- token is still honoured as
+  // end-of-options` — while `'X --'`'s protected internal space breaks the
+  // left-hand boundary check and the decoy is correctly ignored.
+  const guardedText = Array.from(text, (ch, i) => (!bare[i] && (ch === ' ' || ch === '\t' || ch === '\n') ? '\x01' : ch)).join('');
   // `spacedText`: insert one space at every recorded marker position, in a
   // single linear pass (never repeated slicing — same O(n²) trap this file's
   // own chunked-`parts` design exists to avoid, see the comment above). Pure
@@ -765,14 +839,16 @@ export function normalizeShellText(rawCommand) {
     }
     spacedText = spacedParts.join('');
   }
-  return { text, spacedText };
+  return { text, spacedText, guardedText };
 }
 
 // Every rule's `test()` reads `text` (the canonical parse — quotes stripped,
 // escapes resolved, a raw NUL byte deleted) as its segment argument (#452
 // v2). Only `recursive-delete` reads a SECOND argument, `spacedText`'s
 // corresponding segment, for its own target-parsing (see its own comment
-// below) — every other rule ignores the second argument entirely.
+// below), and a THIRD, `guardedText`'s corresponding segment, for its own
+// flag-boundary parsing (#454 AC-454.5 fix wave, see `beforeEndOfOptions()`)
+// — every other rule ignores the second and third arguments entirely.
 export const RULES = [
   {
     name: 'force-push',
@@ -900,22 +976,25 @@ export const RULES = [
   },
   {
     name: 'recursive-delete',
-    // The one rule reading `spacedText` as well as `text` (#452 v2): `c` (the
-    // canonical, NUL-deleted segment — same argument every other rule reads)
-    // drives flag-cluster detection, so `-r<NUL>f` still collects as a
-    // bundled `rf` the way a real shell's dropped-byte behaviour would hand
-    // `rm` the intact `-rf`. `cSpaced` — that SAME segment's spacedText
-    // reading — drives target parsing ONLY, so #446's target-splice fix
-    // (`/prod-secrets<NUL>/scratchpad` judged as two tokens, not one fused
-    // path ending in the safe word `scratchpad`) keeps working unchanged;
-    // AC-446.6's pinned tests need no edits.
-    test: (c, cSpaced) => {
+    // The one rule reading `spacedText`/`guardedText` as well as `text`
+    // (#452 v2, #454 AC-454.5): `c` (the canonical, NUL-deleted segment —
+    // same argument every other rule reads) drives flag-cluster detection,
+    // so `-r<NUL>f` still collects as a bundled `rf` the way a real shell's
+    // dropped-byte behaviour would hand `rm` the intact `-rf`. `cSpaced` —
+    // that SAME segment's spacedText reading — drives target parsing ONLY,
+    // so #446's target-splice fix (`/prod-secrets<NUL>/scratchpad` judged as
+    // two tokens, not one fused path ending in the safe word `scratchpad`)
+    // keeps working unchanged; AC-446.6's pinned tests need no edits.
+    // `cGuarded` — that SAME segment's guardedText reading — drives the
+    // end-of-options BOUNDARY check only, so a quoted decoy can't fake a
+    // real `--` (see `beforeEndOfOptions()`'s own comment).
+    test: (c, cSpaced, cGuarded) => {
       if (!/\brm\b/.test(c)) return false;
       // Flag detection must stop at a bare `--` (POSIX end-of-options, #454
       // AC.5): every token after it is a filename, never a flag, so it must
       // never be read as one. Mirrors safeRmTarget()'s own `--` handling for
       // the target half — see beforeEndOfOptions() above.
-      const flagsSegment = beforeEndOfOptions(c);
+      const flagsSegment = beforeEndOfOptions(c, cGuarded);
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
       // helper. Deliberately alpha-only (default) where force-push above
       // passes `alnum: true`: git has numeric short flags (`-4`) that can
@@ -1012,30 +1091,35 @@ export function check(command) {
   // scan with no recursion, so this should be unreachable — but "should be
   // unreachable" is exactly the reasoning that failed twice on this branch,
   // and the guard costs nothing.
-  let text, spacedText;
+  let text, spacedText, guardedText;
   try {
-    ({ text, spacedText } = normalizeShellText(command));
+    ({ text, spacedText, guardedText } = normalizeShellText(command));
   } catch {
     text = command;
     spacedText = command;
+    guardedText = command;
   }
   const segs = segments(text);
-  // `segsSpaced` is PROVABLY the same length/order as `segs` — spacedText is
-  // built from text by pure character insertion at positions that are never
-  // one of the `;|&\n` separators segments() splits on (#452 v2; see
-  // normalizeShellText()'s function-level comment for the full argument, and
-  // the AC-452.5 regression test for empirical pins). The `?? seg` fallback
-  // below is therefore defensive only, never load-bearing.
+  // `segsSpaced`/`segsGuarded` are PROVABLY the same length/order as `segs` —
+  // spacedText is built from text by pure character insertion, and
+  // guardedText by pure character substitution, both at positions that are
+  // never one of the `;|&\n` separators segments() splits on (#452 v2, #454
+  // AC-454.5; see normalizeShellText()'s function-level comment for the full
+  // argument, and the AC-452.5 regression test for empirical pins). The
+  // `?? seg` fallbacks below are therefore defensive only, never load-bearing.
   const segsSpaced = segments(spacedText);
+  const segsGuarded = segments(guardedText);
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
     // that segments() splits on); all others test each split sub-command. Every
-    // rule's test() gets `text`'s segment as its first argument and the
-    // corresponding `spacedText` segment as its second — only `recursive-delete`
-    // reads the second at all (its own target-parsing, see its own comment).
+    // rule's test() gets `text`'s segment as its first argument, the
+    // corresponding `spacedText` segment as its second, and the corresponding
+    // `guardedText` segment as its third — only `recursive-delete` reads the
+    // second or third at all (its own target/flag-boundary parsing, see its
+    // own comment).
     const hit = rule.scope === 'full'
-      ? rule.test(text, spacedText)
-      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg));
+      ? rule.test(text, spacedText, guardedText)
+      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg, segsGuarded[i] ?? seg));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };

@@ -685,6 +685,43 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
     expect(check('rm $(echo hi) -- -rf target').blocked).toBe(false);
   });
 
+  // AC-454.5 (fix wave 2 — full-branch adversarial SECURITY finding) — a
+  // QUOTED argument that merely CONTAINS "--" (with a quoted literal space
+  // around it) is not a real POSIX end-of-options marker. `'X --'` is ONE
+  // shell argv token (the space between "X" and "--" is quoted, i.e. part of
+  // the SAME argument, not a real separator) — real `rm`'s own getopt never
+  // stops there, and GNU coreutils' default option permutation keeps scanning
+  // for flags in later arguments regardless of an earlier non-flag operand.
+  // `beforeEndOfOptions()`'s flat text scan could not tell "quoted, therefore
+  // one token" apart from "genuinely two separate tokens" once
+  // `normalizeShellText()` had already stripped the quote characters — both
+  // render as identical flattened text. `rm 'X --' -rf /important-secrets`
+  // (and the `-r`/`-f` split, `--recursive --force` long-flag, and
+  // double-quote variants) were confirmed to reproduce a live, dangerous
+  // `rm -rf` reading as not-blocked. Closed by `guardedText` (see
+  // `normalizeShellText()`'s own comment): the end-of-options boundary check
+  // now reads a companion view where only whitespace that came from OUTSIDE
+  // any quote/escape counts as a real separator.
+  it('AC-454.5: a quoted decoy merely containing -- is not read as end-of-options', () => {
+    for (const cmd of [
+      "rm 'X --' -rf /important-secrets",
+      "rm -r 'X --' -f /important-secrets",
+      "rm 'X --' --recursive --force /important-secrets",
+      'rm -r "X --" -f /important-secrets',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-454.5 — the control case, precisely bounding the fix above: a BARE
+  // quoted `--` (the ENTIRE argv element equals "--", not merely containing
+  // it) has no INTERNAL protected whitespace either way, and really is
+  // end-of-options in real bash too (verified empirically by the security
+  // review) — must stay allowed, same as the unquoted spelling.
+  it('AC-454.5: a bare quoted -- token (the whole argument, not a substring of one) is still honoured', () => {
+    expect(check("rm '--' -rf target").blocked).toBe(false);
+  });
+
   // AC-454.6 — no regression on #450's own `--` handling of the TARGET half:
   // a genuinely dangerous target spelled with a leading dash after `--`,
   // alongside a decoy safe target, must still block.

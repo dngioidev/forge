@@ -65,6 +65,54 @@ top-level end-of-options` plus a paired "genuine top-level -- after a closed
 substitution still works" case, both in
 `tests/hooks/denylist.test.mjs`.
 
+## Fix wave 2: full-branch adversarial SECURITY finding, closed
+
+`forge:security`, run adversarially in parallel with the reviewer, found a
+SECOND, independent bypass in the nesting-aware `beforeEndOfOptions()`:
+`normalizeShellText()` strips quote CHARACTERS but discards which spaces
+were genuinely separators versus which were literal content inside a quote.
+A single argv token like `'X --'` (one shell argument — the space between
+"X" and "--" is quoted, part of the SAME argument) flattens to text
+indistinguishable from a real, separate `--` token. `rm 'X --' -rf
+/important-secrets` is a live, dangerous `rm -rf` in real bash (getopt
+never stops at a non-`--`-exact argument, and GNU coreutils' default option
+permutation keeps `-rf` active regardless of an earlier non-flag operand) —
+confirmed to reproduce (`blocked: false`) and confirmed still blocked on
+`main`.
+
+Closed by extending `normalizeShellText()`'s single scan to also track,
+per emitted character, whether it was BARE (unquoted, unescaped, the one
+`push(ch, true)` call site) or PROTECTED (everything routed through
+`emit()`/`emitEscaped()`/`emitCodePoint()` — inside a quote, `$'…'`, or
+immediately after a backslash). A new derived reading, `guardedText`, is
+`text` with every PROTECTED whitespace character replaced by a sentinel
+that cannot match `[ \t\n]` — same length as `text`, built by pure
+substitution at positions that are never a `;|&\n` separator (a separator
+surviving inside a quote is already neutralised to a plain space by
+`emit()`'s own check before it can ever be `bare: false`), so
+`segments(guardedText)` is provably identical in split points/order to
+`segments(text)`, the same argument `spacedText` already established for
+insertion. `beforeEndOfOptions()` now takes a second parameter — the
+`guardedText` counterpart of its `command` argument — and reads boundary
+whitespace from IT, not from `command`, while still reading the `-`
+characters themselves from `command` unchanged.
+
+Deliberately NOT masking hyphens, only whitespace: a QUOTED flag is still a
+REAL flag to the invoked program (`rm '-rf' target` really does pass an
+`-rf` argv element; quoting affects the shell's word-splitting, not the
+invoked program's own option parsing), and `main` already relies on that.
+Masking hyphens too would have traded this false negative for a new one.
+The control case this precision buys — `rm '--' -rf target` (the WHOLE
+argv element equals `--`, not merely containing it) — has no internal
+protected whitespace either way and correctly stays allowed, matching real
+bash and the security review's own empirical check.
+
+Regression-pinned as `AC-454.5: a quoted decoy merely containing -- is not
+read as end-of-options` (the four reproduction commands) plus `AC-454.5: a
+bare quoted -- token (the whole argument, not a substring of one) is still
+honoured` (the control case), both in `tests/hooks/denylist.test.mjs`. Full
+suite green (1207/1207: 1192 pre-existing + 15 new).
+
 ## AC map
 
 - **AC-454.1** `rm` slice point found on a command-token boundary.
