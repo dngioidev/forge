@@ -14,6 +14,9 @@
  *
  * Checks (each: ok / warn / fail + a fix hint):
  *   1. private-repo guard  — FAIL on a public repo (fork-PR RCE).
+ *   1b. fork-PR exposure   — FAIL on a public repo with ANY self-hosted runner already
+ *                            registered (any project's, not just this one) unless the
+ *                            live fork-PR-approval policy is the strictest (#489 AC.2).
  *   2. runner block        — present + enabled in forge.json; effective config echoed.
  *   3. host prerequisites  — git, gh, node (>=22.13) on PATH; docker reachable for
  *                            the Linux container leg; native-runner note for windows:native.
@@ -34,7 +37,7 @@ import { loadConfig, normalizeRunner, CONFIG_RELPATH } from '../lib/config.mjs';
 import {
   ok, warn, fail,
   fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion, windowsLabels,
-  detectRunnerServices, serviceTargetResults,
+  detectRunnerServices, serviceTargetResults, checkForkPrExposure,
 } from '../lib/runner-checks.mjs';
 
 const MIN_NODE = [22, 13];
@@ -166,6 +169,14 @@ export async function runCheck(ctx) {
     results.push(fail('private-repo', 'this is a PUBLIC repo — a self-hosted runner would let forks run untrusted code on your machine (fork-PR RCE)', 'keep the repo private, or do not adopt the local runner (ADR-0005 decision 3)'));
   } else {
     results.push(ok('private-repo', 'repo is private (self-hosted runner is safe from fork-PR RCE)'));
+  }
+
+  // Check 1b — fork-PR execution-surface (#489 AC.2). Distinct from check 1: this
+  // fires for ANY self-hosted runner already registered to a public repo — including
+  // a leftover registration from a different project on the same box — not just
+  // whether THIS adoption attempt is safe to proceed with.
+  if (vis.ok && vis.owner && vis.name) {
+    results.push(await checkForkPrExposure({ gh, owner: vis.owner, name: vis.name, isPrivate: vis.isPrivate }));
   }
 
   // Check 3 — host prerequisites.

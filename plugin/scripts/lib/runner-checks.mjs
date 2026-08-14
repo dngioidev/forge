@@ -209,6 +209,82 @@ export function serviceTargetResults({ services, hasOnline, configuredOwner, con
 }
 
 /**
+ * Fork-PR execution-surface check (#489 AC.2). A self-hosted runner registered
+ * to a PUBLIC repo is a fork-PR code-execution surface: for `pull_request`
+ * events GitHub runs the workflow definition from the merge commit, which
+ * INCLUDES the fork's own changes, so a fork PR can target the runner's label
+ * and execute attacker-authored code on the host — ephemerality (ADR-0005)
+ * bounds credential lifetime and cross-job residue, it does not prevent that
+ * execution. GitHub's own mitigation is the fork-PR workflow-approval policy
+ * (`actions/permissions/fork-pr-contributor-approval`); only the strictest
+ * value (`all_external_contributors`) closes the gap for every fork PR — the
+ * `first_time_contributors*` values still let a contributor who already has
+ * one approved PR push a later, unapproved malicious PR that runs unreviewed.
+ *
+ * Deliberately runs INDEPENDENT of this repo's own `runner.enabled` config —
+ * the exposure is whatever is actually registered on GitHub right now, not
+ * what forge.json currently says. That config/reality drift (a runner left
+ * registered after `runner.enabled` was flipped off) is exactly what #489 was
+ * filed over, so this check is NOT nested inside the `runner.enabled`-gated
+ * block the other checks in this file share.
+ *
+ * Read-only: only ever calls GET endpoints, never writes/flips the policy —
+ * changing repo-settings posture is the owner's call (#489), this is the
+ * verification the owner's decision gets checked against. Never a false
+ * green: a gh-api failure OR an unexpected/malformed response shape on
+ * EITHER call degrades to `warn` naming the documented manual-verification
+ * fallback (Settings → Actions → General → "Fork pull request workflows
+ * from outside collaborators") and #490 (which owns the general
+ * live-registration reconciliation this assertion rides on) — it never
+ * silently reports `ok` when the live state couldn't be confidently read.
+ *
+ * Scope note: only queries the REPO-scoped runners endpoint
+ * (`repos/{owner}/{repo}/actions/runners`), not an org-level one — an
+ * org-shared runner group (a mode `probeRunnerOnline` above DOES model via
+ * `runner.sharing==='org'`) would not appear here. Deliberately out of scope
+ * for this repo-scoped check: a personal-account repo (this ticket's own
+ * target) has no org to query in the first place, and reconciling org-level
+ * sharing against a given repo's exposure is broader work that belongs to
+ * #490, not this AC.2 slice. The `ok`/`fail` messages below say "registered
+ * to this repo" rather than an unqualified "no exposure" for exactly this
+ * reason — never overclaim coverage this check doesn't have.
+ */
+export async function checkForkPrExposure({ gh, owner, name, isPrivate, checkName = 'fork-pr-exposure' }) {
+  if (isPrivate) return skip(checkName, 'private repo — no fork-PR execution surface for a self-hosted runner');
+
+  const runnersRes = await gh(['api', `repos/${owner}/${name}/actions/runners?per_page=100`], { parseJson: true });
+  if (!runnersRes.ok) {
+    return warn(checkName,
+      `public repo, but could not query registered self-hosted runners (${firstLine(runnersRes.stderr) || 'gh api failed'})`,
+      'manually confirm via `gh api repos/<owner>/<repo>/actions/runners` that zero are registered, or grant the token repo scope (#490)');
+  }
+  if (!Array.isArray(runnersRes.json?.runners)) {
+    return warn(checkName,
+      'public repo, but the registered-runners API response had an unexpected shape (could not confirm zero are registered)',
+      'manually confirm via `gh api repos/<owner>/<repo>/actions/runners` that zero are registered (#490)');
+  }
+  const runners = runnersRes.json.runners;
+  if (runners.length === 0) {
+    return ok(checkName, 'public repo, no self-hosted runners registered to this repo — no fork-PR execution surface via a repo-level registration');
+  }
+  const names = runners.map((r) => r.name).slice(0, 3).join(', ');
+
+  const approvalRes = await gh(['api', `repos/${owner}/${name}/actions/permissions/fork-pr-contributor-approval`], { parseJson: true });
+  if (!approvalRes.ok) {
+    return warn(checkName,
+      `public repo with ${runners.length} self-hosted runner(s) registered to this repo (${names}) and the fork-PR workflow-approval policy could not be read via the API (${firstLine(approvalRes.stderr) || 'gh api failed'})`,
+      'manually verify Settings → Actions → General → "Fork pull request workflows from outside collaborators" requires approval for ALL outside collaborators while any self-hosted runner remains registered — #490 tracks reconciling this automatically');
+  }
+  const policy = approvalRes.json?.approval_policy;
+  if (policy === 'all_external_contributors') {
+    return ok(checkName, `public repo with ${runners.length} self-hosted runner(s) registered to this repo (${names}), but fork-PR workflows require approval for ALL external contributors — the execution surface is gated`);
+  }
+  return fail(checkName,
+    `public repo with ${runners.length} self-hosted runner(s) registered to this repo (${names}) and the fork-PR approval policy is "${policy ?? 'unknown'}" — a contributor with one prior approved PR could push a later malicious PR that runs on this host WITHOUT approval`,
+    'tighten Settings → Actions → General → "Fork pull request workflows from outside collaborators" to "Require approval for all outside collaborators", or remove the self-hosted runner registration(s) (#489/#490)');
+}
+
+/**
  * Runner staleness (#233): GitHub DEPRECATES old actions/runner versions and the
  * ephemeral/JIT runner can't auto-update, so a fixed pin silently stops receiving
  * jobs. Parse the scaffolded RUNNER_VERSION (Dockerfile, then setup-runner.ps1) and

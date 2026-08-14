@@ -79,17 +79,23 @@ const releaseResponse = (version) => ({
 });
 
 /** gh routes: isPrivate view, generic view, runners endpoint, release. */
-function routes({ view = PRIVATE_VIEW, runners, release = releaseResponse('2.340.0') } = {}) {
+function routes({ view = PRIVATE_VIEW, runners, release = releaseResponse('2.340.0'), approval } = {}) {
   const r = [
     ['auth status', AUTH_OK],
     [(j) => j.startsWith('repo view') && j.includes('isPrivate'), view],
     ['repo view', REPO_VIEW],
     [(j) => j.startsWith('api repos/actions/runner/releases/latest'), release],
   ];
+  // The approval-policy and runners-list endpoints are both under actions/... but
+  // their full path strings never share a substring, so plain ordered predicates
+  // route each to its own fixture without ambiguity.
+  if (approval !== undefined) r.push([(j) => j.includes('actions/permissions/fork-pr-contributor-approval'), approval]);
   if (runners !== undefined) r.push([(j) => j.startsWith('api ') && j.includes('actions/runners'), runners]);
   r.push([() => true, { ok: false, stderr: 'unrouted' }]);
   return r;
 }
+
+const approvalResponse = (policy) => ({ stdout: JSON.stringify({ approval_policy: policy }) });
 
 describe('runCheck — adoption readiness (#245)', () => {
   it('all green → READY (ok:true, no failures)', async () => {
@@ -323,5 +329,64 @@ describe('runCheck — adoption readiness (#245)', () => {
     expect(res.ready).toBe(false);
     expect(byName(res, 'config')[0].level).toBe('fail');
     expect(byName(res, 'config')[0].hint).toContain('/forge:init');
+  });
+});
+
+describe('runCheck — fork-PR execution-surface check (AC-489.2)', () => {
+  it('private repo → skip (not applicable)', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: true, windows: 'hosted' });
+    await writeScaffold(cwd);
+    const { gh } = fakeGh(routes({ runners: runnersResponse([{ id: 1, status: 'online', labels: FORGE_LINUX }]) }));
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec() });
+    expect(byName(res, 'fork-pr-exposure')[0].level).toBe('skip');
+  });
+
+  it('public repo + a self-hosted runner registered + approval_policy:first_time_contributors (less strict than required) → FAIL, independent of the private-repo guard already failing', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: true, windows: 'hosted' });
+    await writeScaffold(cwd);
+    const { gh } = fakeGh(routes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 9001, name: 'runner-example-01', status: 'online', labels: FORGE_WINDOWS }]),
+      approval: approvalResponse('first_time_contributors'),
+    }));
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec() });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('fail');
+    expect(r.msg).toMatch(/first_time_contributors/);
+    expect(res.ready).toBe(false);
+  });
+
+  it('public repo + a runner registered + approval_policy:all_external_contributors → ok, even though the private-repo guard still fails on its own', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: true, windows: 'hosted' });
+    await writeScaffold(cwd);
+    const { gh } = fakeGh(routes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 1, status: 'online', labels: FORGE_LINUX }]),
+      approval: approvalResponse('all_external_contributors'),
+    }));
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec() });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('ok');
+    // private-repo guard is a distinct, still-failing check — adopting the runner here
+    // remains blocked regardless of the approval policy.
+    expect(byName(res, 'private-repo')[0].level).toBe('fail');
+  });
+
+  it('BREAK IT: approval-policy API call fails while a runner is registered on a public repo → warn fallback naming #490, never a silent ok', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: true, windows: 'hosted' });
+    await writeScaffold(cwd);
+    const { gh } = fakeGh(routes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 1, status: 'online', labels: FORGE_LINUX }]),
+      approval: { ok: false, stderr: 'HTTP 404' },
+    }));
+    const res = await runCheck({ gh, cwd, log: noop, exec: fakeExec() });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('warn');
+    expect(r.hint).toMatch(/#490/);
   });
 });
