@@ -70,7 +70,7 @@ describe('autopilot selection (#128, AC-1/AC-2)', () => {
 });
 
 describe('#499: selection consults pending decisions, not just board status', () => {
-  it('AC-499.1/.2: a ticket at backlog with a pending decision is excluded regardless of status; resolved (absent from the set) it is selected again', () => {
+  it('AC-499.1, AC-499.2: a ticket at backlog with a pending decision is excluded regardless of status; resolved (absent from the set) it is selected again', () => {
     // The observed #438 case: board status drifted to backlog while the decision was still pending.
     const tickets = [t(438, 'backlog', 'p1')];
     expect(selectNext(tickets, { pendingIssues: new Set([438]) })).toBeNull();
