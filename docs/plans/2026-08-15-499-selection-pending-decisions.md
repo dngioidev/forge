@@ -108,6 +108,39 @@ entry so callers/tests can see the outcome without it affecting `ok`.
 **AC map:** AC-499.5
 **Done:** Task 1's `escalate.test.mjs` cases pass.
 
+## Fix wave: adversarial `forge:reviewer` + `forge:security`, round 1
+
+Both ran in parallel against the full branch diff and both returned
+`verdict: fail`:
+
+- **security (major):** `runCheck`'s new automatic board move fired on ANY
+  comment recognized as "the human's reply" — no author check — so any
+  commenter, not just the owner/a collaborator, could silently re-queue a
+  ticket for autonomous work, recreating the exact autonomy-pre-empt risk
+  #499 exists to close. **Fix:** gate the move on the reply comment's
+  GitHub `author_association` (`OWNER`/`MEMBER`/`COLLABORATOR` only); an
+  untrusted reply still resolves the decision file (unchanged pre-#499
+  behaviour) but does not move the board. security also flagged (minor,
+  defense-in-depth) that `pendingIssues` was built from `d.issue` with no
+  type normalization — not reachable via any current writer (both write
+  integers), but fixed anyway with `Number(d.issue)` at both call sites.
+- **reviewer (major):** the move unconditionally forced status to
+  `backlog`, which would demote a ticket that was genuinely in-flight
+  (`inProgress`/`inReview`, e.g. an escalation fired mid-delivery on a
+  reviewer deadlock or a gate failing twice) or was never actually parked
+  at `blocked` in the first place (a board with no `blocked` option mapped,
+  #27) — discarding real progress state for no reason. **Fix:** the move
+  now only fires when the ticket is confirmed to be at `blocked` right now
+  (`ctx.findItemByIssue` + `itemFieldKey` read before the move); otherwise
+  it's left alone. `moved: true` in the returned/resolved entry now means
+  "confirmed not blocked" (a queue-ready ticket), not "a mutation
+  happened" — an unreadable board status degrades to a warning rather than
+  a blind guess-and-move.
+
+Both fixes landed in the same commit; `pnpm verify` re-run green (1268/1268:
+1256 baseline + 12 new — 6 pure `selectNext` predicate tests, 6 `runCheck`
+round-trip/trust-gate tests) and `ac-gate` re-confirmed all 5 ACs mapped.
+
 ## Task 4 (docs): route index
 
 Add this plan to `docs/README.md`'s plan index.
