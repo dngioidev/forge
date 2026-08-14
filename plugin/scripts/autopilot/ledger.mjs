@@ -116,7 +116,14 @@ const HEALTHY_RATIO_FLOOR = 1 / (PER_TICKET_COST_CEILING * 2);
  * anything that isn't a finite positive number, never a garbage value.
  */
 export function sanitizePositiveInt(value, fallback = null) {
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  // #488 2nd security pass: check the FLOORED value against > 0, not the raw value — a
+  // corrupted input in the open interval (0, 1) (e.g. `boardSizeAtStart: 0.5`) is finite
+  // and > 0, but floors to 0, which is not "a finite positive number" per this function's
+  // own contract. Flooring first (then re-checking) closes that gap instead of silently
+  // returning 0 as if it were a validated anchor.
+  if (!Number.isFinite(value)) return fallback;
+  const floored = Math.floor(value);
+  return floored > 0 ? floored : fallback;
 }
 
 /**

@@ -929,6 +929,19 @@ describe('autopilot run ledger (#129, AC-6)', () => {
         expect(sanitizePositiveInt(undefined, 1)).toBe(1); // fallback honoured
       });
 
+      // 2nd security pass (fix-wave re-review): a value in the open interval (0, 1) is
+      // finite and > 0 but floors to 0 — checking `value > 0` before flooring let a
+      // corrupted 0.5 silently pass as "0", contradicting "never a garbage value".
+      it('AC-488.SEC6: sanitizePositiveInt rejects a sub-1 fraction that would floor to 0, returning the fallback instead', () => {
+        expect(sanitizePositiveInt(0.5)).toBeNull();
+        expect(sanitizePositiveInt(0.999)).toBeNull();
+        expect(sanitizePositiveInt(0.5, 1)).toBe(1); // fallback honoured, never silently 0
+        // never leaks a 0 anchor into the guard: a run with a decimal-corrupted anchor
+        // must not spuriously trip on the very first iteration.
+        const run = { ...freshRun(), boardSizeAtStart: 0.5, iterations: 0 };
+        expect(nextIteration(run, 5).cap).toBe(5 * DEFAULT_RUNAWAY_FACTOR); // falls back to the live boardSize, not 0
+      });
+
       it('sanitizeIterations fails CLOSED (Infinity, i.e. "trip now") on a corrupted run.iterations, never open', () => {
         expect(sanitizeIterations({ iterations: 12 })).toBe(12);
         expect(sanitizeIterations({ iterations: Infinity })).toBe(Infinity);
