@@ -28,7 +28,12 @@ export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human', 'ready', 'stalled-before-pr'];
 
 export function freshRun(startedAt = null) {
-  return { version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null };
+  return {
+    version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null,
+    // #488 AC.4: the board size the run started at (or was first observed at, for a ledger
+    // upgraded mid-run). null until `startRun` is given a `boardSize` opt — see § startRun.
+    boardSizeAtStart: null,
+  };
 }
 
 /**
@@ -79,12 +84,61 @@ export function applyFiled(run, { issue, kind, from }) {
   return { ...run, filed: [...run.filed, { issue, kind, from }] };
 }
 
+// #488: PR #468's no-fused-routes rule made every `select.mjs` action its own spawn with
+// its own recorded outcome, so a ticket that needs triage now costs 2 iterations
+// (triage→record, deliver→record) and an unshaped ticket under `--shape` costs up to 3
+// (shape→record, then triage/deliver→record). The old default of 2 was calibrated for the
+// pre-#468 economics (~1 iteration/ticket) and, post-#468, sits AT the real cost rather than
+// above it — a perfect full clear lands exactly on the cap (the bug this ticket fixes).
+// DEFAULT_RUNAWAY_FACTOR is raised strictly above the worst known per-ticket cost (3) so a
+// healthy clear — even an all-unshaped `--shape` board — never lands exactly on the cap,
+// while a run resolving fewer than one ticket per 4 iterations is unambiguously not
+// converging at any known-healthy pace.
+export const DEFAULT_RUNAWAY_FACTOR = 4;
+
+// #488 AC.5: healthy pace resolves roughly one ticket every PER_TICKET_COST_CEILING
+// iterations (the worst known per-ticket cost, #468). HEALTHY_RATIO_FLOOR is half that
+// rate — a generous floor below which iterations are being spent without closing tickets,
+// which is what #317's backstop exists to catch (diagnostic only; does not affect the trip).
+const PER_TICKET_COST_CEILING = 3;
+const HEALTHY_RATIO_FLOOR = 1 / (PER_TICKET_COST_CEILING * 2);
+
+/**
+ * #488 AC.4: the cap must not shrink as the board shrinks — it anchors to the board size
+ * recorded at run start (`run.boardSizeAtStart`, set once by `startRun`) rather than the
+ * live count a caller passes each iteration. Falls back to the live `boardSize` argument
+ * when the run predates #488 (an older ledger with no `boardSizeAtStart` field) or was
+ * never given one — same behaviour as before this ticket, so an un-upgraded call site
+ * degrades gracefully rather than breaking.
+ */
+function resolveAnchorBoardSize(run, boardSize) {
+  return run?.boardSizeAtStart != null ? run.boardSizeAtStart : boardSize;
+}
+
+/**
+ * #488 AC.5: at trip time, distinguish "no progress is being made" from "this run has
+ * simply been long" using state `run.outcomes` already carries — no new tracking. Counts
+ * distinct issues with a recorded outcome (already deduplicated per-issue, last-write-wins,
+ * by `applyOutcome`); `stalled-before-pr` is excluded because it is a stall awaiting
+ * resume/respawn, not resolved progress (see the OUTCOMES comment above) — a run stuck
+ * respawning the same ticket must not read as "long but healthy".
+ */
+function progressRatio(run) {
+  const resolvedIssues = new Set(
+    run.outcomes.filter((o) => o.outcome !== 'stalled-before-pr').map((o) => o.issue),
+  ).size;
+  return { resolvedIssues, ratio: run.iterations > 0 ? resolvedIssues / run.iterations : 0 };
+}
+
 /**
  * Loop backstop (spec §8): a pathological file-a-ticket-per-iteration run must
- * not loop forever. Once iterations exceed board size × factor, stop and escalate.
+ * not loop forever. Once iterations exceed the anchored board size × factor, stop and
+ * escalate. `boardSize` is the live count the caller passes; `resolveAnchorBoardSize`
+ * prefers `run.boardSizeAtStart` when present (#488 AC.4).
  */
-export function guardTripped(run, boardSize, factor = 2) {
-  return run.iterations >= Math.max(1, boardSize) * factor;
+export function guardTripped(run, boardSize, factor = DEFAULT_RUNAWAY_FACTOR) {
+  const anchor = Math.max(1, resolveAnchorBoardSize(run, boardSize));
+  return run.iterations >= anchor * factor;
 }
 
 /**
@@ -97,10 +151,17 @@ export function guardTripped(run, boardSize, factor = 2) {
  * When it trips, the loop is runaway and must HALT + ESCALATE rather than loop forever;
  * otherwise the loop continues. It never mutates the run — the iteration counter it reads
  * is owned by `applyOutcome`, so the natural stop (board clear) and `--limit` are intact.
+ *
+ * #488: the cap anchors to `run.boardSizeAtStart` when set (AC.4) and the `reason` text
+ * distinguishes a no-progress runaway from a merely-long healthy run (AC.5) via
+ * `progressRatio` — diagnostic only, it never changes whether the guard trips.
  */
-export function nextIteration(run, boardSize, factor = 2) {
-  const cap = Math.max(1, boardSize) * factor;
+export function nextIteration(run, boardSize, factor = DEFAULT_RUNAWAY_FACTOR) {
   const stop = guardTripped(run, boardSize, factor);
+  const anchor = Math.max(1, resolveAnchorBoardSize(run, boardSize));
+  const cap = anchor * factor;
+  const { resolvedIssues, ratio } = progressRatio(run);
+  const healthyButLong = ratio >= HEALTHY_RATIO_FLOOR;
   return {
     stop,
     escalate: stop, // the only reason this guard stops is the runaway backstop → escalate
@@ -108,7 +169,11 @@ export function nextIteration(run, boardSize, factor = 2) {
     cap,
     reason: stop
       ? `runaway backstop tripped: ${run.iterations} iteration(s) reached the cap of ${cap} ` +
-        `(board size ${Math.max(1, boardSize)} × ${factor}) — halting the loop and escalating`
+        `(board size ${anchor} × ${factor}, anchored at run start) — ` +
+        (healthyButLong
+          ? `${resolvedIssues} issue(s) resolved in that span — this run has simply been long, not stalled — `
+          : `only ${resolvedIssues} issue(s) resolved in that span — no progress is being made — `) +
+        `halting the loop and escalating`
       : null,
   };
 }
@@ -155,19 +220,30 @@ export async function recordFiled(cwd, entry) {
  * NOT file-backed — a resumed/restarted session is a new session and must re-obtain
  * a live grant — so on resume we keep the original start time but REFRESH the mode
  * from the freshly re-run preflight (absent an `authorized` opt, resume is untouched).
+ *
+ * #488 AC.4: when `opts` carries a `boardSize`, it is persisted as `boardSizeAtStart`
+ * — but ONLY ONCE. A fresh run sets it; a resume BACKFILLS it if absent (an existing
+ * ledger written before this fix) but NEVER recomputes an anchor that's already set —
+ * the whole point is that the cap must not shrink as the live board shrinks. Omitting
+ * `boardSize` (an un-upgraded call site) leaves the anchor unset, same as before this
+ * ticket — `nextIteration`/`guardTripped` fall back to the live boardSize argument.
  */
 export async function startRun(cwd, opts = {}) {
   const hasAuth = Object.prototype.hasOwnProperty.call(opts, 'authorized');
+  const hasBoardSize = Object.prototype.hasOwnProperty.call(opts, 'boardSize');
   const preflight = hasAuth ? mergeAuthPreflight(opts) : null;
   const decision = preflight ? { mergeMode: preflight.mode, mergeReason: preflight.reason } : {};
   const existing = await readRun(cwd);
   if (existing?.startedAt) {
-    if (!preflight) return existing; // resume — keep the original start, no new decision
-    const run = { ...existing, ...decision }; // resume — re-run the (non-file-backed) preflight
+    const needsAnchor = existing.boardSizeAtStart == null && hasBoardSize;
+    const anchor = needsAnchor ? { boardSizeAtStart: Math.max(1, opts.boardSize) } : {};
+    if (!preflight && !needsAnchor) return existing; // pure resume — no new decision, nothing to backfill
+    const run = { ...existing, ...decision, ...anchor }; // resume — re-run preflight and/or backfill the anchor
     await writeJson(join(cwd, RUN_RELPATH), run);
     return run;
   }
-  const run = { ...freshRun(new Date().toISOString()), ...decision };
+  const anchor = hasBoardSize ? { boardSizeAtStart: Math.max(1, opts.boardSize) } : {};
+  const run = { ...freshRun(new Date().toISOString()), ...decision, ...anchor };
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
 }
