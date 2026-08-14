@@ -142,6 +142,31 @@ to accept the gap, so it was closed rather than merely disclosed. Fixed by
 making the double-quote branch call `skipNuls()` too, symmetric with the
 unquoted branch.
 
+**Fix wave 4 (`forge:reviewer` round 3 — the FINAL permitted round, verdict
+fail -> fixed; `forge:security` round 3 ran in parallel, verdict pass, zero
+findings).** One new major finding, one minor: `canonicalize()` pushed the
+introducing `$` of `$'...'`/`$"..."` as ordinary live-substitution-syntax
+text, identical to any other bare `$` — so it could combine with the
+FOLLOWING quoted region's own content to falsely resemble a genuine `$(`
+open once quote characters are stripped. `$"("` (bash's locale-translated-
+string syntax, content `(`) resolves to the adjacent characters `$` + `(` in
+`text`, indistinguishable from a real substitution open to a position-only
+scan. Bash-verified this is NOT a substitution (`foo cmd $"(" -rf ")"` ->
+argv `[cmd] [(] [-rf] [)]`, four separate words) — but the pre-fix tokenizer
+swallowed the real, standalone `-rf` and everything after it whole into one
+opaque `substitution` token, inverting the module's own stated purpose for
+that opacity guarantee. Fixed by marking the introducing `$` NOT live
+substitution syntax whenever immediately followed by a quote character — it
+can never combine with anything after it to open a span. Minor: the
+contract's brace-detection bullet didn't explicitly state that `ddash`/
+`assignment` classification takes precedence over brace-group detection
+(current, intended behaviour) — clarified in the doc comment rather than
+changed.
+
+This was the FINAL permitted adversarial round per this ticket's own brief
+(four rounds max, escalate rather than exceed). See the PR body for the
+final round's verdicts and the exact round accounting.
+
 ### Stated non-goals (module doc comment, AC.4)
 
 Glob expansion, filesystem-backed path resolution, variable-VALUE
@@ -216,8 +241,8 @@ limitation (`"$(echo ')')"`) rather than silently getting it wrong.
 **Files:** plugin/scripts/lib/shell-tokenize.mjs
 **AC map:** AC-457.1, AC-457.2, AC-457.4, AC-457.5
 **Done:** Task 1's tests pass, plus the fix-wave regression tests above;
-`npx vitest run tests/lib/shell-tokenize.test.mjs` green (41/41); full
-`pnpm verify` green at 1254/1254 (1213 pre-existing + 41 new, zero
+`npx vitest run tests/lib/shell-tokenize.test.mjs` green (43/43); full
+`pnpm verify` green at 1256/1256 (1213 pre-existing + 43 new, zero
 pre-existing tests modified); `git diff main -- plugin/hooks/denylist.mjs`
 empty.
 

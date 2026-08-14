@@ -172,6 +172,38 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
     expect(tokens).toEqual([{ text: 'ab', kind: 'word' }]);
   });
 
+  it('AC-457.2d: $"..." (locale-translated string) is NOT command substitution, even when its content starts with "(" (reviewer finding, fix-wave 4)', () => {
+    // Full-branch adversarial forge:reviewer (round 3) finding: an earlier
+    // version pushed the introducing `$` of `$'...'`/`$"..."` as ordinary
+    // live-syntax text, indistinguishable in the resolved output from a
+    // genuine `$(` open once quote characters are stripped. `$"("`
+    // (locale-string syntax, content "(") resolved to the same two adjacent
+    // characters "$" + "(" as a real $(...) open, so scanRun() wrongly
+    // opened a substitution span there and swallowed every word after it —
+    // including a real, standalone "-rf" — into one opaque token. Bash-
+    // verified this is NOT a substitution at all:
+    //
+    //   $ foo cmd $"(" -rf ")"
+    //   ARGV[4]=[cmd ( -rf )]      <- FOUR separate words; -rf is ordinary
+    //
+    // Fixed by marking the introducing `$` NOT live substitution syntax
+    // whenever immediately followed by a quote char, so it can never
+    // combine with quoted CONTENT to form a false open. The introducer
+    // itself still isn't stripped from the output (same documented
+    // simplification as $'...' — see NON-GOALS) — this test only pins that
+    // "-rf" is never again swallowed into an opaque span.
+    const tokens = nonSep(tokenize('cmd $"(" -rf ")"'));
+    expect(tokens.every((t) => t.kind !== 'substitution')).toBe(true);
+    expect(tokens.some((t) => t.text === '-rf' && t.kind === 'word')).toBe(true);
+  });
+
+  it('AC-457.2d: $"..." earlier in the line does not prevent a LATER genuine $(...) from being recognised', () => {
+    const tokens = nonSep(tokenize('cmd $"(" $(echo -x) end'));
+    const sub = tokens.find((t) => t.kind === 'substitution');
+    expect(sub).toEqual({ text: '$(echo -x)', kind: 'substitution' });
+    expect(tokens.at(-1)).toEqual({ text: 'end', kind: 'word' });
+  });
+
   it('AC-457.2d: a $(...) span is one opaque substitution token — inner text never leaks as a sibling word (probe2/#449)', () => {
     // $ printf '[%s]\n' rm -rf "$(echo -x)" safe-target
     // [rm] [-rf] [-x] [safe-target]     <- "-x" is the substitution's OUTPUT,

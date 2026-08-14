@@ -96,7 +96,14 @@
  *   containing `{...}` is not blanket-flagged, #85's pinned case) is left to
  *   whichever Phase 2+ rule consumes this classification — the tokenizer's
  *   job is only to say "brace-group syntax is present here", not to judge
- *   position-in-command relevance.
+ *   position-in-command relevance. STATED EXCLUSION (full-branch adversarial
+ *   `forge:reviewer`, round 3): a token already classified `ddash` or
+ *   `assignment` is NEVER also checked for brace-group syntax — those two
+ *   checks run first and `continue` immediately on a match, so e.g.
+ *   `FOO={a,b}bar` is `assignment`, never `unresolved-brace`. This is
+ *   current, intended behaviour (an assignment's value is captured whole
+ *   regardless of what it contains, per the assignment bullet above), stated
+ *   here explicitly rather than left for a reader to infer from code order.
  *
  * ============================================================================
  * NON-GOALS — stated explicitly so Phase 2 knows the boundary
@@ -118,16 +125,24 @@
  *   no execution environment to consult; `$TMP`-shaped text is an ordinary
  *   `word` token, matched on its literal spelling only, exactly as
  *   `denylist.mjs`'s `SAFE_RM_TARGET` already does.
- * - NO `$'...'` ANSI-C escape decoding. `$'...'` is treated as an ordinary
- *   `$` character (bare word text) immediately followed by a plain
- *   single-quoted region — its content is passed through literally, exactly
- *   as `'...'` content is, WITHOUT decoding `\x`/`\u`/`\NNN`/`\c`-style
- *   escapes. `normalizeShellText()` needed three separate hardening rounds to
- *   get that decoder's lookahead boundaries right (see its own `\c` comment:
- *   "guarding case by case was losing"); none of AC.2's five pinned cases
- *   need decoded values, so this module does not carry that risk for no
- *   required behaviour. A flag spelled via `$'\x2df'`-style encoding is not
- *   recognised as one — recorded as a real gap, not a silent one.
+ * - NO `$'...'` ANSI-C escape decoding, and NO `$"..."` locale-string
+ *   translation. Both are treated as an ordinary `$` character (bare word
+ *   text) immediately followed by a plain quoted region — content passed
+ *   through literally, exactly as `'...'`/`"..."` content is, WITHOUT
+ *   decoding `$'...'`'s `\x`/`\u`/`\NNN`/`\c`-style escapes or resolving
+ *   `$"..."`'s locale catalog lookup. `normalizeShellText()` needed three
+ *   separate hardening rounds to get its decoder's lookahead boundaries
+ *   right (see its own `\c` comment: "guarding case by case was losing");
+ *   none of AC.2's five pinned cases need decoded/resolved values, so this
+ *   module does not carry that risk for no required behaviour. A flag
+ *   spelled via `$'\x2df'`-style encoding is not recognised as one —
+ *   recorded as a real gap, not a silent one. The introducing `$` itself
+ *   IS still marked not-live-substitution-syntax (`synBare: false`) so it
+ *   can never combine with the quoted region's own content to falsely
+ *   trigger `$(...)` detection — see `canonicalize()`'s own comment for the
+ *   bash-verified repro (`$"("` is one locale-string word, NOT a
+ *   substitution open) this closes. That boundary-safety fix is NOT the
+ *   same claim as decoding the construct's value; the two are independent.
  * - NO judgement of what a `substitution` token would evaluate to. A
  *   `$(...)`/backtick span is opaque data as far as this module is
  *   concerned — closing the "characters inside a subshell leak into the
@@ -299,6 +314,35 @@ function canonicalize(rawCommand) {
         continue;
       }
       if (ch === "'" || ch === '"') { quote = ch; continue; }
+      if (ch === '$' && (command[i + 1] === "'" || command[i + 1] === '"')) {
+        // `$'...'`/`$"..."` INTRODUCER — full-branch adversarial
+        // `forge:reviewer` (round 3) finding: an earlier version pushed
+        // this `$` as ordinary live-syntax text (`syn: true`) identically to
+        // any other bare `$`, so it could combine with the FOLLOWING
+        // quoted region's own CONTENT to falsely look like a genuine `$(`
+        // open once quote characters are stripped — `$"("` (bash's
+        // locale-translated-string syntax, content `(`) resolves to the
+        // two adjacent characters `$` and `(` in `text`, indistinguishable
+        // from a real `$(` open to a position-only scan. Bash-verified
+        // this is NOT a substitution:
+        //
+        //   $ foo cmd $"(" -rf ")"
+        //   ARGV[4]=[cmd ( -rf )]      <- FOUR words; -rf is a normal one
+        //
+        // but the pre-fix tokenizer swallowed `-rf` and everything after it
+        // whole into one opaque `substitution` token — real argv words
+        // hidden behind the very opacity guarantee this module exists to
+        // provide, inverted. Fixed by marking this specific `$` NOT live
+        // substitution syntax (`syn: false`) whenever it is immediately
+        // followed by a quote character: it can never combine with
+        // anything after it to open a span. The `$` still lands in the
+        // resolved output text un-decoded, same simplification already
+        // accepted for `$'...'` (see NON-GOALS) — this fix closes the
+        // false-substitution-detection bug, not the separate, already-
+        // documented "the introducer isn't stripped" cosmetic gap.
+        push(ch, true, false);
+        continue;
+      }
       push(ch, true, true);
       continue;
     }
