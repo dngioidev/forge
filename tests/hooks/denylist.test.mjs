@@ -538,6 +538,345 @@ describe('recursive-delete honors POSIX -- end-of-options (#450, AC-450.*)', () 
   });
 });
 
+describe('recursive-delete rm slice is command-token-anchored, not substring (#454, AC-454.1)', () => {
+  // AC-454.1 — the ticket's exact reproduction: `cSpaced.indexOf('rm')` finds
+  // the FIRST occurrence of the letters "rm" anywhere in the segment, so an
+  // env-var prefix that merely CONTAINS "rm" (xterm, affirm) moves the slice
+  // point before the real `rm` and the rule judges the wrong span. Verified
+  // directly against `check()` on `main` before this fix: both are wrongly
+  // blocked. Env-prefixed commands are ordinary in scripts and Makefiles.
+  it('AC-454.1: an env-var prefix merely containing "rm" does not false-positive', () => {
+    expect(check('TERM=xterm rm -rf dist').blocked).toBe(false);
+    expect(check('X=affirm rm -rf dist').blocked).toBe(false);
+  });
+
+  // AC-454.1 — the false positive is not limited to a bare dangerous-looking
+  // target; the same wrong-span mis-slice would also wrongly ALLOW a genuinely
+  // dangerous target if the prefix pushed the slice start past it, so the fix
+  // is pinned in both directions, not just the ticket's headline case.
+  it('AC-454.1: an env-var prefix containing "rm" still blocks a real dangerous target', () => {
+    expect(check('TERM=xterm rm -rf /important-template-configs')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-454.2 — no regression in what #446 closed: re-run its blocked and
+  // allowed cases verbatim, by name, so a regression here is never mistaken
+  // for an unrelated failure.
+  it('AC-454.2: #446\'s dangerous-target cases stay blocked', () => {
+    for (const cmd of [
+      'rm -rf /important-template-configs',
+      'rm -rf ~/my-distribution-of-prod-secrets',
+      'rm -rf ./coverage-notes-prod-db',
+      'rm -rf /srv/scratchpad-lookalike-prod',
+      'rm -rf /secret/data dist',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  it('AC-454.2: #446\'s safe-target cases stay allowed', () => {
+    for (const cmd of ['rm -rf dist', 'rm -rf node_modules', 'rm -rf dist build coverage', 'rm -rf "$TMP/forge-test"']) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: false });
+    }
+  });
+
+  // AC-454.3 — both AC.1 and AC.5's fixes are pinned in BOTH directions (the
+  // false positive now allowed, a genuinely dangerous shape of the same
+  // spelling still blocked) in one place, under this AC's own name. Per the
+  // #437/#446 discipline, these exact assertions were run against the
+  // pre-fix source first and confirmed to fail (stashing the source change):
+  // both `blocked: false` assertions below failed with `expected true to be
+  // false` before `beforeEndOfOptions()`/the `\brm\b`-anchored slice existed.
+  it('AC-454.3: both fixes are pinned in the allow direction AND the block direction, confirmed to fail pre-fix', () => {
+    // AC.1 direction pins.
+    expect(check('TERM=xterm rm -rf dist').blocked).toBe(false);
+    expect(check('TERM=xterm rm -rf /important-template-configs')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    // AC.5 direction pins.
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
+describe('AC-454.4: no other rule locates a command verb via unanchored indexOf', () => {
+  // AC.4 — audited the whole plugin tree for the same defect class:
+  // `<segment>.indexOf('<verb>')` fed straight into `.slice()` to re-locate a
+  // command verb by unanchored substring search, the exact shape AC.1 fixed
+  // in recursive-delete. None found elsewhere — every other `.indexOf(` hit
+  // in the tree is a CLI-argv flag-value lookup (`--question`, `--out`,
+  // `--issue`, `--base`, ...), a different, non-buggy class (a pre-tokenized
+  // argv array, not raw shell text). Asserted here as a real regression
+  // guard, not just a plan-doc claim, so a future rule reintroducing this
+  // exact pattern anywhere under plugin/ fails CI rather than waiting for
+  // the next adversarial pass to notice.
+  it('AC-454.4: no `<expr>.indexOf(\'<verb>\')` sliced directly to locate a verb exists under plugin/', async () => {
+    const { readdir, readFile } = await import('node:fs/promises');
+    const pluginRoot = join(repoRoot, 'plugin');
+    const offenders = [];
+    const BAD_PATTERN = /\.slice\([^)]*\.indexOf\(['"][a-zA-Z][a-zA-Z-]*['"]\)/;
+    async function walk(dir) {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules') continue;
+          await walk(full);
+        } else if (entry.isFile() && entry.name.endsWith('.mjs')) {
+          const content = await readFile(full, 'utf8');
+          if (BAD_PATTERN.test(content)) offenders.push(full);
+        }
+      }
+    }
+    await walk(pluginRoot);
+    expect(offenders, `unanchored verb-locating indexOf found in: ${offenders.join(', ')}`).toEqual([]);
+  });
+});
+
+describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#456, AC-454.5)', () => {
+  // AC-454.5 — the ticket's exact reproduction: `shortFlagCluster()` and the
+  // `--recursive`/`--force` regexes scan the WHOLE segment, ignoring a bare
+  // `--` marker, so a real `rm -- -rf target` (which POSIX-correctly deletes
+  // a literal file named "-rf", never recursively or forcibly) reads the `-rf`
+  // after the marker as real flags and over-blocks a safe, non-recursive
+  // delete. Same for spelled-out long flags after the marker.
+  it('AC-454.5: flag-looking tokens AFTER a bare -- are not read as flags', () => {
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -- --recursive --force target').blocked).toBe(false);
+  });
+
+  // AC-454.5 — real flags BEFORE the marker still count; pairing that with a
+  // dash-leading real target after the marker isolates that the block below
+  // is coming from safeRmTarget()'s existing --  handling (#450), not from
+  // flag detection reading past the marker.
+  it('AC-454.5: real flags before -- still combine with a real target after it', () => {
+    expect(check('rm -rf -- -prod-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-454.5 (fix wave — full-branch adversarial reviewer finding) — a bare
+  // `--` sitting INSIDE a command substitution belongs entirely to the INNER
+  // command, never to the outer `rm`, and must not be read as end-of-options
+  // for `rm`'s own flags. The first version of `beforeEndOfOptions()` did a
+  // flat whitespace-token scan with no nesting awareness, so `rm $(cat --
+  // flagfile) -rf /important-template-configs` truncated flag detection
+  // right after the INNER `--`, before the real `-rf` — a live, dangerous
+  // `rm -rf` on a target #446 already pins as unsafe, wrongly ALLOWED. This
+  // is the critical-direction regression the ticket itself named as the risk
+  // to guard against; confirmed to reproduce against the flat-scan version
+  // and closed by the nesting-aware rewrite (tracks `$(...)`/backtick depth,
+  // only recognises `--` as the marker at depth 0).
+  it('AC-454.5: a -- embedded inside $(...) or backticks is not read as top-level end-of-options', () => {
+    for (const cmd of [
+      'rm $(cat -- flagfile) -rf /important-template-configs',
+      'rm `cat -- flagfile` -rf /important-template-configs',
+      'rm $(git config -- foo) -rf /important-template-configs',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-454.5 — a GENUINE top-level `--` still works correctly even when a
+  // command substitution appears earlier in the same segment (the nesting
+  // tracker must return to depth 0 once the substitution closes, not stay
+  // stuck "inside" and swallow the rest of the line).
+  it('AC-454.5: a real top-level -- after a closed command substitution is still honoured', () => {
+    expect(check('rm $(echo hi) -- -rf target').blocked).toBe(false);
+  });
+
+  // AC-454.5 (fix wave 4 — full-branch adversarial SECURITY re-review
+  // finding) — the nesting-depth tracker above is only correct if it, too,
+  // ignores a `$`/`(`/`)`/backtick that is really just quoted LITERAL DATA
+  // (an inner command's own quoted argument), not genuine substitution
+  // syntax. `rm $(cat ')' -- flagfile) -rf /important-secrets` plants a
+  // quoted `')'` — a literal argument to `cat`, never a real close-paren for
+  // the outer `$(...)` — ahead of the real closing paren. A depth-tracker
+  // reading raw (already quote-stripped) text can't tell that quoted `)`
+  // apart from a genuine one, decrements `parenDepth` back to 0 too early,
+  // and misreads the INNER `--` (still, per real bash, syntactically inside
+  // the substitution) as the outer `rm`'s end-of-options marker — truncating
+  // flag detection before the real, live `-rf`. Closed by masking a
+  // PROTECTED `$`/`(`/`)`/backtick in `guardedText` exactly like protected
+  // whitespace already was, and having the nesting tracker read `guarded`
+  // instead of `command` for those checks too.
+  it('AC-454.5: a quoted paren/backtick inside a command substitution does not desync the nesting-depth tracker', () => {
+    expect(check("rm $(cat ')' -- flagfile) -rf /important-secrets")).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-454.5 (fix wave 5 — full-branch adversarial SECURITY re-review
+  // finding) — the depth tracker must count EVERY bare paren, not only one
+  // immediately preceded by `$`. The `$(`-only version incremented depth
+  // solely on a genuine command-substitution open but decremented on ANY `)`
+  // at depth > 0 regardless of which `(` it structurally closed, so a bare
+  // paren construct nested INSIDE an outer `$(...)` — here `<(true)`, a
+  // process substitution, never preceded by `$` — was never counted going
+  // in, but its matching `)` still zeroed the counter coming out, one level
+  // too shallow while genuinely still inside the outer substitution. The
+  // `--` right after that inner `)` (still inside the outer `$(...)` per
+  // real bash) was then misread as the real end-of-options marker,
+  // truncating flag detection before the real, live `-rf`. Verified against
+  // real bash (`set -x`) that `$(cat <(true) --)` expands to nothing here
+  // (the inner process substitution's output is empty), so the ACTUAL argv
+  // reaching `rm` is `-rf /important-secrets` — a genuine recursive-force
+  // delete. Closed by counting every bare `(` uniformly, regardless of what
+  // introduces it (subshell, process substitution, or `$(`) — a `--` inside
+  // ANY nested parenthetical construct belongs to that construct, never to
+  // the outer command, so what specifically opened the parenthesis does not
+  // matter to this function's one question.
+  it('AC-454.5: a bare paren construct (process substitution) nested inside $(...) does not desync the nesting-depth tracker', () => {
+    expect(check('rm $(cat <(true) -- ) -rf /important-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-454.5 (fix wave 6 — full-branch adversarial REVIEWER re-review
+  // finding, the deepest of six adversarial rounds) — `normalizeShellText()`
+  // tracks quoting with a SINGLE flat `quote` variable, with no concept that
+  // `$(...)`/backticks open a genuinely INDEPENDENT quoting scope in real
+  // bash. When the SAME quote character is reused both OUTSIDE and INSIDE a
+  // substitution — `rm "$(cat " -- ")" -rf /important-secrets`, where the
+  // inner argument's own `"` delimiters are, to a flat scan, indistinguishable
+  // from the outer quote's — the flat scanner's quote PARITY itself desyncs,
+  // not merely one character's masking, producing WRONG `bare[]` values that
+  // no per-character masking fix (fix waves 2-5, each of which assumed the
+  // underlying quote tracking was already correct) could catch. Verified
+  // against real bash (`set -x`): the whole `$(...)` here expands to an empty
+  // string (the inner `cat " -- "` call fails harmlessly, no such file), so
+  // the outer double-quoted argument becomes one empty-string argv element,
+  // and the ACTUAL argv reaching `rm` is `["", "-rf", "/important-secrets"]`
+  // — a genuine, live recursive-force delete. `main` blocks it; this
+  // branch's tip through fix wave 5 did not.
+  //
+  // Rather than chase a seventh variant of "which nested-quote-reuse shape
+  // breaks the flat scan next", this is closed CATEGORICALLY: `recursive-
+  // delete`'s `test()` now refuses to trust `beforeEndOfOptions()`'s
+  // truncation at all whenever the segment has ANY quote-protected
+  // syntactically-relevant character (`cGuarded.includes(GUARD_SENTINEL)`),
+  // falling back to the historical, always-scan-the-whole-segment behaviour
+  // instead — the same behaviour `main` already had, and the same one AC.5's
+  // own named cases (both quote-free) never needed relaxed in the first
+  // place.
+  it('AC-454.5: a same-quote-character reused both outside and inside a command substitution does not desync quote tracking', () => {
+    expect(check('rm "$(cat " -- ")" -rf /important-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  // AC-454.5 (fix wave 6) — the categorical gate must not regress AC.5's own
+  // named, quote-free cases: neither involves any quoting at all, so
+  // `beforeEndOfOptions()`'s truncation is still trusted and still applies.
+  it('AC-454.5: the categorical quote-protection gate does not affect AC.5\'s own quote-free named cases', () => {
+    expect(check('rm -- -rf target').blocked).toBe(false);
+    expect(check('rm -- --recursive --force target').blocked).toBe(false);
+  });
+
+  // AC-454.5 (fix wave 2 — full-branch adversarial SECURITY finding) — a
+  // QUOTED argument that merely CONTAINS "--" (with a quoted literal space
+  // around it) is not a real POSIX end-of-options marker. `'X --'` is ONE
+  // shell argv token (the space between "X" and "--" is quoted, i.e. part of
+  // the SAME argument, not a real separator) — real `rm`'s own getopt never
+  // stops there, and GNU coreutils' default option permutation keeps scanning
+  // for flags in later arguments regardless of an earlier non-flag operand.
+  // `beforeEndOfOptions()`'s flat text scan could not tell "quoted, therefore
+  // one token" apart from "genuinely two separate tokens" once
+  // `normalizeShellText()` had already stripped the quote characters — both
+  // render as identical flattened text. `rm 'X --' -rf /important-secrets`
+  // (and the `-r`/`-f` split, `--recursive --force` long-flag, and
+  // double-quote variants) were confirmed to reproduce a live, dangerous
+  // `rm -rf` reading as not-blocked. Closed by `guardedText` (see
+  // `normalizeShellText()`'s own comment): the end-of-options boundary check
+  // now reads a companion view where only whitespace that came from OUTSIDE
+  // any quote/escape counts as a real separator.
+  it('AC-454.5: a quoted decoy merely containing -- is not read as end-of-options', () => {
+    for (const cmd of [
+      "rm 'X --' -rf /important-secrets",
+      "rm -r 'X --' -f /important-secrets",
+      "rm 'X --' --recursive --force /important-secrets",
+      'rm -r "X --" -f /important-secrets',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-454.5 — the same decoy class via a BACKSLASH-ESCAPED space instead of
+  // quotes: `X\ --` is bash's other way to make a space part of the SAME
+  // argv token (`\ ` outside quotes is a literal-space escape), the same
+  // semantic shape the quoted-decoy fix above closes, through a different
+  // syntax. `emitEscaped()` routes through `emit()`, which defaults `isBare`
+  // to `false` exactly like the in-quote path, so this is covered by the
+  // same mechanism — pinned explicitly so a future refactor of the escape
+  // path can't silently regress it without a name attached.
+  it('AC-454.5: a backslash-escaped-space decoy merely containing -- is not read as end-of-options', () => {
+    expect(check('rm X\\ -- -rf /important-secrets')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-454.5 — the control case, precisely bounding the fix above: a BARE
+  // quoted `--` (the ENTIRE argv element equals "--", not merely containing
+  // it) has no INTERNAL protected whitespace either way, and really is
+  // end-of-options in real bash too (verified empirically by the security
+  // review) — must stay allowed, same as the unquoted spelling.
+  it('AC-454.5: a bare quoted -- token (the whole argument, not a substring of one) is still honoured', () => {
+    expect(check("rm '--' -rf target").blocked).toBe(false);
+  });
+
+  // AC-454.5 (fix wave 3 — full-branch adversarial reviewer finding) —
+  // `guardedText` must be built with an index space that matches `bare`'s,
+  // or the masking silently reads the WRONG character's protected/bare
+  // status. The first version used `Array.from(text, (ch, i) => ...)`, which
+  // iterates a string by Unicode CODE POINT — a surrogate-pair character
+  // (most emoji, many CJK-extension/mathematical/supplementary-plane
+  // characters) collapses to ONE iteration step there, shifting the
+  // callback's index one position early for everything after it. `bare` was
+  // built by the main scan's own plain `command[i]` loop, a UTF-16
+  // CODE-UNIT walk (a surrogate pair is two separate iterations/pushes) — so
+  // once any astral character appeared anywhere earlier in the command,
+  // every later `bare[i]` lookup read one position too early, silently
+  // un-masking a PROTECTED whitespace and reopening the exact quoted/escaped
+  // decoy bypass fix wave 2 closed. Confirmed to reproduce
+  // (`check('rm <emoji>X\\ -- -rf target')` read `blocked: false`) before
+  // this fix; closed by rebuilding `guardedText` with a plain
+  // `text[i]`/`text.length` loop, the same UTF-16-code-unit index space
+  // `bare` already uses throughout.
+  it('AC-454.5: an astral (surrogate-pair) character earlier in the command does not desync the guarded-whitespace masking', () => {
+    const emoji = String.fromCodePoint(0x1f600); // outside the BMP: a real surrogate pair
+    expect(check(`rm ${emoji}X\\ -- -rf /important-secrets`)).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    // ...and a GENUINE bare -- after the same emoji is still correctly honoured.
+    expect(check(`rm ${emoji}X -- -rf target`).blocked).toBe(false);
+  });
+
+  // AC-454.6 — no regression on #450's own `--` handling of the TARGET half:
+  // a genuinely dangerous target spelled with a leading dash after `--`,
+  // alongside a decoy safe target, must still block.
+  it('AC-454.6: #450\'s -- target-half regression case stays blocked', () => {
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-454.6 — no regression on #437's bundled/abbreviated force-push,
+  // hard-reset, and env-branch-delete spellings; this ticket only touches
+  // recursive-delete.
+  it('AC-454.6: #437\'s force-push/hard-reset/env-branch-delete spellings are unaffected', () => {
+    expect(check('git push -uf origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git reset --hard')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+    expect(check('git branch -D main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+  });
+
+  // AC-454.6 — ordinary flag detection without any -- marker is unaffected:
+  // a real rm -rf on an unsafe target still blocks exactly as before.
+  it('AC-454.6: ordinary (no --) recursive-delete detection is unaffected', () => {
+    expect(check('rm -rf /important-template-configs')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('rm -rf dist').blocked).toBe(false);
+  });
+});
+
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
   // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
   // and `--hard`, in either order, and regardless of a global git flag before
