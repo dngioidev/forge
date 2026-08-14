@@ -24,12 +24,24 @@
  * PRIOR ART REUSED: `denylist.mjs`'s `beforeEndOfOptions()` (#454, PR #496,
  * fix-wave 5+) already implements a depth-tracking, quote-aware `$()`/
  * backtick span scanner, forged through six adversarial review rounds. The
- * span-extraction logic here (`scanSubstitutionSpan()`) generalises that same
- * state machine — "any bare `(` counts, paren-counting is suspended inside a
- * backtick span and vice versa, ambiguity always resolves toward NOT
- * splitting a span early" — to extract a span's full extent rather than just
- * answer one truncation question. Re-deriving this from scratch would have
- * relitigated the same six lessons; this module does not.
+ * span-extraction logic here (`scanSubstitutionSpan()`) started as a direct
+ * generalisation of that same flat `parenDepth`/`inBacktick` PAIR — "any bare
+ * `(` counts, ambiguity always resolves toward NOT splitting a span early" —
+ * from "find one truncation boundary" to "find where a span ends". A
+ * full-branch adversarial review of THIS ticket found that flat pair is only
+ * symmetric in the direction `beforeEndOfOptions()` happens to need: it
+ * cannot recognise a backtick opening while already inside an unclosed
+ * `$(...)`, so a bare `)` belonging to that nested backtick region's own
+ * contents (e.g. a `case` statement's pattern-closing paren) misreads as
+ * closing the OUTER span early — see `scanSubstitutionSpan()`'s own comment
+ * for the verified repro. Fixed here with a proper STACK (this module's own
+ * addition, not inherited) rather than the flat pair; whether
+ * `beforeEndOfOptions()` itself carries the same latent gap is a fact about
+ * THAT function, unchanged by this ticket, not claimed either way here.
+ * Re-deriving the general shape of this scanner from scratch would still
+ * have relitigated the six lessons the flat-pair PART of it already
+ * encodes; this module did not skip that step, it started from it and then
+ * found one more.
  *
  * ============================================================================
  * CONTRACT — what this module claims, precisely
@@ -46,16 +58,31 @@
  *   different reason (serving two downstream consumers with one flat string,
  *   see that function's own comment) that does not apply here.
  * - A token matching `^[A-Za-z_][A-Za-z0-9_]*=` that appears before the first
- *   non-assignment token is classified `assignment`. Its value is captured
- *   WHOLE, including any substitution embedded in it (`X=$(echo bar)` is one
- *   `assignment` token, not split at the substitution boundary) — the
- *   assignment's target name is what a rule cares about; sub-classifying its
- *   value is out of scope.
+ *   non-assignment token is classified `assignment` — PROVIDED that matched
+ *   `NAME=` prefix is entirely UNQUOTED/UNESCAPED in source (checked against
+ *   `wsBare`, not the resolved text). This is deliberately NOT the same test
+ *   `ddash` uses below: full-branch adversarial `forge:reviewer` found real
+ *   bash requires the assignment word's left-hand side to be literally bare
+ *   — quoting even one character of it (`'FOO'=bar`, `FO'O'=bar`) makes bash
+ *   try to run a command NAMED "FOO=bar" instead of treating it as an
+ *   assignment (bash-verified: `command not found`, never assignment
+ *   behaviour). Assignment recognition is a shell LEXICAL rule sensitive to
+ *   literal source quoting; it is not an argv-value convention like `--`
+ *   (below), and the two must not be tested the same way despite looking
+ *   parallel. The VALUE half (after `=`) is captured WHOLE regardless of
+ *   quoting, including any embedded substitution (`X=$(echo bar)` is one
+ *   `assignment` token, not split at the substitution boundary) — only the
+ *   `NAME=` prefix's bareness matters.
  * - A run whose resolved text is EXACTLY `--` is a structural `ddash` token,
  *   never a dash-prefixed word — checked against the token's RESOLVED text
  *   (quotes/escapes already removed), so a quoted `'--'` counts exactly as
  *   the AC-454.5 precedent in `denylist.mjs` already established: a shell
- *   delivers the identical argv value regardless of how it was quoted.
+ *   delivers the identical argv value regardless of how it was quoted. This
+ *   is safe for `--` specifically because it is a POSIX argv-value
+ *   convention interpreted by the INVOKED program (bash-verified: a `--`
+ *   spelled as `-'-'`, half-quoted, still behaves as end-of-options), unlike
+ *   assignment recognition above, which is a bash PARSE-TIME decision about
+ *   the word's own syntax, not its resolved value.
  * - `$(...)`/backtick spans are recognised as OPAQUE `substitution` tokens by
  *   a single-pass, depth- and backtick-aware scan. The scan never recurses
  *   into a span's own contents to tokenize them as their own command — it
@@ -217,6 +244,21 @@ function hasBraceGroupSyntax(s) {
  * already established (#452 v2) and is bash-verified below (case 3): a raw
  * NUL is invisible to bash's own parser, and a backslash immediately before
  * one or more NULs reaches THROUGH them to whichever real byte follows.
+ *
+ * BACKSLASH-NEWLINE (line continuation) is a dedicated case, both unquoted
+ * and inside double quotes — full-branch adversarial `forge:reviewer` found
+ * an earlier version of this function had none, so `\<newline>` resolved to
+ * a literal embedded newline instead of vanishing. Bash-verified: both an
+ * unquoted and a double-quoted `\<newline>` join the surrounding text into
+ * ONE word with NOTHING inserted, not even a space —
+ *
+ *   $ printf '[%s]\n' r\<LF>m -x        ->  [rm] [-x]
+ *   $ printf '[%s]\n' "a\<LF>b"          ->  [ab]
+ *
+ * `normalizeShellText()` already has the identical special case
+ * (`emitEscaped`'s own `if (ch !== '\n') emit(ch);`, and its double-quote
+ * escape set already includes `\n`) — this mirrors it rather than
+ * reinventing a second answer to the same question.
  */
 function canonicalize(rawCommand) {
   const command = rawCommand.replace(/\r/g, '');
@@ -235,7 +277,9 @@ function canonicalize(rawCommand) {
       if (ch === '\\') {
         const j = skipNuls(i + 1);
         const target = command[j];
-        if (target !== undefined) push(target, false, false);
+        // A line-continuation swallows both bytes with NOTHING emitted —
+        // every other escape target is emitted literally, non-bare.
+        if (target !== undefined && target !== '\n') push(target, false, false);
         i = target !== undefined ? j : j - 1;
         continue;
       }
@@ -245,8 +289,8 @@ function canonicalize(rawCommand) {
     }
 
     if (ch === quote) { quote = null; continue; }
-    if (quote === '"' && ch === '\\' && /["$`\\]/.test(command[i + 1] ?? '')) {
-      push(command[i + 1], false, false);
+    if (quote === '"' && ch === '\\' && /["$`\\\n]/.test(command[i + 1] ?? '')) {
+      if (command[i + 1] !== '\n') push(command[i + 1], false, false);
       i++;
       continue;
     }
@@ -259,46 +303,77 @@ function canonicalize(rawCommand) {
 }
 
 /**
- * Extract the extent of a `$(...)`/backtick span, generalising
- * `beforeEndOfOptions()`'s hardened state machine (see module comment) from
- * "find one boundary" to "find where this specific span ends". `openIndex`
- * points at the span's own opening character(s) (`$` of `$(`, or the
- * backtick). Returns the EXCLUSIVE end index.
+ * Extract the extent of a `$(...)`/backtick span. `openIndex` points at the
+ * span's own opening character(s) (`$` of `$(`, or the backtick). Returns
+ * the EXCLUSIVE end index.
  *
- * Never recurses into the span to tokenize its contents (module non-goal) —
- * it only tracks enough structure (bare paren depth, backtick toggling) to
- * know when the OUTER span itself has closed, exactly as
- * `beforeEndOfOptions()` does for the same reason.
+ * STACK-BASED, not the flat `parenDepth`/`inBacktick` PAIR
+ * `beforeEndOfOptions()` uses (#454, PR #496) — a full-branch adversarial
+ * `forge:reviewer` pass on THIS ticket found that the flat pair is only
+ * symmetric in the direction it happens to test: gating the backtick-toggle
+ * on `parenDepth === 0` means a backtick opening while already inside an
+ * UNCLOSED `$(...)` (`parenDepth >= 1`) is never recognised as opening a
+ * backtick region at all, so a bare `)` inside it — e.g. a `case` statement
+ * pattern's own closing paren, entirely ordinary shell syntax — is
+ * misread as closing the OUTER `$(...)` early, leaking the backtick
+ * region's own inner text as sibling `word` tokens. Verified against real
+ * bash (the substitution's own inner `case` block runs as ONE unit; nothing
+ * about it should ever surface as an outer-command word):
  *
- * An unterminated span (`i` reaches the end of input before closing) runs to
+ *   $ foo() { printf 'ARGV[%d]=[%s]\n' "$#" "$*"; printf '[%s]\n' "$@"; }
+ *   $ foo $(echo a; `case x in x) echo mid;; esac`; echo c) end
+ *   ARGV[3]=[a c end]        <- ONE substitution; "end" is the only other word
+ *
+ * the exact #449 leak class this module exists to prevent. A prior version
+ * of this function's own comment (and the plan doc) claimed the flat pair
+ * handled paren/backtick suspension symmetrically "vice versa" — that claim
+ * was false and is corrected here, not quietly dropped, matching this file
+ * family's own practice of recording a wrong claim alongside its fix.
+ *
+ * The stack tracks, innermost-last, which KIND of region each currently-open
+ * level is. Only the TOP frame's kind decides what closes it:
+ *  - top `'paren'`: a bare `(` pushes another `'paren'` frame; a bare `)`
+ *    pops the current frame (returning the end index once the stack empties
+ *    while the OUTERMOST frame was itself `'paren'`); a bare backtick pushes
+ *    a `'backtick'` frame (opens a NESTED backtick region — the case this
+ *    fixes).
+ *  - top `'backtick'`: ONLY a bare backtick pops it (real backtick spans
+ *    terminate purely at the next unescaped backtick — POSIX backtick
+ *    parsing has never been paren-aware, so parens inside are correctly
+ *    inert here, not a simplification). Nested backtick-WITHIN-backtick
+ *    without escaping is not modelled (POSIX itself requires escaping a
+ *    backtick when nesting inside another backtick — the unescaped form is
+ *    ambiguous even to real bash, so there is no single correct answer to
+ *    reproduce; module non-goal, same "never recurse into a span's own
+ *    contents" boundary as everywhere else in this module).
+ *
+ * Never recurses into a span to tokenize its contents (module non-goal) —
+ * it only tracks enough structure to know when each open region closes.
+ *
+ * An unterminated span (the stack never empties before end of input) runs to
  * end-of-string — a defined, safe outcome per the spike's own requirement,
  * rather than an unbounded or undefined one.
  */
 function scanSubstitutionSpan(text, synBare, openIndex, kind) {
   const n = text.length;
-  let i;
-  let parenDepth;
-  let inBacktick;
-  if (kind === 'paren') { i = openIndex + 2; parenDepth = 1; inBacktick = false; }
-  else { i = openIndex + 1; parenDepth = 0; inBacktick = true; }
+  const stack = [kind]; // 'paren' | 'backtick', innermost last
+  let i = kind === 'paren' ? openIndex + 2 : openIndex + 1;
 
-  while (i < n) {
-    if (!inBacktick && synBare[i] && text[i] === '(') { parenDepth++; i++; continue; }
-    if (!inBacktick && parenDepth > 0 && synBare[i] && text[i] === ')') {
-      parenDepth--;
+  while (i < n && stack.length > 0) {
+    const top = stack[stack.length - 1];
+    if (top === 'backtick') {
+      if (synBare[i] && text[i] === '`') { stack.pop(); i++; continue; }
       i++;
-      if (parenDepth === 0 && kind === 'paren') return i;
       continue;
     }
-    if (parenDepth === 0 && synBare[i] && text[i] === '`') {
-      inBacktick = !inBacktick;
-      i++;
-      if (!inBacktick && kind === 'backtick') return i;
-      continue;
-    }
+    // top === 'paren'
+    if (synBare[i] && text[i] === '(') { stack.push('paren'); i++; continue; }
+    if (synBare[i] && text[i] === ')') { stack.pop(); i++; continue; }
+    if (synBare[i] && text[i] === '`') { stack.push('backtick'); i++; continue; }
     i++;
   }
-  return n; // unterminated — safe, defined outcome (module contract)
+  return i; // stack empty -> just past the outermost frame's own close;
+  //          loop exhausted with stack non-empty -> unterminated, i === n
 }
 
 /**
@@ -374,9 +449,25 @@ function tokenizeCanonical(text, wsBare, synBare) {
       continue;
     }
 
-    if (!seenVerb && pieces.length > 0 && pieces[0].kind === 'word-part' && ASSIGNMENT_RE.test(pieces[0].text)) {
-      tokens.push({ text: runText, kind: 'assignment' });
-      continue; // an assignment prefix never itself counts as the verb
+    if (!seenVerb && pieces.length > 0 && pieces[0].kind === 'word-part') {
+      const m = ASSIGNMENT_RE.exec(pieces[0].text);
+      // The matched `NAME=` prefix must be entirely BARE in source — real
+      // bash requires the assignment word's left-hand side to be literally
+      // unquoted; quoting even one character of it (`'FOO'=bar`, `FO'O'=bar`)
+      // makes bash try to run a command NAMED "FOO=bar" instead (bash-
+      // verified: exits "command not found", never treated as an
+      // assignment). Full-branch adversarial `forge:reviewer` finding: an
+      // earlier version tested the match against already-DEQUOTED text,
+      // over-matching every one of those quoted spellings. `pieces[0]`
+      // always starts exactly at `runStart` (see `scanRun()`), so its
+      // matched prefix occupies `[runStart, runStart + m[0].length)` in
+      // `text` — checked directly against `wsBare`, which is already this
+      // module's "reached output completely bare" flag (see `canonicalize()`).
+      const prefixBare = m && Array.from({ length: m[0].length }, (_, k) => wsBare[runStart + k]).every(Boolean);
+      if (prefixBare) {
+        tokens.push({ text: runText, kind: 'assignment' });
+        continue; // an assignment prefix never itself counts as the verb
+      }
     }
 
     for (const piece of pieces) {

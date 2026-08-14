@@ -66,6 +66,22 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
     expect(tokens[0]).toEqual({ text: 'X=$(echo bar)', kind: 'assignment' });
   });
 
+  it('AC-457.2a: quoting ANY character of the NAME= prefix defeats assignment recognition (security finding, fix-wave 2)', () => {
+    // Full-branch adversarial forge:reviewer finding: an earlier version
+    // matched ASSIGNMENT_RE against already-DEQUOTED text, so 'FOO'=bar,
+    // FO'O'=bar, and FOO'='bar were all wrongly classified `assignment`.
+    // Real bash requires the whole NAME= left-hand side to be literally
+    // unquoted; quoting even one character makes it try to run a command
+    // NAMED "FOO=bar" instead (bash-verified: "command not found", never
+    // assignment behaviour):
+    //   $ 'FOO'=bar echo hi
+    //   bash: FOO=bar: command not found
+    for (const cmd of ["'FOO'=bar echo hi", "FO'O'=bar echo hi", "FOO'='bar echo hi"]) {
+      const tokens = nonSep(tokenize(cmd));
+      expect(tokens[0]).toEqual({ text: 'FOO=bar', kind: 'word' });
+    }
+  });
+
   it('AC-457.2b: a standalone -- is a structural ddash token, not a dash-prefixed word (probe2)', () => {
     // $ printf '[%s]\n' rm -- -rf target
     // [rm] [--] [-rf] [target]        <- -rf is a literal filename, not flags
@@ -80,6 +96,12 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
 
   it('AC-457.2b: a quoted -- token still counts (AC-454.5 precedent — resolved text is what matters)', () => {
     const tokens = nonSep(tokenize("rm '--' -rf target"));
+    expect(tokens[1]).toEqual({ text: '--', kind: 'ddash' });
+  });
+
+  it('AC-457.2b: a HALF-quoted -- (-\'-\') still counts too — unlike assignment recognition, this is an argv-value convention, not a lexical one', () => {
+    // $ printf '[%s]\n' rm -'-' -rf target  ->  [rm] [--] [-rf] [target]
+    const tokens = nonSep(tokenize("rm -'-' -rf target"));
     expect(tokens[1]).toEqual({ text: '--', kind: 'ddash' });
   });
 
@@ -101,6 +123,23 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
       { text: '-rf', kind: 'word' },
       { text: '/prod-secrets/scratchpad', kind: 'word' },
     ]);
+  });
+
+  it('AC-457.2c: an unquoted backslash-newline (line continuation) vanishes, joining the surrounding text with NOTHING inserted (security finding, fix-wave 2)', () => {
+    // $ printf '[%s]\n' r\<LF>m -x   ->  [rm] [-x]   (real bash joins cleanly)
+    // An earlier version had no case for this: it resolved to a literal
+    // embedded newline instead ("r\nm"), never joining the word.
+    const tokens = nonSep(tokenize('r\\\nm -x'));
+    expect(tokens).toEqual([
+      { text: 'rm', kind: 'word' },
+      { text: '-x', kind: 'word' },
+    ]);
+  });
+
+  it('AC-457.2c: a double-quoted backslash-newline also vanishes, joining into ONE word', () => {
+    // $ printf '[%s]\n' "a\<LF>b"   ->  [ab]
+    const tokens = nonSep(tokenize('"a\\\nb"'));
+    expect(tokens).toEqual([{ text: 'ab', kind: 'word' }]);
   });
 
   it('AC-457.2d: a $(...) span is one opaque substitution token — inner text never leaks as a sibling word (probe2/#449)', () => {
@@ -148,6 +187,35 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
       { text: '-rf', kind: 'word' },
       { text: '$(echo -x -y)', kind: 'substitution' },
       { text: 'safe-target', kind: 'word' },
+    ]);
+  });
+
+  it('AC-457.2d: a backtick span nested inside a still-open $(...) is tracked, not misread as closing the outer span (security finding, fix-wave 2)', () => {
+    // Full-branch adversarial forge:security finding: the first version's
+    // flat parenDepth/inBacktick PAIR (adapted from beforeEndOfOptions())
+    // could never recognise a backtick opening while parenDepth > 0, so a
+    // bare ')' belonging to the nested backtick region's own contents (an
+    // ordinary `case` statement pattern) was misread as closing the OUTER
+    // $(...) early — leaking the region's inner text as sibling word
+    // tokens, exactly the #449 bug class this module exists to prevent.
+    //
+    // $ foo() { printf 'ARGV[%d]=[%s]\n' "$#" "$*"; printf '[%s]\n' "$@"; }
+    // $ foo $(echo a; `case x in x) echo mid;; esac`; echo c) end
+    // ARGV[3]=[a c end]     <- ONE substitution; "end" is the only other word
+    const tokens = nonSep(tokenize('foo $(echo a; `case x in x) echo mid;; esac`; echo c) end'));
+    expect(tokens).toEqual([
+      { text: 'foo', kind: 'word' },
+      { text: '$(echo a; `case x in x) echo mid;; esac`; echo c)', kind: 'substitution' },
+      { text: 'end', kind: 'word' },
+    ]);
+  });
+
+  it('AC-457.2d: the same nesting fix applies starting from a backtick span containing a $(...) with its own bare paren', () => {
+    const tokens = nonSep(tokenize('foo `echo $(echo a) mid` end'));
+    expect(tokens).toEqual([
+      { text: 'foo', kind: 'word' },
+      { text: '`echo $(echo a) mid`', kind: 'substitution' },
+      { text: 'end', kind: 'word' },
     ]);
   });
 
