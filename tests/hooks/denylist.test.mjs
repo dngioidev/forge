@@ -707,6 +707,33 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
     });
   });
 
+  // AC-454.5 (fix wave 5 — full-branch adversarial SECURITY re-review
+  // finding) — the depth tracker must count EVERY bare paren, not only one
+  // immediately preceded by `$`. The `$(`-only version incremented depth
+  // solely on a genuine command-substitution open but decremented on ANY `)`
+  // at depth > 0 regardless of which `(` it structurally closed, so a bare
+  // paren construct nested INSIDE an outer `$(...)` — here `<(true)`, a
+  // process substitution, never preceded by `$` — was never counted going
+  // in, but its matching `)` still zeroed the counter coming out, one level
+  // too shallow while genuinely still inside the outer substitution. The
+  // `--` right after that inner `)` (still inside the outer `$(...)` per
+  // real bash) was then misread as the real end-of-options marker,
+  // truncating flag detection before the real, live `-rf`. Verified against
+  // real bash (`set -x`) that `$(cat <(true) --)` expands to nothing here
+  // (the inner process substitution's output is empty), so the ACTUAL argv
+  // reaching `rm` is `-rf /important-secrets` — a genuine recursive-force
+  // delete. Closed by counting every bare `(` uniformly, regardless of what
+  // introduces it (subshell, process substitution, or `$(`) — a `--` inside
+  // ANY nested parenthetical construct belongs to that construct, never to
+  // the outer command, so what specifically opened the parenthesis does not
+  // matter to this function's one question.
+  it('AC-454.5: a bare paren construct (process substitution) nested inside $(...) does not desync the nesting-depth tracker', () => {
+    expect(check('rm $(cat <(true) -- ) -rf /important-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
   // AC-454.5 (fix wave 2 — full-branch adversarial SECURITY finding) — a
   // QUOTED argument that merely CONTAINS "--" (with a quoted literal space
   // around it) is not a real POSIX end-of-options marker. `'X --'` is ONE

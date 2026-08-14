@@ -171,8 +171,42 @@ this purpose with no new tracking needed — only the consumer
 (`beforeEndOfOptions`) was reading the wrong view. Regression-pinned as
 `AC-454.5: a quoted paren/backtick inside a command substitution does not
 desync the nesting-depth tracker`. Full suite green (1210/1210: 1192
-pre-existing + 18 new). Reviewer and security re-dispatched a fourth time on
-this tip before shipping.
+pre-existing + 18 new).
+
+## Fix wave 5: full-branch adversarial SECURITY re-review finding, closed
+
+A third re-dispatch of `forge:security` (run in parallel with a third
+`forge:reviewer` re-dispatch, both explicitly briefed as a deciding round)
+found a FIFTH bug, narrower in cause than fix wave 4 but the same failure
+shape: the depth tracker incremented ONLY on a genuine `$(` sequence, but
+decremented on ANY `)` at depth > 0, regardless of which `(` it
+structurally closed. A bare paren construct nested INSIDE an outer
+`$(...)`/backtick region — a subshell `(cmd)`, or process substitution
+`<(cmd)`/`>(cmd)`, neither preceded by `$` — was never counted going in,
+but its own matching `)` still decremented the counter coming out,
+returning `parenDepth` to 0 one level too shallow while genuinely still
+inside the outer substitution.
+
+`rm $(cat <(true) -- ) -rf /important-secrets` exploited exactly this: the
+inner `<(true)`'s own `)` wrongly zeroed the depth, so the `--` right after
+it (still, per real bash, inside the outer `$(...)`) was misread as the
+real end-of-options marker, truncating flag detection before the real,
+live `-rf`. Verified against real bash (`set -x`) that the whole `$(...)`
+here expands to nothing (the inner process substitution's output is
+empty), so the ACTUAL argv reaching `rm` is `-rf /important-secrets` — a
+genuine recursive-force delete; `main` blocks it, this branch's tip after
+fix wave 4 did not.
+
+Closed by counting every bare `(` uniformly — regardless of what
+introduces it — rather than requiring a preceding `$`. This is the
+structurally correct model, not a narrower patch: a `--` inside ANY nested
+parenthetical construct belongs to that construct, never to the outer
+command, so the specific syntax that opened the parenthesis (`$(`, a bare
+subshell `(`, or process substitution `<(`/`>(`) is irrelevant to this
+function's one question — "has every nested region closed yet?".
+Regression-pinned as `AC-454.5: a bare paren construct (process
+substitution) nested inside $(...) does not desync the nesting-depth
+tracker`. Full suite green (1211/1211: 1192 pre-existing + 19 new).
 
 ## AC map
 

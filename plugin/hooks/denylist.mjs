@@ -235,6 +235,31 @@ function shortFlagCluster(command, { alnum = false } = {}) {
  * `guarded`: hyphens are never masked, since a QUOTED flag is still a real
  * flag to the invoked program (see `guardedText`'s comment) and masking one
  * would trade this false negative for a different one.
+ *
+ * Depth counts EVERY bare `(`, not only one immediately preceded by `$`
+ * (fifth fix-wave finding, full-branch adversarial re-review): the earlier
+ * `$(`-only version incremented depth solely on a genuine command-
+ * substitution open, but decremented on ANY `)` at depth > 0 regardless of
+ * which `(` it structurally closed — so a bare paren construct nested
+ * INSIDE an outer `$(...)`/backtick region (a subshell `(cmd)`, or process
+ * substitution `<(cmd)`/`>(cmd)`, neither preceded by `$`) was never counted
+ * going in, but its matching `)` still decremented the counter coming out,
+ * returning `parenDepth` to 0 one level too shallow while genuinely still
+ * inside the outer substitution. `rm $(cat <(true) -- ) -rf
+ * /important-secrets` exploited exactly this: the inner `<(true)`'s own `)`
+ * wrongly zeroed the depth, so the `--` right after it (still, per real
+ * bash, inside the outer `$(...)`) was misread as the real end-of-options
+ * marker — truncating flag detection before the real, live `-rf`. Verified
+ * against real bash (`set -x`) that the whole `$(...)` here expands to
+ * nothing (the inner process substitution produces empty output), so the
+ * ACTUAL argv reaching `rm` is `-rf /important-secrets` — a genuine
+ * recursive-force delete. `main` blocks it; the `$(`-only version of this
+ * function did not. Counting every bare `(` uniformly — regardless of what
+ * introduces it — is the correct model: a `--` inside ANY nested
+ * parenthetical construct belongs to whatever that construct is, never to
+ * the outer command, so the specific syntax that opened the parenthesis is
+ * irrelevant to this function's one question ("has every nested region
+ * closed yet?").
  */
 function beforeEndOfOptions(command, guarded) {
   let parenDepth = 0;
@@ -242,9 +267,11 @@ function beforeEndOfOptions(command, guarded) {
   const n = command.length;
   for (let i = 0; i < n; i++) {
     const gch = guarded[i];
-    if (!inBacktick && gch === '$' && guarded[i + 1] === '(') {
+    // ANY bare '(' counts, not only one preceded by '$' — see the function
+    // comment's fix-wave-5 note for why requiring a preceding '$' was itself
+    // the bug.
+    if (!inBacktick && gch === '(') {
       parenDepth++;
-      i++; // consume the '(' too, so a literal ')' right after can't double-count
       continue;
     }
     if (!inBacktick && parenDepth > 0 && gch === ')') {
