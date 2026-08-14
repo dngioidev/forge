@@ -412,13 +412,11 @@ function beforeEndOfOptions(command, guarded) {
  *    well-formed input — a truly unterminated substitution can only occur
  *    in genuinely malformed/incomplete syntax, which is never a real,
  *    executable command to begin with.
- * 2. **Nested-quote-reuse divergence within a flag-candidate word**
- *    (`skelWord.startsWith('-')` — scoped here, deliberately, unlike
- *    signal 1 above, to avoid blanket-blocking ordinary double-quoted
- *    substitution use in a non-flag argument position, e.g.
- *    `git push origin "$(git rev-parse --short HEAD)"`, AC.3): a `$`/`(`/
- *    `)`/backtick character that is masked (quote-protected) under the
- *    OLD, quote-type-BLIND `guardedText` but NOT masked (live) under the
+ * 2. **Nested-quote-reuse divergence, UNCONDITIONAL** (not scoped to
+ *    `skelWord.startsWith('-')` — see the fix-wave-3 note below for why
+ *    that scoping, tried first, was itself unsafe): a `$`/`(`/`)`/backtick
+ *    character that is masked (quote-protected) under the OLD,
+ *    quote-type-BLIND `guardedText` but NOT masked (live) under the
  *    quote-type-AWARE `substGuardedText` this function reads is exactly
  *    the fingerprint of a decoy — `normalizeShellText()` still tracks
  *    quoting with a SINGLE flat `quote` variable, with no concept that
@@ -436,11 +434,43 @@ function beforeEndOfOptions(command, guarded) {
  *    `beforeEndOfOptions()`'s own fix-wave-4/5/6 already fought for
  *    `guardedText`/`bare[]`, reopened one layer deeper by the NEW
  *    `liveSubst[]`/`substGuardedText` mechanism this ticket adds, since
- *    that fix-wave hardening was never ported to it. Verified: blocked on
- *    `main`, allowed on this branch pre-fix, across all four rules; NOT
- *    mitigated by `recursive-delete`'s own pre-existing `trustworthy` gate,
- *    which only guards `beforeEndOfOptions()`'s truncation, never this
- *    function's own depth-tracking.
+ *    that fix-wave hardening was never ported to it. NOT mitigated by
+ *    `recursive-delete`'s own pre-existing `trustworthy` gate, which only
+ *    guards `beforeEndOfOptions()`'s truncation, never this function's own
+ *    depth-tracking.
+ *
+ *    **Fix-wave 3, full-branch adversarial `forge:security` finding:**
+ *    scoping signal 2 to `skelWord.startsWith('-')` — plausible, mirroring
+ *    AC.5's own "candidate flag word" text, and correct for the MID-WORD
+ *    shape (`-r$(cat ')' )f`, where the literal `-` is captured into
+ *    `skelWord` before any corruption can occur) — missed the ADJACENT
+ *    shape (`#495`'s edge) combined with the SAME decoy:
+ *    `$(cat ')' )-f` (no literal `-` before the substitution at all). The
+ *    corruption there leaves stray characters in `skelWord` BEFORE the
+ *    real `-f` ever arrives, so `skelWord` never starts with `-`, and
+ *    signal 1 does not fire either (the miscounted depth wrongly returns
+ *    to exactly 0, not stuck `> 0`). Verified live:
+ *    `git push "$(cat ')' )-f" origin main`,
+ *    `rm "$(cat ')' )-rf" /prod-secrets`,
+ *    `git branch "$(cat ')' )-D" main` all bypassed with the scoped
+ *    version. Rather than add a THIRD, narrower special case chasing this
+ *    specific combination (the exact whack-a-mole AC.5 exists to stop),
+ *    signal 2 is now unconditional: it is not possible to determine, in
+ *    general, whether a nested-quote-reuse decoy sits before or after the
+ *    word's own eventual `-`, since that determination is exactly what the
+ *    decoy itself corrupts. This DOES mean an ordinary double-quoted
+ *    substitution with no decoy at all (`git push origin
+ *    "$(git rev-parse --short HEAD)"`) now also reads as `ambiguous` and
+ *    blocks, a narrowing from AC.3's original framing — accepted
+ *    deliberately: `wordDivergent` only ever fires for a double-quoted
+ *    substitution character in the first place (a bare/unquoted one has no
+ *    `guardedText`/`substGuardedText` divergence to trigger it, so the vast
+ *    majority of real usage, and every one of this file's own pre-existing
+ *    pinned corpora, is completely unaffected), and three consecutive
+ *    adversarial rounds finding a live P1 bypass in the previous, narrower
+ *    scoping is a stronger signal than one hypothetical false positive on
+ *    an unusual construction (a double-quoted, dynamically-substituted
+ *    argument to a destructive-command-adjacent verb).
  *
  * Both signals mirror `recursive-delete`'s own pre-existing `trustworthy`
  * gate in spirit (cannot certify the parse → treat it as maximally
@@ -470,7 +500,7 @@ function descrambleFlags(command, guarded, guardedLegacy) {
     if (rawWord === '') return;
     out += skelWord;
     if (parenDepth > 0 || inBacktick) ambiguousFound = true; // signal 1: unconditional
-    else if (wordDivergent && skelWord.startsWith('-')) ambiguousFound = true; // signal 2: scoped
+    else if (wordDivergent) ambiguousFound = true; // signal 2: also unconditional (fix wave 3)
     rawWord = '';
     skelWord = '';
     wordDivergent = false;
@@ -485,25 +515,36 @@ function descrambleFlags(command, guarded, guardedLegacy) {
       continue;
     }
     rawWord += ch;
-    // Signal 2's own detector: `guardedLegacy` only ever masks whitespace/
-    // `$`/`(`/`)`/backtick, and the whitespace rule is IDENTICAL between it
-    // and `guarded` (`substGuardedText`) — so a divergence can only ever
-    // fire here for one of the four substitution-syntax characters, never
-    // a false trigger on an ordinary letter/digit/hyphen.
-    if (guardedLegacy[i] === GUARD_SENTINEL && gch !== GUARD_SENTINEL) wordDivergent = true;
+    // Signal 2's own detector: checked ONLY at the same four positions the
+    // depth-tracker below actually treats as structurally meaningful — NOT
+    // for every `$`/`(`/`)`/backtick character in the word. A blanket
+    // per-character check (an earlier version of this fix-wave) was WAY
+    // over-broad: it also fires for an ordinary `$VAR` reference inside
+    // double quotes (`"$TMP/forge-test"` — the `$` there is not even
+    // followed by `(`, so it was never treated as substitution syntax by
+    // this function at all), which desynced `guardedLegacy`/`guarded`
+    // identically to a REAL decoy and wrongly flagged #446/#454's own
+    // pinned SAFE cases as ambiguous. Scoping the check to fire only
+    // inside the branches that actually CONSUME a character as syntax
+    // keeps the signal precise: it can only ever trigger where the
+    // depth-tracker's own decision is actually at risk of being wrong.
+    const isDivergent = () => guardedLegacy[i] === GUARD_SENTINEL && gch !== GUARD_SENTINEL;
     // Same depth-tracking as beforeEndOfOptions(): ANY bare '(' counts, and
     // every check reads `guarded` (not `command`), so a QUOTED paren/
     // backtick/`$` — genuinely inert literal data in real bash — can never
     // be misread as substitution syntax (see that function's own comment
     // for the fix-wave findings this inherits for free by reusing the same
     // technique).
-    if (!inBacktick && gch === '(') { parenDepth++; continue; }
-    if (!inBacktick && parenDepth > 0 && gch === ')') { parenDepth--; continue; }
-    if (parenDepth === 0 && gch === '`') { inBacktick = !inBacktick; continue; }
+    if (!inBacktick && gch === '(') { if (isDivergent()) wordDivergent = true; parenDepth++; continue; }
+    if (!inBacktick && parenDepth > 0 && gch === ')') { if (isDivergent()) wordDivergent = true; parenDepth--; continue; }
+    if (parenDepth === 0 && gch === '`') { if (isDivergent()) wordDivergent = true; inBacktick = !inBacktick; continue; }
     // The '$' that INTRODUCES a '$(' is syntax, not a flag character — drop
     // it from the skeleton too (it is already excluded from `command`
     // between the parens; this excludes the one character outside them).
-    if (parenDepth === 0 && !inBacktick && gch === '$' && guarded[i + 1] === '(') continue;
+    if (parenDepth === 0 && !inBacktick && gch === '$' && guarded[i + 1] === '(') {
+      if (isDivergent()) wordDivergent = true;
+      continue;
+    }
     if (parenDepth === 0 && !inBacktick) skelWord += ch;
   }
   closeWord();
@@ -1250,12 +1291,31 @@ export const RULES = [
     // #459/#495: every flag-matching regex below reads `cFlags`
     // (descrambleFlags()'s output for THIS segment), not `c` directly — a
     // substitution fused mid-word or glued onto a flag's start can no
-    // longer break `--force`/`--mirror`/the short-flag cluster apart, or
-    // dodge them entirely. `cFlags === c` byte-for-byte whenever the segment
-    // has no substitution syntax at all, so this is a no-op for every
-    // pre-existing pinned case (#429/#437). The verb check and `+refspec`
-    // (a different, out-of-scope fusion class — see the ticket's own named
-    // scope) deliberately still read `c`.
+    // longer break `--force`/`--mirror`/`+refspec`/the short-flag cluster
+    // apart, or dodge them entirely. `cFlags === c` byte-for-byte whenever
+    // the segment has no substitution syntax at all, so this is a no-op for
+    // every pre-existing pinned case (#429/#437). Only the verb check
+    // deliberately still reads `c` (out of scope: fusing "git"/"push"
+    // themselves is a different bypass class this ticket does not cover).
+    //
+    // `+refspec` fix wave (round-3 full-branch adversarial `forge:security`
+    // finding): an EARLIER version of this rule left `+refspec` reading `c`
+    // deliberately, on the theory that force-push already has three OTHER
+    // hardened spellings and `+refspec` fusion was a separate, out-of-scope
+    // class. That reasoning was wrong: `+refspec` is force-push's OWN 4th
+    // documented spelling (see this rule's own comment above), inside the
+    // exact same "substitution assumed to expand to empty" threat model
+    // every other check here already relies on — `git push origin
+    // $(true)+release-1.0` (or the backtick spelling) fuses to a genuine,
+    // live `+release-1.0` refspec in real bash argv (verified), and NO
+    // rule caught it: not `force-push` (this check, reading unfused `c`),
+    // and not `env-branch-delete` either, since the pushed branch need not
+    // be `main`/`master`/`staging`/`production` for a force-push to matter.
+    // Given force-push is this ticket's own named highest-value target
+    // (zero remaining mitigation on `ALLOWED_COMMAND_PREFIXES`), leaving
+    // one of its four documented spellings unfused was a live gap, not a
+    // defensible scope boundary. Fixed by the same one-line swap already
+    // used for `--force`/`--mirror` above — no new mechanism.
     test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
       const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
@@ -1267,7 +1327,7 @@ export const RULES = [
       // abbreviation class #429 identified as unclosable-by-enumeration wide
       // open in the very rule #429 hardened (#437, adversarial review).
       if (PUSH_MIRROR.test(cFlags)) return true;
-      if (/(?:^|\s)\+\S/.test(c)) return true;
+      if (/(?:^|\s)\+\S/.test(cFlags)) return true;
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.

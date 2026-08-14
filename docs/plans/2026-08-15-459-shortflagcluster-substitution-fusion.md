@@ -171,11 +171,61 @@ Consequence for AC.5's OWN text: the "unterminated substitution" signal is
 now unconditional (broadened from "only inside a candidate flag word"),
 since the standalone-paren finding showed that scoping was unsafe — an
 unresolved span can hide LATER, unrelated flag content the scanner has no
-way to rule out. The divergence signal (round 2's second finding) keeps
-the flag-candidate-word scoping, since it targets a different, narrower
-risk (misread depth within an otherwise-resolvable substitution, not a
-truly-unresolvable one) and blanket-scoping it would reintroduce a false
-positive on ordinary double-quoted substitution use.
+way to rule out. The divergence signal (round 2's second finding) initially
+kept the flag-candidate-word scoping — round 3 (below) found that scoping
+unsafe too and removed it.
+
+## Fix wave 3 (round 3): two more findings, one from each adversarial role
+
+**Reviewer finding — the divergence signal's own scoping was unsafe.**
+`skelWord.startsWith('-')` (fix wave 2's scoping for signal 2) implicitly
+assumed corruption can only happen AFTER a word's leading `-` is already
+captured — true for the MID-WORD shape (`-r$(cat ')' )f`) but false for
+the ADJACENT shape (`#495`'s own edge): `$(cat ')' )-f` has no literal `-`
+before the substitution at all, so the corrupted skeleton never starts with
+`-`, and signal 1 doesn't fire either (the miscounted depth wrongly
+returns to exactly 0, not stuck `> 0`). `git push "$(cat ')' )-f" origin
+main` (and the `rm`/`git branch` equivalents) bypassed with the scoped
+version. Rather than add a THIRD, narrower special case (the exact
+whack-a-mole AC.5 exists to stop), signal 2 was made unconditional too,
+matching signal 1.
+
+A first attempt at "unconditional" checked EVERY character for divergence,
+which was immediately far too broad: it also fires for an ordinary `$VAR`
+reference inside double quotes (`"$TMP/forge-test"` — the `$` is not even
+followed by `(`, never treated as substitution syntax by this function at
+all), wrongly flagging #446/#454's own pinned SAFE cases. Fixed by scoping
+the divergence CHECK (not the resulting ambiguity signal) to only the four
+structural positions `descrambleFlags()`'s own depth-tracker treats as
+meaningful (`(`, `)`, backtick-toggle, `$` immediately before `(`).
+
+Net effect, accepted deliberately: an ordinary double-quoted substitution
+with NO decoy at all (`git push origin "$(git rev-parse --short HEAD)"`)
+now also reads as `ambiguous` and blocks — `wordDivergent` cannot
+distinguish "ordinary" from "decoy-laden" double-quoted substitutions
+without solving the exact problem shown unsafe to solve narrowly. This
+only narrows DOUBLE-QUOTED substitution use (bare/unquoted substitution use
+is completely unaffected, and every pre-existing pinned corpus stays
+green) — accepted given three consecutive adversarial rounds found a live
+P1 bypass in the previous, narrower scoping.
+
+**Security finding — force-push's own `+refspec` check was never wired to
+`cFlags`.** An earlier version of this fix left `+refspec` (force-push's
+OWN 4th documented spelling, per that rule's own comment) reading raw `c`,
+on the theory that `+refspec` fusion was a separate, out-of-scope class.
+That was wrong: it sits inside the exact same "substitution assumed to
+expand to empty" threat model every other check in this rule already
+relies on. `git push origin $(true)+release-1.0` (or the backtick
+spelling) fuses to a genuine, live `+release-1.0` refspec in real bash
+argv, caught by NO rule — not `force-push` (unfused check), and not
+`env-branch-delete` either, since the branch need not be a PROTECTED one.
+Given force-push is this ticket's own named highest-value target (zero
+remaining mitigation on `ALLOWED_COMMAND_PREFIXES`), this was a live gap.
+Fixed with the same one-line `.test(c)` → `.test(cFlags)` swap already used
+for `--force`/`--mirror` in the same rule — no new mechanism.
+
+Both verified against real bash and `check()`; new tests confirmed to fail
+against the pre-fix-wave-3 source (stash/restore) before landing.
 
 ## Tasks
 
