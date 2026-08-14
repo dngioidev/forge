@@ -119,6 +119,64 @@ argument `-r$(true)f`, which GNU rm's own short-option parser rejects
 outright ("invalid option") — genuinely inert, not a live bypass on either
 side of this fix, and not this fix's concern.
 
+## Fix wave 2 (round 2): two more adversarial `forge:security` findings, closed
+
+Round 2 (a fresh adversarial pass launched after fix wave 1) found two
+MORE, independent critical bugs — not in fix wave 1's own quote-type-aware
+masking design itself, but in `descrambleFlags()`'s AC.5 ambiguity net,
+which was too narrowly scoped to catch either:
+
+1. **A standalone, never-closing live paren/backtick swallows and hides a
+   LATER, genuine flag.** `git push "(" -f origin main` — a lone
+   double-quoted `"("` (no `$(...)`/backtick pair at all) opens
+   `parenDepth`, which then never returns to 0, so word-boundary detection
+   (itself gated on `parenDepth === 0`) stops firing for the REST of the
+   segment — the real `-f` several tokens later is glued into the same
+   unresolved "word" and silently dropped from the descrambled output. The
+   OLD ambiguity check only fired when the word's OWN skeleton-so-far
+   started with `-`, but this word's skeleton never advances past `''`, so
+   it silently never fired. Fixed by making the "truly unterminated at
+   end-of-scan" signal UNCONDITIONAL, not scoped to skeleton content —
+   safe, since genuinely unterminated syntax can only occur in malformed,
+   non-executable input.
+2. **Nested-quote-reuse inside a double-quoted substitution.**
+   `rm "-r$(cat ')' )f" /prod-secrets` — `normalizeShellText()`'s single
+   flat `quote` variable has no concept that `$(...)` opens an independent
+   nested quoting scope for its own inner command, so the inner `'` is
+   never recognised as opening its own quote; a close-paren genuinely
+   protected by that invisible inner quote (`cat`'s own single-quoted
+   `')'` argument) wrongly closes the OUTER substitution one paren early.
+   The exact bug class `beforeEndOfOptions()`'s own fix-wave-4/5/6 already
+   fought for `guardedText`/`bare[]`, reopened one layer deeper by fix wave
+   1's NEW `liveSubst[]`/`substGuardedText` mechanism, since that hardening
+   was never ported to it — and NOT mitigated by `recursive-delete`'s own
+   pre-existing `trustworthy` gate, which only guards
+   `beforeEndOfOptions()`'s truncation, never `descrambleFlags()`'s own
+   depth-tracking. Fixed with a second, deliberately SCOPED signal: a
+   `$`/`(`/`)`/backtick character masked under the OLD, quote-type-BLIND
+   `guardedText` but NOT masked under the quote-type-AWARE
+   `substGuardedText` is exactly the fingerprint of a decoy — this
+   divergence is tracked per-word (via a new `guardedLegacy` 3rd parameter
+   to `descrambleFlags()`, threaded from each rule's existing `cGuarded`)
+   and, when found within a flag-candidate word, forces `ambiguous: true`.
+   Scoped (unlike signal 1) to avoid blanket-blocking ordinary
+   double-quoted substitution use in a non-flag argument position
+   (`git push origin "$(git rev-parse --short HEAD)"`, AC.3).
+
+Both verified: blocked on `main`, allowed pre-fix-wave-2 on this branch,
+across all four rules; new tests confirmed to fail against the pre-fix-
+wave-2 source (stash/restore) before landing.
+
+Consequence for AC.5's OWN text: the "unterminated substitution" signal is
+now unconditional (broadened from "only inside a candidate flag word"),
+since the standalone-paren finding showed that scoping was unsafe — an
+unresolved span can hide LATER, unrelated flag content the scanner has no
+way to rule out. The divergence signal (round 2's second finding) keeps
+the flag-candidate-word scoping, since it targets a different, narrower
+risk (misread depth within an otherwise-resolvable substitution, not a
+truly-unresolvable one) and blanket-scoping it would reintroduce a false
+positive on ordinary double-quoted substitution use.
+
 ## Tasks
 
 ### T1 — descrambleFlags() + wire into all four rules (bug)

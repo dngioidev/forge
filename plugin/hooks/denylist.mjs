@@ -385,24 +385,75 @@ function beforeEndOfOptions(command, guarded) {
  * out of scope here regardless: it was never live substitution syntax to
  * begin with, on either side of this fix.)
  *
- * AC.5, categorical block-on-ambiguity: a substitution that never closes
- * before its word ends leaves that word's true skeleton unknowable — some
- * suffix is unscanned and MAY be hiding a flag letter this function cannot
- * see. Per `beforeEndOfOptions()`'s own precedent (guessing wrong here is
- * only safe in the BLOCKING direction), such a word's `ambiguous` state is
- * reported back rather than silently trusted, but ONLY when that word's
- * skeleton-so-far starts with `-` — an unresolved construction inside an
- * ordinary, non-flag word is not itself a reason to block a command with no
- * flags in it at all. Every affected rule treats a returned
- * `ambiguous: true` as an automatic hit, mirroring `recursive-delete`'s own
- * pre-existing `trustworthy` gate for the same class of problem.
+ * AC.5, categorical block-on-ambiguity — TWO independent signals, both
+ * fix-wave findings from a full-branch adversarial `forge:security` pass,
+ * not part of the original design:
+ *
+ * 1. **Truly unterminated at end-of-scan** (`parenDepth > 0 || inBacktick`
+ *    when the LAST word closes — this can only happen at the final call,
+ *    since every mid-loop `closeWord()` call is itself gated on
+ *    `parenDepth === 0`): UNCONDITIONAL, regardless of what `skelWord`
+ *    contains. An earlier version scoped this to "only when the word's own
+ *    skeleton-so-far starts with `-`" — plausible, since AC.5's own text
+ *    says "inside a candidate flag word" — but that missed a live bypass:
+ *    a lone, never-closing live paren/backtick (e.g. a double-quoted `"("`
+ *    or `` "`" ``, with no real match anywhere in the segment) swallows
+ *    EVERY later word too, since the whitespace-boundary check is itself
+ *    gated on `parenDepth === 0` — including a genuine, otherwise fully
+ *    ordinary flag several tokens later (`git push "(" -f origin main`
+ *    real bash argv: `git`, `push`, `(`, `-f`, `origin`, `main` — four
+ *    separate tokens, `-f` very much still forces). The word that STARTS
+ *    the unresolved span is never itself flag-shaped in this construction
+ *    (`skelWord` stays `''` the whole time after the initial `(`), so the
+ *    old scoped check silently never fired and the swallowed `-f` vanished
+ *    from `cFlags` with no compensating signal at all. Verified: blocked
+ *    on `main`, allowed on this branch pre-fix, across all four rules.
+ *    Dropping the scoping for THIS signal costs nothing on ordinary,
+ *    well-formed input — a truly unterminated substitution can only occur
+ *    in genuinely malformed/incomplete syntax, which is never a real,
+ *    executable command to begin with.
+ * 2. **Nested-quote-reuse divergence within a flag-candidate word**
+ *    (`skelWord.startsWith('-')` — scoped here, deliberately, unlike
+ *    signal 1 above, to avoid blanket-blocking ordinary double-quoted
+ *    substitution use in a non-flag argument position, e.g.
+ *    `git push origin "$(git rev-parse --short HEAD)"`, AC.3): a `$`/`(`/
+ *    `)`/backtick character that is masked (quote-protected) under the
+ *    OLD, quote-type-BLIND `guardedText` but NOT masked (live) under the
+ *    quote-type-AWARE `substGuardedText` this function reads is exactly
+ *    the fingerprint of a decoy — `normalizeShellText()` still tracks
+ *    quoting with a SINGLE flat `quote` variable, with no concept that
+ *    `$(...)` opens a genuinely INDEPENDENT nested quoting scope for its
+ *    OWN inner command in real bash — so a `'` reused INSIDE a substitution
+ *    that is itself already inside an OUTER double-quoted string is never
+ *    recognised as opening its own quote at all (a `'` has no meaning
+ *    inside `"..."` — correct, in isolation — but real bash parses
+ *    `$(...)`'s content in its OWN fresh quoting context, so the `'` DOES
+ *    open a real nested scope there). A close-paren genuinely protected by
+ *    that invisible inner quote (`cat`'s own single-quoted `')'` argument)
+ *    then wrongly closes the OUTER substitution one paren early —
+ *    `rm "-r$(cat ')' )f" /prod-secrets` (real bash argv: `rm`, `-rf`,
+ *    `/prod-secrets` — a genuine `rm -rf`) — the exact bug class
+ *    `beforeEndOfOptions()`'s own fix-wave-4/5/6 already fought for
+ *    `guardedText`/`bare[]`, reopened one layer deeper by the NEW
+ *    `liveSubst[]`/`substGuardedText` mechanism this ticket adds, since
+ *    that fix-wave hardening was never ported to it. Verified: blocked on
+ *    `main`, allowed on this branch pre-fix, across all four rules; NOT
+ *    mitigated by `recursive-delete`'s own pre-existing `trustworthy` gate,
+ *    which only guards `beforeEndOfOptions()`'s truncation, never this
+ *    function's own depth-tracking.
+ *
+ * Both signals mirror `recursive-delete`'s own pre-existing `trustworthy`
+ * gate in spirit (cannot certify the parse → treat it as maximally
+ * dangerous), and every affected rule treats a returned `ambiguous: true`
+ * as an automatic hit.
  */
-function descrambleFlags(command, guarded) {
+function descrambleFlags(command, guarded, guardedLegacy) {
   const n = command.length;
   const isIfsWs = (gch) => gch === ' ' || gch === '\t' || gch === '\n';
   let out = '';
   let rawWord = '';
   let skelWord = '';
+  let wordDivergent = false; // signal 2 — see the function comment above
   let parenDepth = 0;
   let inBacktick = false;
   let ambiguousFound = false;
@@ -412,16 +463,17 @@ function descrambleFlags(command, guarded) {
   // function comment for why that is safe even for a word that turns out
   // not to be flag-shaped. Only ever called with
   // `parenDepth === 0 && !inBacktick` (the mid-loop call site is itself
-  // gated on that), EXCEPT the final call after the loop ends, where a
-  // still-nonzero depth/backtick state is exactly the unterminated-
-  // substitution case AC.5 exists to catch — scoped to a flag-candidate
-  // word only, per that AC's own text.
+  // gated on that), EXCEPT the final call after the loop ends — see the
+  // function comment's two AC.5 signals for what a still-nonzero
+  // depth/backtick state, or an accumulated divergence, mean there.
   const closeWord = () => {
     if (rawWord === '') return;
     out += skelWord;
-    if (skelWord.startsWith('-') && (parenDepth > 0 || inBacktick)) ambiguousFound = true;
+    if (parenDepth > 0 || inBacktick) ambiguousFound = true; // signal 1: unconditional
+    else if (wordDivergent && skelWord.startsWith('-')) ambiguousFound = true; // signal 2: scoped
     rawWord = '';
     skelWord = '';
+    wordDivergent = false;
   };
 
   for (let i = 0; i < n; i++) {
@@ -433,6 +485,12 @@ function descrambleFlags(command, guarded) {
       continue;
     }
     rawWord += ch;
+    // Signal 2's own detector: `guardedLegacy` only ever masks whitespace/
+    // `$`/`(`/`)`/backtick, and the whitespace rule is IDENTICAL between it
+    // and `guarded` (`substGuardedText`) — so a divergence can only ever
+    // fire here for one of the four substitution-syntax characters, never
+    // a false trigger on an ordinary letter/digit/hyphen.
+    if (guardedLegacy[i] === GUARD_SENTINEL && gch !== GUARD_SENTINEL) wordDivergent = true;
     // Same depth-tracking as beforeEndOfOptions(): ANY bare '(' counts, and
     // every check reads `guarded` (not `command`), so a QUOTED paren/
     // backtick/`$` — genuinely inert literal data in real bash — can never
@@ -1200,7 +1258,7 @@ export const RULES = [
     // scope) deliberately still read `c`.
     test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
-      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded);
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
       if (ambiguous) return true;
       if (/\s--force\b(?!-with-lease|-if-includes)/.test(cFlags)) return true;
       // --mirror IS abbreviable (unlike --force above): `git push --mir` really
@@ -1238,7 +1296,7 @@ export const RULES = [
     // refspec check deliberately still read `c`.
     test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!PROTECTED_BRANCHES.test(c)) return false;
-      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded);
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
       if (ambiguous) return true;
       if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
         if (PUSH_DELETE.test(cFlags) || /:/.test(c)) return true;
@@ -1302,7 +1360,7 @@ export const RULES = [
     // this closes only the one edge that was actually open.)
     test: (c, cSpaced, cGuarded, cSubstGuarded) => {
       if (!/\bgit\b[^\n]*\bclean\b/.test(c)) return false;
-      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded);
+      const { text: cFlags, ambiguous } = descrambleFlags(c, cSubstGuarded, cGuarded);
       if (ambiguous) return true;
       return /\bgit\b[^\n]*\bclean\b[^\n]*-[a-zA-Z]*f/.test(cFlags);
     },
@@ -1386,7 +1444,8 @@ export const RULES = [
       // flag-candidate word (`ambiguous`) is an automatic block, the same
       // categorical-safety-net shape as the `trustworthy` gate just above.
       const flagsSubstGuarded = cSubstGuarded.slice(0, flagsSegment.length);
-      const { text: flagsDescrambled, ambiguous } = descrambleFlags(flagsSegment, flagsSubstGuarded);
+      const flagsGuardedLegacy = cGuarded.slice(0, flagsSegment.length);
+      const { text: flagsDescrambled, ambiguous } = descrambleFlags(flagsSegment, flagsSubstGuarded, flagsGuardedLegacy);
       if (ambiguous) return true;
       // Collect single-dash SHORT flag clusters (e.g. -rf, -Rf) via the shared
       // helper. Deliberately alpha-only (default) where force-push above

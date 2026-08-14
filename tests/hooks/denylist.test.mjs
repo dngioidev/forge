@@ -1928,26 +1928,120 @@ describe('shortFlagCluster substitution fusion (#459/#495, AC-459.*)', () => {
     });
   });
 
-  // AC-459.5 — categorical block-on-ambiguity: a substitution that never
-  // closes before the segment ends leaves its word's true content unknowable
-  // — some suffix is unscanned and MAY be hiding a flag letter. Per
-  // `beforeEndOfOptions()`'s own established precedent (guessing wrong here
-  // is only safe in the BLOCKING direction), an unterminated substitution
-  // inside what already looks like a flag-candidate word is treated as an
-  // automatic hit, mirroring `recursive-delete`'s own pre-existing
-  // `trustworthy` gate for the same class of problem — never chasing the
-  // individual spelling.
+  // AC-459.5 — categorical block-on-ambiguity, TWO independent signals (both
+  // fix-wave findings from round-2 adversarial forge:security, not part of
+  // the original design — see descrambleFlags()'s own comment for the full
+  // mechanism of each).
   it('AC-459.5: an unterminated substitution inside a flag-candidate word blocks categorically', () => {
     expect(check('rm -r' + '$(true /prod-secrets').blocked).toBe(true);
     expect(check('git push -' + '$(true origin main').blocked).toBe(true);
     expect(check('git branch -' + '$(true main').blocked).toBe(true);
   });
 
-  it('AC-459.5: an unterminated substitution in a NON-flag-shaped word does not force a block by itself', () => {
-    // Scoped precisely per AC.5's own text ("inside a candidate flag word") —
-    // an ordinary, non-flag word with an unresolved construction elsewhere
-    // is not itself a reason to block a command with no flags at all.
-    expect(check('git push origin unrelated' + '$(true').blocked).toBe(false);
+  // AC-459.5 fix wave 1 — full-branch adversarial forge:security finding:
+  // a truly UNTERMINATED substitution now blocks UNCONDITIONALLY, not only
+  // when the word that starts it already looks flag-shaped. A standalone,
+  // never-closing live paren/backtick (a lone double-quoted "(" is enough —
+  // no `$(...)`/backtick pair at all) swallows every LATER word too, since
+  // word-boundary detection is itself gated on the same depth returning to
+  // zero — including a genuine, otherwise fully ordinary flag several
+  // tokens later. Real bash still splits this into separate argv tokens
+  // (`(` is just a literal one-character word), so the flag downstream is
+  // very much still live. The word that STARTS the unresolved span is never
+  // itself flag-shaped in this construction (its own skeleton never
+  // advances past empty), so the OLD, narrowly-scoped check silently never
+  // fired. Confirmed to fail against the pre-fix-wave source (stash the
+  // `guardedLegacy`/unconditional-signal-1 change, re-run, restore).
+  it('AC-459.5 fix wave 1: a standalone unmatched quoted paren/backtick swallows and hides a later, genuine flag — now caught unconditionally', () => {
+    expect(check('git push "(" -f origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git push "(" --force origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch "(" -D main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git "(" clean -f')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+    expect(check('rm "(" -rf /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  it('AC-459.5 fix wave 1, revised scope: an unterminated substitution in an otherwise flagless command now also blocks (broadened from the earlier, narrower design)', () => {
+    // Superseded expectation: an earlier version of this fix scoped the
+    // unterminated-substitution signal to "only inside a candidate flag
+    // word," so this exact command was pinned as staying allowed. The
+    // fix-wave finding above shows that scoping is unsafe in general — an
+    // unresolved span can hide LATER, unrelated flag content the scanner
+    // has no way to rule out — so the categorical net was broadened to fire
+    // on ANY truly unterminated substitution, unconditionally. This
+    // over-blocks a syntactically malformed/incomplete string (never a
+    // real, executable command to begin with), which is the safe direction.
+    expect(check('git push origin unrelated' + '$(true').blocked).toBe(true);
+  });
+
+  // AC-459.5 fix wave 2 — full-branch adversarial forge:security finding:
+  // nested-quote-reuse INSIDE a substitution that is itself already inside
+  // an outer double-quoted string. normalizeShellText() tracks quoting with
+  // a single flat `quote` variable with no concept that `$(...)` opens an
+  // independent nested quoting scope for its own inner command in real
+  // bash, so a `'` reused there is never recognised as opening its own
+  // quote — the exact bug class beforeEndOfOptions()'s own fix-wave-4/5/6
+  // already fought for guardedText/bare[], reopened one layer deeper by the
+  // NEW liveSubst[]/substGuardedText mechanism, since that hardening was
+  // never ported to it. A close-paren genuinely protected by the invisible
+  // inner quote (an inner command's own single-quoted `')'` argument)
+  // wrongly closes the OUTER substitution one paren early, corrupting the
+  // skeleton before the real flag letter is reached. NOT mitigated by
+  // recursive-delete's own pre-existing `trustworthy` gate, which only
+  // guards beforeEndOfOptions()'s truncation, never descrambleFlags()'s own
+  // depth-tracking. Confirmed to fail against the pre-fix-wave source.
+  it('AC-459.5 fix wave 2: nested-quote-reuse inside a double-quoted substitution is detected and blocks categorically', () => {
+    expect(check('rm "-r' + '$(cat \')\' )' + 'f" /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    expect(check('git push "-' + '$(cat \')\' )' + 'f" origin main')).toMatchObject({
+      blocked: true,
+      rule: 'force-push',
+    });
+    expect(check('git branch "-' + '$(cat \')\' )' + 'D" main')).toMatchObject({
+      blocked: true,
+      rule: 'env-branch-delete',
+    });
+    expect(check('git clean "-' + '$(cat \')\' )' + 'fd"')).toMatchObject({
+      blocked: true,
+      rule: 'git-clean-force',
+    });
+  });
+
+  it('AC-459.5 fix wave 2 control: the identical decoy WITHOUT an outer double-quote wrapper was already correctly handled (no regression from this fix wave)', () => {
+    // Bare (unquoted) $(...): normalizeShellText()'s flat quote-tracker
+    // correctly opens/closes a single level of quote here regardless of
+    // $(...) nesting, since there is no PRE-EXISTING outer quote for the
+    // inner one to be confused with — this is the case beforeEndOfOptions()
+    // itself already hardened (fix-wave 4).
+    expect(check('rm -r' + '$(cat \')\' )' + 'f /prod-secrets')).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
+  it('AC-459.5 fix wave 2 control: an ordinary double-quoted substitution in a non-flag argument position is NOT blanket-blocked by the divergence signal (AC.3)', () => {
+    // The divergence signal is deliberately scoped to flag-candidate words
+    // only (unlike fix-wave 1's unconditional signal) — this is the same
+    // AC-459.4 case, re-pinned here specifically to guard the divergence
+    // check's own scoping rather than the general "unrelated substitution"
+    // claim.
+    expect(check('git push origin "$(git rev-parse --short HEAD)"').blocked).toBe(false);
   });
 });
 
