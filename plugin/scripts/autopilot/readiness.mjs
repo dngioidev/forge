@@ -15,12 +15,21 @@
  *
  * #491: two ordinary, widely-used spellings on this board still defeated the
  * gate — a *qualified* heading (`## Suggested acceptance criteria`: one
- * qualifier word ahead of the heading term) and a dot-separated AC id
- * (`AC.1`, not `AC-1`). Both are now recognised: the heading regex tolerates
- * an optional single qualifier word before the heading term (a longer word
- * sharing the same prefix, e.g. "Acceptances...", still fails — the boundary
- * check still applies immediately after the heading term itself), and the id
- * regex accepts `-` or `.` as the AC/number separator.
+ * qualifier word ahead of "acceptance criteria") and a dot-separated AC id
+ * (`AC.1`, not `AC-1`). Both are now recognised, narrowly: the heading regex
+ * accepts one qualifier word from a small curated list (`QUALIFIER_WORDS`)
+ * IMMEDIATELY BEFORE the heading term AND requires the literal word
+ * "criteria" immediately AFTER it — i.e. it only widens the exact evidenced
+ * shape "<qualifier> acceptance criteria", not "<any word> acceptance
+ * <anything>". The unqualified path (bare "## Acceptance" / localized
+ * headings / `forge.json` config headings) is completely unchanged. This
+ * two-sided anchor is deliberate: an adversarial review of an earlier,
+ * looser draft (any single word + bare "Acceptance") found real false
+ * positives on ordinary two-word phrases where "Acceptance" is used in an
+ * unrelated sense — "User Acceptance Testing", "Draft Acceptance email to
+ * client", "Client Acceptance sign-off" — none of which are followed by the
+ * word "criteria", so the mandatory suffix forecloses that whole class. The
+ * id regex accepts `-` or `.` as the AC/number separator.
  */
 
 /**
@@ -34,6 +43,15 @@ export const DEFAULT_AC_HEADINGS = [
 ];
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// #491: a small, curated set of qualifier words allowed immediately before
+// the heading term — matched case-insensitively, so casing here is just for
+// readability. Deliberately NOT a generic "any word" allowance: paired with
+// the mandatory trailing "criteria" requirement below, this only widens the
+// gate to the exact evidenced convention ("Suggested acceptance criteria")
+// and close synonyms, never to an unrelated phrase that merely contains the
+// word "Acceptance" ("User Acceptance Testing", "Client Acceptance sign-off").
+const QUALIFIER_WORDS = ['Suggested', 'Proposed', 'Draft', 'Revised', 'Updated', 'Sharpened', 'Preliminary'];
 
 /**
  * Extra headings from config, tolerating a missing/malformed block: only
@@ -55,21 +73,25 @@ function headingRegex(headings) {
   let re = _regexCache.get(key);
   if (!re) {
     const alt = headings.map(escapeRegExp).join('|');
-    // "#{1,6} <heading>" at (indented) line start, tolerating an optional
-    // single qualifier word ahead of the heading term (#491: "## Suggested
-    // acceptance criteria"). The qualifier word must be followed by
-    // whitespace before the heading term is tried, so it can't itself
-    // absorb part of the heading term; trailing (?![\p{L}\p{N}_]) is a
-    // Unicode-aware word boundary so "Acceptance criteria" matches but a
-    // longer word like "Acceptances" does not — parity with the old ASCII
-    // \b, safe for diacritic-carrying Vietnamese headings. That boundary
-    // check is unaffected by the qualifier, so "## Draft Acceptances of the
-    // plan" still fails: no amount of qualifier words turns "Acceptances"
-    // into a match for the heading term "Acceptance".
-    re = new RegExp(
-      `(^|\\n)\\s{0,3}#{1,6}\\s*(?:\\p{L}[\\p{L}\\p{N}'-]*\\s+){0,1}(?:${alt})(?![\\p{L}\\p{N}_])`,
-      'iu'
-    );
+    const qualifiers = QUALIFIER_WORDS.map(escapeRegExp).join('|');
+    // Trailing Unicode-aware word boundary — "Acceptance criteria" matches
+    // but a longer word like "Acceptances" does not (parity with the old
+    // ASCII \b; safe for diacritic-carrying Vietnamese headings).
+    const boundary = '(?![\\p{L}\\p{N}_])';
+    // Two heading shapes, either at (indented) line start after the hashes:
+    //  1. unqualified — exactly the pre-#491 behavior: the heading term
+    //     (built-in/localized/config) sits immediately after the hashes.
+    //  2. qualified (#491) — one word from QUALIFIER_WORDS, then the heading
+    //     term, then the literal word "criteria". Both ends are anchored:
+    //     the qualifier can't be an arbitrary word (closes "User Acceptance
+    //     Testing"/"Client Acceptance sign-off"-style false positives), and
+    //     "criteria" must follow (closes "Draft Acceptance email to
+    //     client"-style false positives even for a qualifier that IS on the
+    //     list) — only the exact evidenced shape "<qualifier> acceptance
+    //     criteria" is accepted, nothing broader.
+    const unqualified = `(?:${alt})${boundary}`;
+    const qualified = `(?:${qualifiers})\\s+(?:${alt})\\s+criteria${boundary}`;
+    re = new RegExp(`(^|\\n)\\s{0,3}#{1,6}\\s*(?:${qualified}|${unqualified})`, 'iu');
     _regexCache.set(key, re);
   }
   return re;

@@ -249,6 +249,27 @@ describe('#491: readiness gate honors "Suggested"-qualified headings and dot-sep
     expect(isShaped('See step 1.2 in the runbook for details.')).toBe(false);
     // a heading that is not about acceptance criteria at all.
     expect(isShaped('## Suggested next steps\n\n- do X\n- do Y')).toBe(false);
+    // a NEGATION word ahead of the heading term reads as denying it, not
+    // qualifying it, and isn't on the curated QUALIFIER_WORDS list either way.
+    expect(isShaped('## Not acceptance criteria, just prose mentioning it')).toBe(false);
+    expect(isShaped('## No acceptance criteria yet, sorry')).toBe(false);
+    expect(isShaped('## Without acceptance criteria this ticket is incomplete')).toBe(false);
+  });
+
+  // AC-491.3 fix-wave regression (adversarial review, round 1): an earlier
+  // draft allowed ANY single word ahead of the bare heading term "Acceptance"
+  // — wide enough to swallow ordinary two-word phrases where "Acceptance" is
+  // used in an unrelated sense. None of these carry acceptance criteria; all
+  // must stay unshaped. The fix requires BOTH a curated qualifier word AND a
+  // literal trailing "criteria" — these fail on one or both counts.
+  it('AC-491.3: an unrelated "<word> Acceptance <noun>" phrase is not mistaken for a qualified heading', () => {
+    expect(isShaped('## User Acceptance Testing\n\nWe need to schedule UAT sessions with the client next week.')).toBe(false);
+    expect(isShaped('## Draft Acceptance email to client\n\nPlease review the wording before sending.')).toBe(false);
+    expect(isShaped('## Team Acceptance updates\n\nStatus sync only, nothing actionable yet.')).toBe(false);
+    expect(isShaped('## Client Acceptance sign-off pending\n\nWaiting on legal.')).toBe(false);
+    // a curated qualifier word immediately before "Acceptance" but with no
+    // trailing "criteria" — the qualifier alone is not enough.
+    expect(isShaped('## Suggested Acceptance Testing schedule\n\nProposed dates below.')).toBe(false);
   });
 
   // AC-491.5: assert the routing OUTCOME (actionFor/selectNext), not merely
