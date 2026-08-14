@@ -13,7 +13,7 @@ import { getRepoInfo, getProjectFields } from './lib/board.mjs';
 import {
   ok, warn, fail, skip,
   fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion,
-  detectRunnerServices, serviceTargetResults,
+  detectRunnerServices, serviceTargetResults, checkForkPrExposure,
 } from './lib/runner-checks.mjs';
 import { checkAgyAdapter, checkAgyOffload } from './lib/agy-checks.mjs';
 import { checkDenylistStaleness } from './lib/denylist-checks.mjs';
@@ -242,6 +242,20 @@ export async function runDoctor(ctx) {
     // limitation, not a misconfiguration, so don't nag (#89).
     else if (isPrivate && !sa?.secret_scanning) results.push(skip('secret-scanning', 'n/a on this plan — needs a public repo or GitHub Advanced Security'));
     else results.push(warn('secret-scanning', 'secret scanning not enabled', 'enable secret scanning + push protection in repo settings (spec §13)'));
+
+    // Fork-PR execution-surface check (#489 AC.2) — independent of this repo's OWN
+    // runner.enabled config (silent above unless enabled); the exposure is whatever
+    // is actually registered on GitHub right now, which is exactly the config/reality
+    // drift #489 was filed over. Reuses repo.owner/repo.name + the `isPrivate` already
+    // computed from `sec` above — NOT a fresh fetchRepoVisibility call — so this check
+    // never depends on a third, independently-failing gh round trip. When `sec` itself
+    // failed, visibility is genuinely unknown: WARN rather than silently dropping the
+    // row (a dropped row would let a public-repo exposure hide behind a bare "healthy").
+    if (sec.ok) {
+      results.push(await checkForkPrExposure({ gh, owner: repo.owner, name: repo.name, isPrivate }));
+    } else {
+      results.push(warn('fork-pr-exposure', 'could not determine repo visibility (repo API call failed) — cannot verify the fork-PR execution surface', 'confirm gh is authenticated with repo scope, then re-run'));
+    }
   }
 
   const failed = results.filter((r) => r.level === 'fail');

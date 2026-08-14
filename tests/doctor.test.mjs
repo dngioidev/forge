@@ -56,17 +56,30 @@ const releaseResponse = (version) => ({
 
 // Routes shared by the runner tests: auth ok, isPrivate view first, then generic
 // repo view + a catch-all so unrelated checks (board/security) don't throw.
-function runnerRoutes({ view = PRIVATE_VIEW, runners, release } = {}) {
+function runnerRoutes({ view = PRIVATE_VIEW, runners, release, approval } = {}) {
+  // The generic `GET /repos/{owner}/{repo}` response — read by doctor's
+  // branch-protection/secret-scanning block AND the #489 fork-pr-exposure check,
+  // both from the SAME `sec` call — is kept consistent with `view`'s isPrivate so
+  // the two visibility sources inside doctor.mjs can never disagree in a test.
+  let viewIsPrivate = true;
+  try { viewIsPrivate = JSON.parse(view.stdout ?? '{}').isPrivate !== false; } catch { /* keep the safe default */ }
   const routes = [
     ['auth status', AUTH_OK],
     [(j) => j.startsWith('repo view') && j.includes('isPrivate'), view],
     ['repo view', REPO_VIEW],
+    [(j) => j === 'api repos/dngioidev/forge', { stdout: JSON.stringify({ private: viewIsPrivate, security_and_analysis: {} }) }],
   ];
   if (release !== undefined) routes.push([(j) => j.startsWith('api repos/actions/runner/releases/latest'), release]);
+  // The approval-policy and runners-list endpoints are both under actions/... but
+  // their full path strings never share a substring, so plain ordered predicates
+  // route each to its own fixture without ambiguity.
+  if (approval !== undefined) routes.push([(j) => j.includes('actions/permissions/fork-pr-contributor-approval'), approval]);
   if (runners !== undefined) routes.push([(j) => j.startsWith('api ') && j.includes('actions/runners'), runners]);
   routes.push([() => true, { ok: false, stderr: 'x' }]);
   return routes;
 }
+
+const approvalResponse = (policy) => ({ stdout: JSON.stringify({ approval_policy: policy }) });
 
 /** Write a scaffolded runner Dockerfile pinning RUNNER_VERSION for the staleness check. */
 async function writeRunnerDockerfile(cwd, version) {
@@ -321,6 +334,138 @@ describe('runDoctor — runner health (AC-225.4)', () => {
     const r = byName(res, 'runner-secret')[0];
     expect(r.level).toBe('fail');
     expect(r.msg).toMatch(/PAT|secret/i);
+  });
+});
+
+describe('runDoctor — fork-PR execution-surface check (AC-489.2)', () => {
+  it('private repo → skip (not applicable), never a failure', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd); // no runner block — this check must fire regardless
+    const { gh } = fakeGh(runnerRoutes());
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('skip');
+  });
+
+  it('public repo, zero self-hosted runners registered → ok', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    const { gh } = fakeGh(runnerRoutes({ view: PUBLIC_VIEW, runners: runnersResponse([]) }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('ok');
+    expect(r.msg).toMatch(/no fork-PR execution surface/);
+  });
+
+  it('public repo + a runner registered + approval_policy:all_external_contributors → ok (gated)', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    const { gh } = fakeGh(runnerRoutes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 9001, name: 'runner-example-01', status: 'online', labels: [{ name: 'self-hosted' }, { name: 'forge-local' }, { name: 'windows' }] }]),
+      approval: approvalResponse('all_external_contributors'),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('ok');
+    expect(r.msg).toMatch(/ALL external contributors/);
+    expect(res.results.filter((x) => x.level === 'fail').map((x) => x.name)).not.toContain('fork-pr-exposure');
+  });
+
+  it('public repo + a runner registered + approval_policy:first_time_contributors (less strict than required) → FAIL', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    const { gh } = fakeGh(runnerRoutes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 9001, name: 'runner-example-01', status: 'online', labels: [{ name: 'self-hosted' }, { name: 'forge-local' }, { name: 'windows' }] }]),
+      approval: approvalResponse('first_time_contributors'),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('fail');
+    expect(r.msg).toMatch(/first_time_contributors/);
+    expect(r.msg).toMatch(/runner-example-01/);
+    expect(res.ok).toBe(false);
+  });
+
+  it('BREAK IT: runners-list API call fails → warn fallback, never a silent ok', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    const { gh } = fakeGh(runnerRoutes({
+      view: PUBLIC_VIEW,
+      runners: { ok: false, stderr: 'HTTP 403: Resource not accessible by personal access token' },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not query registered self-hosted runners/);
+  });
+
+  it('BREAK IT: a runner is registered but the approval-policy API call fails → warn naming the manual fallback + #490, not a silent ok', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    const { gh } = fakeGh(runnerRoutes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+      approval: { ok: false, stderr: 'HTTP 404' },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not be read via the API/);
+    expect(r.hint).toMatch(/manually verify/i);
+    expect(r.hint).toMatch(/#490/);
+  });
+
+  it('fires regardless of this repo\'s OWN runner.enabled:false — the config/reality drift #489 was filed over', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false }); // this repo's own config disabled, like real forge.json
+    const { gh } = fakeGh(runnerRoutes({
+      view: PUBLIC_VIEW,
+      runners: runnersResponse([{ id: 9001, name: 'runner-example-01', status: 'online', labels: [{ name: 'self-hosted' }, { name: 'forge-local' }, { name: 'windows' }] }]),
+      approval: approvalResponse('first_time_contributors'),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    // the OLD runner.enabled-gated check stays silent (as designed, AC-426)…
+    expect(byName(res, 'runner')).toEqual([]);
+    // …but the NEW check still fires and catches the live exposure.
+    expect(byName(res, 'fork-pr-exposure')[0].level).toBe('fail');
+  });
+
+  it('BREAK IT: runners-list API call succeeds (200) but the response shape is unexpected (no .runners array) → warn, never a silent ok (fail-closed like the approval-policy path)', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    const { gh } = fakeGh(runnerRoutes({
+      view: PUBLIC_VIEW,
+      // total_count present, but no `runners` array — a schema-drift/malformed shape
+      runners: { stdout: JSON.stringify({ total_count: 3 }) },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/unexpected shape/);
+    expect(res.results.filter((x) => x.level === 'fail').map((x) => x.name)).not.toContain('fork-pr-exposure');
+  });
+
+  it('the repo API call (sec) fails → fork-pr-exposure WARNs naming the cause, never silently dropped (no redundant second gh repo view call)', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd);
+    // 'repo view' resolves fine (repo.ok), but the plain `api repos/<owner>/<name>`
+    // call (sec) is deliberately left unrouted so it falls to the generic catch-all.
+    const routes = [
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      [(j) => j.startsWith('api repos/') && j.includes('/protection'), { ok: false, stderr: '404' }],
+      [() => true, { ok: false, stderr: 'x' }],
+    ];
+    const { gh, calls } = fakeGh(routes);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'fork-pr-exposure')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not determine repo visibility/);
+    // exactly one `repo view` call — no second, independent fetchRepoVisibility round trip
+    expect(calls.filter((c) => c.startsWith('repo view')).length).toBe(1);
   });
 });
 
