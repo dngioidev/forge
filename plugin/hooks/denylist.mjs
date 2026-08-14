@@ -200,16 +200,38 @@ function shortFlagCluster(command, { alnum = false } = {}) {
  *
  * `guarded` (#454 AC-454.5, second fix wave) is `command`'s own segment of
  * `guardedText` — the SAME text, character-for-character, except a
- * PROTECTED whitespace character (one that came from inside a quote or an
- * escape, per `normalizeShellText()`'s `bare` tracking) is replaced by a
- * sentinel that cannot match `[ \t\n]`. The boundary checks below read
- * `guarded`, not `command`, so a `--`-shaped substring whose surrounding
- * whitespace is REAL only counts as end-of-options when that whitespace
- * is genuinely unquoted/unescaped — see `guardedText`'s own comment for the
- * full adversarial finding this closes (`rm 'X --' -rf
- * /important-template-configs`, where the space between "X" and "--" is
- * quoted, i.e. part of the SAME argv element, not a real separator). The
- * `--`-vs-`ch==='-'` character test itself still reads `command`, not
+ * PROTECTED character (one that came from inside a quote or an escape, per
+ * `normalizeShellText()`'s `bare` tracking) is replaced by a sentinel
+ * wherever it is one this function treats as syntactically meaningful:
+ * whitespace, `$`, `(`, `)`, and `` ` ``. The boundary checks AND the
+ * nesting-depth tracker below both read `guarded`, not `command` — see
+ * `guardedText`'s own comment for the full whitespace-boundary finding this
+ * closes (`rm 'X --' -rf /important-template-configs`, a quoted space
+ * mistaken for a real separator).
+ *
+ * The nesting tracker reading `guarded` too is itself a fix-wave finding, not
+ * part of the original design: a full-branch adversarial re-review found
+ * that counting `$(`/`)`/`` ` `` on raw `command` — even after `guarded` was
+ * introduced for the whitespace check — still had a bypass, because a
+ * close-paren or backtick that originated INSIDE A QUOTE (ordinary literal
+ * data passed as an argument to the INNER command, e.g. `cat`'s own quoted
+ * `')'` argument) is indistinguishable from a genuine syntactic one once
+ * `normalizeShellText()` has already stripped the quote characters. That let
+ * `rm $(cat ')' -- flagfile) -rf /important-secrets` prematurely decrement
+ * `parenDepth` back to 0 at the quoted `)`, misreading the INNER command's
+ * own `--` as the outer `rm`'s end-of-options marker and truncating flag
+ * detection before the real, live `-rf` — verified to reproduce (`main`
+ * blocks it; this function's `guarded`-for-whitespace-only version wrongly
+ * allowed it). Masking a PROTECTED `$`/`(`/`)`/`` ` `` is the correct model,
+ * not merely a defensive widening: single quotes suppress `$(...)`
+ * expansion entirely in real bash (that content is genuinely inert data,
+ * never substitution syntax), and `normalizeShellText()`'s own quote
+ * tracking already runs uniformly through `$(...)`'s content since it has no
+ * concept of substitution grouping — so a quote opened inside `$(...)` (as
+ * `cat`'s own argument quoting) is tracked exactly the same way, and
+ * `bare[i]` is already correct for it with no new tracking needed.
+ *
+ * The `--`-vs-`ch==='-'` hyphen check itself still reads `command`, not
  * `guarded`: hyphens are never masked, since a QUOTED flag is still a real
  * flag to the invoked program (see `guardedText`'s comment) and masking one
  * would trade this false negative for a different one.
@@ -219,21 +241,21 @@ function beforeEndOfOptions(command, guarded) {
   let inBacktick = false;
   const n = command.length;
   for (let i = 0; i < n; i++) {
-    const ch = command[i];
-    if (!inBacktick && ch === '$' && command[i + 1] === '(') {
+    const gch = guarded[i];
+    if (!inBacktick && gch === '$' && guarded[i + 1] === '(') {
       parenDepth++;
       i++; // consume the '(' too, so a literal ')' right after can't double-count
       continue;
     }
-    if (!inBacktick && parenDepth > 0 && ch === ')') {
+    if (!inBacktick && parenDepth > 0 && gch === ')') {
       parenDepth--;
       continue;
     }
-    if (parenDepth === 0 && ch === '`') {
+    if (parenDepth === 0 && gch === '`') {
       inBacktick = !inBacktick;
       continue;
     }
-    if (parenDepth === 0 && !inBacktick && ch === '-' && command[i + 1] === '-') {
+    if (parenDepth === 0 && !inBacktick && command[i] === '-' && command[i + 1] === '-') {
       const beforeOk = i === 0 || /[ \t\n]/.test(guarded[i - 1]);
       const afterIdx = i + 2;
       const afterOk = afterIdx >= n || /[ \t\n]/.test(guarded[afterIdx] ?? '');
@@ -736,22 +758,56 @@ export function normalizeShellText(rawCommand) {
   // end-of-options concept at all, pre-#454) correctly blocks it; the
   // flattened-text-only version of `beforeEndOfOptions()` wrongly allowed it.
   //
-  // Deliberately NOT masking `-` (hyphen) characters, only whitespace: a
-  // QUOTED flag is still a REAL flag to the invoked program (`rm '-rf' target`
-  // really does pass an `-rf` argv element — quoting affects the SHELL's
-  // word-splitting, not whether the invoked program's own option parser reads
-  // the resulting argument as an option), and `main` already relies on that
-  // by matching flags in the flattened, quote-stripped text. Masking hyphens
-  // too would have REGRESSED that existing, correct behaviour into a new
-  // false negative instead of fixing the reported one. Masking only the
-  // boundary whitespace is exactly the minimal, correct distinction: a
+  // Deliberately NOT masking `-` (hyphen) characters: a QUOTED flag is still
+  // a REAL flag to the invoked program (`rm '-rf' target` really does pass
+  // an `-rf` argv element — quoting affects the SHELL's word-splitting, not
+  // whether the invoked program's own option parser reads the resulting
+  // argument as an option), and `main` already relies on that by matching
+  // flags in the flattened, quote-stripped text. Masking hyphens too would
+  // have REGRESSED that existing, correct behaviour into a new false
+  // negative instead of fixing the reported one. Masking whitespace is
+  // exactly the minimal, correct distinction for the boundary check: a
   // standalone `--` token (bare OR entirely inside one pair of quotes, since
   // quoting an ENTIRE token has no INTERNAL protected whitespace either way)
   // still has genuinely bare whitespace on both sides and is still honoured —
   // pinned by `AC-454.5: a bare quoted -- token is still honoured as
   // end-of-options` — while `'X --'`'s protected internal space breaks the
   // left-hand boundary check and the decoy is correctly ignored.
-  const guardedText = Array.from(text, (ch, i) => (!bare[i] && (ch === ' ' || ch === '\t' || ch === '\n') ? '\x01' : ch)).join('');
+  //
+  // ALSO masking `$`, `(`, `)`, and `` ` `` when protected (fix wave, full-
+  // branch adversarial re-review — see `beforeEndOfOptions()`'s own comment
+  // for the finding this closes): its `$(...)`/backtick nesting-depth
+  // tracker needs the identical protected/bare distinction the whitespace
+  // check already has, or a close-paren/backtick that is really just quoted
+  // literal data (an inner command's own quoted argument, e.g. `cat`'s
+  // `')'`) gets miscounted as genuine substitution syntax. Single quotes
+  // suppress `$(...)` expansion entirely in real bash, so masking protected
+  // instances of these four characters is the correct semantic model here,
+  // not merely a defensive widening.
+  // Built with a plain UTF-16-code-unit-indexed loop (`text[i]`/`text.length`),
+  // NOT `Array.from(text, ...)` (full-branch adversarial re-review, critical
+  // finding): `Array.from` on a string iterates by Unicode CODE POINT, so an
+  // astral character (most emoji, many CJK-extension/mathematical/other
+  // supplementary-plane characters) earlier in the command collapses a
+  // surrogate PAIR into one iteration step, shifting the callback's index one
+  // position early for everything after it — while `bare` was built by the
+  // main scan's own `command[i]` loop, which is a plain UTF-16-code-unit walk
+  // (a surrogate pair is two separate iterations, two separate `bare` push
+  // calls). The mismatch silently read the WRONG character's protected/bare
+  // status for the rest of the string, reopening the exact quoted-decoy
+  // bypass fix wave 2 closes for any command containing a common Unicode
+  // character anywhere earlier in the line — confirmed reproducible
+  // (`check('rm <emoji>X\\ -- -rf target')` read `blocked:false`) before this
+  // fix. A same-indexing-scheme loop cannot have that divergence: `text[i]`
+  // and `bare[i]` are built by, and read by, the identical UTF-16-code-unit
+  // index space throughout.
+  const guardedChars = new Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const maskable = ch === ' ' || ch === '\t' || ch === '\n' || ch === '$' || ch === '(' || ch === ')' || ch === '`';
+    guardedChars[i] = !bare[i] && maskable ? '\x01' : ch;
+  }
+  const guardedText = guardedChars.join('');
   // `spacedText`: insert one space at every recorded marker position, in a
   // single linear pass (never repeated slicing — same O(n²) trap this file's
   // own chunked-`parts` design exists to avoid, see the comment above). Pure

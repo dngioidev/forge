@@ -685,6 +685,28 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
     expect(check('rm $(echo hi) -- -rf target').blocked).toBe(false);
   });
 
+  // AC-454.5 (fix wave 4 — full-branch adversarial SECURITY re-review
+  // finding) — the nesting-depth tracker above is only correct if it, too,
+  // ignores a `$`/`(`/`)`/backtick that is really just quoted LITERAL DATA
+  // (an inner command's own quoted argument), not genuine substitution
+  // syntax. `rm $(cat ')' -- flagfile) -rf /important-secrets` plants a
+  // quoted `')'` — a literal argument to `cat`, never a real close-paren for
+  // the outer `$(...)` — ahead of the real closing paren. A depth-tracker
+  // reading raw (already quote-stripped) text can't tell that quoted `)`
+  // apart from a genuine one, decrements `parenDepth` back to 0 too early,
+  // and misreads the INNER `--` (still, per real bash, syntactically inside
+  // the substitution) as the outer `rm`'s end-of-options marker — truncating
+  // flag detection before the real, live `-rf`. Closed by masking a
+  // PROTECTED `$`/`(`/`)`/backtick in `guardedText` exactly like protected
+  // whitespace already was, and having the nesting tracker read `guarded`
+  // instead of `command` for those checks too.
+  it('AC-454.5: a quoted paren/backtick inside a command substitution does not desync the nesting-depth tracker', () => {
+    expect(check("rm $(cat ')' -- flagfile) -rf /important-secrets")).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+  });
+
   // AC-454.5 (fix wave 2 — full-branch adversarial SECURITY finding) — a
   // QUOTED argument that merely CONTAINS "--" (with a quoted literal space
   // around it) is not a real POSIX end-of-options marker. `'X --'` is ONE
@@ -732,6 +754,34 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
   // review) — must stay allowed, same as the unquoted spelling.
   it('AC-454.5: a bare quoted -- token (the whole argument, not a substring of one) is still honoured', () => {
     expect(check("rm '--' -rf target").blocked).toBe(false);
+  });
+
+  // AC-454.5 (fix wave 3 — full-branch adversarial reviewer finding) —
+  // `guardedText` must be built with an index space that matches `bare`'s,
+  // or the masking silently reads the WRONG character's protected/bare
+  // status. The first version used `Array.from(text, (ch, i) => ...)`, which
+  // iterates a string by Unicode CODE POINT — a surrogate-pair character
+  // (most emoji, many CJK-extension/mathematical/supplementary-plane
+  // characters) collapses to ONE iteration step there, shifting the
+  // callback's index one position early for everything after it. `bare` was
+  // built by the main scan's own plain `command[i]` loop, a UTF-16
+  // CODE-UNIT walk (a surrogate pair is two separate iterations/pushes) — so
+  // once any astral character appeared anywhere earlier in the command,
+  // every later `bare[i]` lookup read one position too early, silently
+  // un-masking a PROTECTED whitespace and reopening the exact quoted/escaped
+  // decoy bypass fix wave 2 closed. Confirmed to reproduce
+  // (`check('rm <emoji>X\\ -- -rf target')` read `blocked: false`) before
+  // this fix; closed by rebuilding `guardedText` with a plain
+  // `text[i]`/`text.length` loop, the same UTF-16-code-unit index space
+  // `bare` already uses throughout.
+  it('AC-454.5: an astral (surrogate-pair) character earlier in the command does not desync the guarded-whitespace masking', () => {
+    const emoji = String.fromCodePoint(0x1f600); // outside the BMP: a real surrogate pair
+    expect(check(`rm ${emoji}X\\ -- -rf /important-secrets`)).toMatchObject({
+      blocked: true,
+      rule: 'recursive-delete',
+    });
+    // ...and a GENUINE bare -- after the same emoji is still correctly honoured.
+    expect(check(`rm ${emoji}X -- -rf target`).blocked).toBe(false);
   });
 
   // AC-454.6 — no regression on #450's own `--` handling of the TARGET half:

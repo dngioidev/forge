@@ -110,8 +110,69 @@ bash and the security review's own empirical check.
 Regression-pinned as `AC-454.5: a quoted decoy merely containing -- is not
 read as end-of-options` (the four reproduction commands) plus `AC-454.5: a
 bare quoted -- token (the whole argument, not a substring of one) is still
-honoured` (the control case), both in `tests/hooks/denylist.test.mjs`. Full
-suite green (1207/1207: 1192 pre-existing + 15 new).
+honoured` (the control case), both in `tests/hooks/denylist.test.mjs`. A
+same-day proactive check added a fifth pin for the backslash-escaped-space
+sibling of the same decoy shape (`rm X\ -- -rf target`), confirmed already
+correctly handled by the same mechanism (the escape path routes through the
+same default-protected helper as the in-quote path).
+
+## Fix wave 3: full-branch adversarial reviewer finding (re-review), closed
+
+Re-dispatching `forge:reviewer`/`forge:security` on the fix-wave-2 tip (per
+policy: re-run both after any fix wave before shipping) found a THIRD,
+genuinely new bug, this time an implementation defect in `guardedText`
+itself rather than a design gap: it was built with
+`Array.from(text, (ch, i) => ...)`, which iterates a JS string by Unicode
+CODE POINT, while `bare` (built by the main scan's own plain `command[i]`
+loop) is indexed by UTF-16 CODE UNIT. A surrogate-pair character (most
+emoji, many CJK-extension/mathematical/supplementary-plane characters)
+collapses to one iteration step under `Array.from`, so once any such
+character appeared anywhere earlier in the command, every later `bare[i]`
+lookup silently read one position too early — un-masking a genuinely
+PROTECTED whitespace and reopening the exact quoted/escaped-decoy bypass
+fix wave 2 had just closed. Confirmed reproducible
+(`rm <emoji>X\ -- -rf target` read `blocked: false`) before this fix.
+Closed by rebuilding `guardedText` with a plain `text[i]`/`text.length`
+loop — the same UTF-16-code-unit index space `bare` already uses
+throughout, so the two arrays can no longer diverge. Regression-pinned as
+`AC-454.5: an astral (surrogate-pair) character earlier in the command does
+not desync the guarded-whitespace masking`, covering both the
+still-dangerous decoy case and a genuine bare `--` after the same emoji
+(must stay honoured). Full suite green (1209/1209: 1192 pre-existing + 17
+new).
+
+## Fix wave 4: full-branch adversarial SECURITY re-review finding, closed
+
+The re-dispatched `forge:security` pass (run in parallel with fix wave 3's
+reviewer re-dispatch) found a FOURTH, independent bug: the `$(...)`/backtick
+nesting-depth tracker itself — the mechanism fix wave 1 introduced — still
+read raw, already quote-stripped `command` text with no reference to
+`guarded`, so a close-paren or backtick that originated INSIDE A QUOTE
+(ordinary literal data passed as an argument to the INNER command, e.g.
+`cat`'s own quoted `')'` argument) was indistinguishable from a genuine
+syntactic one. That let `rm $(cat ')' -- flagfile) -rf /important-secrets`
+prematurely decrement `parenDepth` back to 0 at the quoted `)`, misreading
+the inner command's own `--` as the outer `rm`'s end-of-options marker and
+truncating flag detection before the real, live `-rf` — confirmed to
+reproduce (`main` blocks it; this branch's tip after fix wave 3 did not).
+
+Closed by extending `guardedText`'s masking to cover PROTECTED `$`, `(`,
+`)`, and `` ` `` as well as protected whitespace (previously whitespace
+only), and having `beforeEndOfOptions()`'s nesting-depth tracker read `$`/
+`(`/`)`/backtick from `guarded` instead of `command` too — the hyphen check
+is unaffected, still reading `command` for the reason already established
+(a quoted flag is still a real flag). This is the semantically correct
+model, not a defensive widening: single quotes suppress `$(...)` expansion
+entirely in real bash, so a quote-protected instance of these characters
+genuinely is inert data, and `normalizeShellText()`'s existing quote
+tracking already runs uniformly through `$(...)`'s content (it has no
+concept of substitution grouping), so `bare[i]` was already correct for
+this purpose with no new tracking needed — only the consumer
+(`beforeEndOfOptions`) was reading the wrong view. Regression-pinned as
+`AC-454.5: a quoted paren/backtick inside a command substitution does not
+desync the nesting-depth tracker`. Full suite green (1210/1210: 1192
+pre-existing + 18 new). Reviewer and security re-dispatched a fourth time on
+this tip before shipping.
 
 ## AC map
 
