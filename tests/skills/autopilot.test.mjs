@@ -247,6 +247,19 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/record of a past grant, not a recoverable grant/i);
   });
 
+  it('AC-504.5: § The loop lists the env preflight under RUN START, and § Driver scripts / a dedicated section document it', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // § The loop: a third RUN START line, alongside merge-auth and rate-budget
+    expect(s).toMatch(/RUN START:\s*probeEnv\(ctx\)/);
+    expect(s).toMatch(/verdict=no-go[\s\S]{0,120}do NOT spawn the first subagent/);
+    // a dedicated section mirroring the other two preflights
+    expect(s).toMatch(/## Environment preflight \(#504\)/);
+    expect(s).toMatch(/evaluateEnvPreflight/);
+    expect(s).toMatch(/probeEnv/);
+    // § Driver scripts documents the module
+    expect(s).toMatch(/`envpreflight\.mjs`/);
+  });
+
   it('AC-464.5: § Return-then-resume watchdog documents the stalled-before-PR shape alongside awaiting-merge', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     expect(s).toMatch(/Return-then-resume watchdog/);
