@@ -77,7 +77,8 @@ and confirm the new assertions fail against pre-change source (the traversal
 cases currently return `true`, not `false`).
 
 **Files:** tests/lib/allowed-commands.test.mjs, tests/hooks/agy-deny.test.mjs
-**AC map:** AC.2, AC.3
+**AC map:** AC-438.1 (the in-workspace-allow test also demonstrates the
+decided scope), AC-438.2, AC-438.3
 **Test plan:** see above.
 
 ## Task 2 (code): workspace-containment guard
@@ -103,7 +104,7 @@ cases currently return `true`, not `false`).
 - Pass `{ segments: splitSegments, cwd }` to `isAllowedCommand()`.
 
 **Files:** plugin/scripts/lib/allowed-commands.mjs, plugin/hooks/agy-deny.mjs
-**AC map:** AC.1, AC.2, AC.3
+**AC map:** AC-438.1, AC-438.2, AC-438.3
 **Done:** Task 1's `allowed-commands.test.mjs` and `agy-deny.test.mjs`
 assertions pass; no existing test in either file regresses.
 
@@ -112,8 +113,14 @@ assertions pass; no existing test in either file regresses.
 - `docs/guides/cross-gai.md`: update the `node` row of the guarded-verbs
   table (and any prose describing its scope limit) to state the workspace-
   root containment, replacing language that describes the gap as open.
+- `docs/README.md`: add this plan to the route index.
+- `tests/docs/node-allowlist-workspace-scope.test.mjs` (AC-438.4
+  docs-assertion tests, mirroring `tests/docs/git-add-allowlist.test.mjs`):
+  the guarded-verbs table's `node` row states the workspace scope and the
+  traversal/absolute-escape refusal, the doc no longer describes the old
+  "any on-disk path" gap as open, and the route index links this plan.
 
-**Files:** docs/guides/cross-gai.md
-**AC map:** AC.4
-**Done:** docsync gate clean; no other doc references the old "any on-disk
-script" scope as current.
+**Files:** docs/guides/cross-gai.md, docs/README.md, tests/docs/node-allowlist-workspace-scope.test.mjs
+**AC map:** AC-438.4
+**Done:** docsync gate clean; ac gate covers AC-438.4 with a passing test; no
+other doc references the old "any on-disk script" scope as current.

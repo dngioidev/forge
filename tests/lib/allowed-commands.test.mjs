@@ -217,7 +217,7 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     }
   });
 
-  it('AC-438.2: `node` auto-allows any path resolving inside the workspace, not just forge\'s own tree', () => {
+  it('AC-438.1/AC-438.2: `node` auto-allows any path resolving inside the workspace, not just forge\'s own tree', () => {
     for (const cmd of [
       'node plugin/scripts/board/move.mjs --issue 429 --status done',
       'node ./scripts/x.mjs',
