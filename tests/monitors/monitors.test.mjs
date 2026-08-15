@@ -12,6 +12,7 @@ import {
   readAgentRecords,
   clearAgentHeartbeat,
   poll as agentsPoll,
+  isSafeAgentId,
   DEFAULT_STALE_MS,
 } from '../../plugin/scripts/monitors/agents-watch.mjs';
 import { trackFailure, freshGuard, FAILURE_THRESHOLD, REEMIT_EVERY } from '../../plugin/scripts/monitors/poll-guard.mjs';
@@ -429,6 +430,28 @@ describe('agent-liveness monitor (#505, epic #503)', () => {
       expect(ok).toBe(false);
     });
 
+    // Fix-wave (adversarial forge:security, #505): readAgentRecords had no lstat
+    // guard analogous to ci-watch.mjs's loadCiWatchState, so a symlink planted
+    // under .forge/agents/ would be followed by the underlying readFile — a
+    // forged-reading vector (fake healthy to suppress a real stall, or fake
+    // stale to spam false alarms). Mirrors the ci-watch symlink test exactly.
+    it('never follows a symlink planted at a record path', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      const targetDir = await mkdtemp(join(tmpdir(), 'forge-agents-target-'));
+      const target = join(targetDir, 'forged.json');
+      await writeFile(target, JSON.stringify({ id: 'forged', issue: 1, branch: 'x', phase: 'p', lastArtifactAt: new Date().toISOString() }));
+      const linkDir = join(cwd, '.forge', 'agents');
+      await mkdir(linkDir, { recursive: true });
+      const linkPath = join(linkDir, 'forged.json');
+      try {
+        await symlink(target, linkPath, 'file');
+      } catch (err) {
+        if (err?.code === 'EPERM' || err?.code === 'EACCES') return; // platform can't create symlinks unprivileged — skip
+        throw err;
+      }
+      expect(await readAgentRecords(cwd)).toEqual([]); // the symlinked entry is skipped, never dereferenced
+    });
+
     it('one corrupt record among valid ones is skipped, not fatal to the read', async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
       await writeAgentHeartbeat(cwd, { id: 'good', issue: 1, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: new Date().toISOString() });
@@ -446,6 +469,47 @@ describe('agent-liveness monitor (#505, epic #503)', () => {
       await clearAgentHeartbeat(cwd, '9');
       expect(await readAgentRecords(cwd)).toEqual([]);
       await expect(clearAgentHeartbeat(cwd, 'never-existed')).resolves.toBe(true);
+    });
+  });
+
+  // Fix-wave (adversarial forge:reviewer + forge:security, #505): `id` reached
+  // recordPath() straight from raw CLI argv with no validation — a traversal-
+  // shaped id (`../../autopilot/run`) escaped `.forge/agents/` entirely and let
+  // writeAgentHeartbeat/clearAgentHeartbeat write or delete an arbitrary
+  // `*.json` file (e.g. the run ledger). Both findings (critical + major) were
+  // confirmed independently by both reviewers before this fix landed.
+  describe('id path-traversal guard (fix-wave, adversarial review, #505)', () => {
+    it('isSafeAgentId rejects traversal, path separators, and non-strings; accepts the intended alnum/-/_ shape', () => {
+      expect(isSafeAgentId('505')).toBe(true);
+      expect(isSafeAgentId('fix-505')).toBe(true);
+      expect(isSafeAgentId('../../autopilot/run')).toBe(false);
+      expect(isSafeAgentId('..')).toBe(false);
+      expect(isSafeAgentId('a/b')).toBe(false);
+      expect(isSafeAgentId('a\\b')).toBe(false);
+      expect(isSafeAgentId('a.json')).toBe(false); // '.' is not in the allowlist at all
+      expect(isSafeAgentId('')).toBe(false);
+      expect(isSafeAgentId(null)).toBe(false);
+      expect(isSafeAgentId(505)).toBe(false); // must be a string (CLI argv is always a string; a number is a caller bug)
+    });
+
+    it('writeAgentHeartbeat with a traversal id never escapes .forge/agents/ — degrades to false, writes nothing outside it', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      const ok = await writeAgentHeartbeat(cwd, { id: '../../autopilot/run', issue: 1, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: new Date().toISOString() });
+      expect(ok).toBe(false);
+      // confirm nothing was written outside the sandbox — the escape path used in the reviewer's repro
+      await expect(readFile(join(cwd, '..', 'autopilot', 'run.json'), 'utf8')).rejects.toThrow();
+      await expect(readFile(join(cwd, 'autopilot', 'run.json'), 'utf8')).rejects.toThrow();
+    });
+
+    it('clearAgentHeartbeat with a traversal id never deletes outside .forge/agents/ — degrades to false', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      // plant a real file at the escape target to prove it survives the clear attempt
+      const target = join(cwd, '.forge', 'autopilot', 'run.json');
+      await mkdir(join(cwd, '.forge', 'autopilot'), { recursive: true });
+      await writeFile(target, JSON.stringify({ iterations: 3 }));
+      const ok = await clearAgentHeartbeat(cwd, '../autopilot/run');
+      expect(ok).toBe(false);
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ iterations: 3 }); // untouched
     });
   });
 
@@ -481,6 +545,35 @@ describe('agent-liveness monitor (#505, epic #503)', () => {
       await writeAgentHeartbeat(cwd, { id: '2', issue: 2, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: 'not-a-date' });
       const r = await agentsPoll(cwd, new Map());
       expect(r.lines).toEqual([]);
+    });
+
+    // Fix-wave (adversarial forge:reviewer, #505): a transient `unknown` reading
+    // between two `stale` observations must not erase the carried-forward
+    // `stale` status — otherwise the eventual real recovery (stale -> healthy)
+    // would diff against `unknown` instead of `stale` and silently swallow the
+    // "Agent recovered" line.
+    it('a transient unknown reading between two stale observations does not swallow the eventual recovery line', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      const t0 = Date.parse('2026-08-15T12:00:00.000Z');
+
+      // 1. go stale
+      await writeAgentHeartbeat(cwd, { id: '3', issue: 3, branch: 'x', phase: 'p', spawnedAt: new Date(t0).toISOString(), lastArtifactAt: new Date(t0).toISOString() });
+      const stale = await agentsPoll(cwd, new Map(), { now: () => t0 + DEFAULT_STALE_MS + 1000 });
+      expect(stale.lines).toHaveLength(1);
+      expect(stale.lines[0]).toMatch(/Agent stall suspected/);
+
+      // 2. a transient malformed write — classifies unknown, not itself a transition,
+      // and must not erase the carried-forward "stale" memory of id '3'.
+      await writeAgentHeartbeat(cwd, { id: '3', issue: 3, branch: 'x', phase: 'p', spawnedAt: new Date(t0).toISOString(), lastArtifactAt: 'not-a-date' });
+      const unknown = await agentsPoll(cwd, stale.statuses, { now: () => t0 + DEFAULT_STALE_MS + 2000 });
+      expect(unknown.lines).toEqual([]);
+      expect(unknown.statuses.get('3')).toBe('stale'); // carried forward, not overwritten to 'unknown'
+
+      // 3. a real recovery — must still be detected as stale -> healthy, not unknown -> healthy (a no-op)
+      await writeAgentHeartbeat(cwd, { id: '3', issue: 3, branch: 'x', phase: 'p', spawnedAt: new Date(t0).toISOString(), lastArtifactAt: new Date(t0 + DEFAULT_STALE_MS + 3000).toISOString() });
+      const recovered = await agentsPoll(cwd, unknown.statuses, { now: () => t0 + DEFAULT_STALE_MS + 3000 });
+      expect(recovered.lines).toHaveLength(1);
+      expect(recovered.lines[0]).toMatch(/Agent recovered/);
     });
 
     it('a genuine fs read error surfaces ok:false (mirrors the decisions-poll fs-error test)', async () => {

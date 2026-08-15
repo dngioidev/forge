@@ -54,9 +54,8 @@
  */
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readdir } from 'node:fs/promises';
+import { readdir, lstat, rm } from 'node:fs/promises';
 import { readJson, writeJson } from '../lib/jsonfile.mjs';
-import { rm } from 'node:fs/promises';
 import { freshGuard, trackFailure } from './poll-guard.mjs';
 
 /** Relative dir this monitor reads and the delivery subagent writes to. */
@@ -65,8 +64,31 @@ export const AGENTS_DIR_RELPATH = join('.forge', 'agents');
 /** Default heartbeat-staleness threshold — see module docblock § Threshold. */
 export const DEFAULT_STALE_MS = 60 * 60 * 1000;
 
-/** Path helper for one record. */
+/**
+ * Is `id` safe to interpolate into a filesystem path? Fix-wave finding
+ * (adversarial `forge:reviewer`, #505): `id` reaches `recordPath` straight
+ * from raw CLI argv (`--id`/`--clear`) with no upstream validation — an
+ * `id` like `../../autopilot/run` would let `writeAgentHeartbeat`/
+ * `clearAgentHeartbeat` write or delete an arbitrary `*.json` file outside
+ * `.forge/agents/` (e.g. the run ledger), not just files inside it. Not
+ * reachable via the documented call sites today (`id` is always the numeric
+ * issue), but nothing enforced that shape — mirrors the codebase's existing
+ * precedent for this exact class of gap (`ledger.mjs`'s `sanitizePositiveInt`,
+ * #488). A restrictive allowlist (no `/`, `\`, `.`, or any other traversal-
+ * capable character) rather than a denylist, so the safe direction is the
+ * default.
+ */
+export function isSafeAgentId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+/** Path helper for one record. Throws on an unsafe id — callers are the
+ * best-effort write/clear functions below, which already catch and degrade
+ * to `false` rather than propagate. */
 function recordPath(cwd, id) {
+  if (!isSafeAgentId(id)) {
+    throw new Error(`agents-watch: unsafe agent id ${JSON.stringify(id)} — must match /^[A-Za-z0-9_-]+$/`);
+  }
   return join(cwd, AGENTS_DIR_RELPATH, `${id}.json`);
 }
 
@@ -106,6 +128,13 @@ export async function clearAgentHeartbeat(cwd, id) {
  * One corrupt/unreadable record among several valid ones is skipped, not
  * fatal to the read. A genuine fs error (not ENOENT on the dir itself)
  * propagates so `poll` can surface it via the shared poll-guard (#318).
+ *
+ * Fix-wave finding (adversarial `forge:security`/`forge:reviewer`, #505):
+ * each file is `lstat`-gated before it's read, mirroring `ci-watch.mjs`'s
+ * `loadCiWatchState` guard — a symlink planted under `.forge/agents/` is
+ * never dereferenced (treated the same as a missing/corrupt record, skipped
+ * silently), closing the same forged-reading class ci-watch.mjs already
+ * closes for its own state file.
  */
 export async function readAgentRecords(cwd) {
   const dir = join(cwd, AGENTS_DIR_RELPATH);
@@ -118,7 +147,14 @@ export async function readAgentRecords(cwd) {
   }
   const out = [];
   for (const f of files) {
-    const record = await readJson(join(dir, f)).catch(() => null);
+    const filePath = join(dir, f);
+    try {
+      const st = await lstat(filePath);
+      if (st.isSymbolicLink()) continue; // never follow a planted symlink
+    } catch {
+      continue; // unstattable — treat like absent/corrupt, skip
+    }
+    const record = await readJson(filePath).catch(() => null);
     if (record) out.push(record);
   }
   return out;
@@ -154,7 +190,16 @@ export function classifyLiveness({ record, now = Date.now(), thresholdMs = DEFAU
   };
 }
 
-/** Human-readable line for a per-id status transition. */
+/**
+ * Human-readable line for a per-id status transition. Interpolates
+ * `issue`/`branch`/`phase` from the record unsanitized — reviewed (adversarial
+ * `forge:security`, #505) and accepted as symmetric with the codebase's
+ * existing, unaddressed risk of the same shape: `ci-watch.mjs` interpolates a
+ * live `headRefName` and `decisions-watch.mjs` interpolates human-typed
+ * decision-answer text into their own notification lines the same way. Not a
+ * new regression this ticket introduces; tightening all three together, if
+ * ever warranted, is a separate cross-cutting ticket, not scope here.
+ */
 function transitionLine(record, from, to) {
   const issue = record?.issue ?? '?';
   const branch = record?.branch ?? '?';
@@ -172,9 +217,15 @@ function transitionLine(record, from, to) {
  * Poll once. `prevStatuses` is a `Map<id,status>` threaded across polls by
  * the caller (mirrors `ci-watch.mjs`'s `prev`). Returns `{ lines, statuses,
  * ok, reason }` — a line is emitted only for an id whose status transitions
- * into or out of `stale`; `unknown` never emits (fail-quiet) and never
- * overwrites a prior known status in the returned map's transition logic
- * beyond recording it, so a later valid record still classifies normally.
+ * into or out of `stale`; `unknown` never itself emits (fail-quiet).
+ *
+ * Fix-wave finding (adversarial `forge:reviewer`, #505): a transient `unknown`
+ * reading (one malformed/unparsable record between two valid ones) must not
+ * erase a previously known `stale` status — otherwise the eventual real
+ * recovery (`stale` → `healthy`) would compare against `unknown` instead of
+ * `stale` and silently swallow the "Agent recovered" line. So `unknown` never
+ * overwrites the carried-forward map entry; it only ever *records* a status
+ * against an id it has never seen a real one for.
  */
 export async function poll(cwd, prevStatuses, { now = Date.now, thresholdMs } = {}) {
   let records;
@@ -190,9 +241,13 @@ export async function poll(cwd, prevStatuses, { now = Date.now, thresholdMs } = 
     const id = record?.id ?? record?.issue;
     if (id == null) continue;
     const { status } = classifyLiveness({ record, now: nowTs, thresholdMs });
-    statuses.set(id, status);
     const prev = prevStatuses instanceof Map ? prevStatuses.get(id) : undefined;
-    if (status !== 'unknown' && prev !== status && (status === 'stale' || prev === 'stale')) {
+    if (status === 'unknown') {
+      statuses.set(id, prev ?? status); // carry the last known real status forward
+      continue; // never itself a transition
+    }
+    statuses.set(id, status);
+    if (prev !== status && (status === 'stale' || prev === 'stale')) {
       const line = transitionLine(record, prev, status);
       if (line) lines.push(line);
     }
