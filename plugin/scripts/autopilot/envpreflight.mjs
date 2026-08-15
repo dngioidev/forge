@@ -153,10 +153,26 @@ export async function probeBoardStatusKeys({ cwd, gh, loadConfigFn = loadConfig,
   return { id, status: 'ok', detail: 'board Status option keys match select.mjs' };
 }
 
-/** Parse the script path out of a `statusLine.command` string (two quoted argv tokens: node exe, script). */
+/**
+ * Parse the script path out of a `statusLine.command` string. The one real
+ * writer (`init.mjs`) always emits two double-quoted argv tokens — node exe,
+ * then script (`"${process.execPath}" "${scriptPath}"`) — so two-or-more
+ * quoted tokens take the LAST one. A single quoted token is trusted only
+ * when it's the WHOLE command (nothing unquoted trails it, e.g. a bare
+ * `node "script.mjs"` prefix, or the script alone); a quoted token with
+ * unquoted content trailing it (e.g. `"node.exe" script.mjs`) is genuinely
+ * ambiguous — is the quoted piece the exe or the script? — and must not be
+ * guessed (review fix, #504): returns `null` so the caller warns instead of
+ * silently checking the wrong path.
+ */
 export function parseStatuslineScriptPath(command) {
-  const quoted = [...String(command ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  return quoted[1] ?? quoted[0] ?? null;
+  const str = String(command ?? '');
+  const quoted = [...str.matchAll(/"([^"]+)"/g)];
+  if (quoted.length === 0) return null;
+  if (quoted.length >= 2) return quoted[quoted.length - 1][1];
+  const only = quoted[0];
+  const after = str.slice(only.index + only[0].length).trim();
+  return after ? null : only[1];
 }
 
 /**
@@ -167,8 +183,14 @@ export function parseStatuslineScriptPath(command) {
  */
 export async function probeStatuslinePath({ cwd, stat = fsStat, readJsonFn = readJson }) {
   const id = 'statusline-path';
-  const settingsLocal = await readJsonFn(join(cwd, '.claude', 'settings.local.json')).catch(() => null);
-  const settings = await readJsonFn(join(cwd, '.claude', 'settings.json')).catch(() => null);
+  // `readJsonFn` (default `readJson`, `lib/jsonfile.mjs`) already returns `null`
+  // for a genuinely absent file (ENOENT) and THROWS on a real read failure
+  // (corrupt JSON, EACCES, EBUSY, …) — deliberately, so a transient I/O error
+  // can't masquerade as "absent". No `.catch()` here: a real failure must
+  // propagate to `runProbe`'s crash-to-warning wrapper (AC.4), not get
+  // silently folded into "no statusline wired" (security review, #504).
+  const settingsLocal = await readJsonFn(join(cwd, '.claude', 'settings.local.json'));
+  const settings = await readJsonFn(join(cwd, '.claude', 'settings.json'));
   const statusLine = settingsLocal?.statusLine ?? settings?.statusLine;
   if (!statusLine) {
     return { id, status: 'ok', detail: 'no statusline wired — nothing to verify (doctor.mjs already advises on this separately)' };

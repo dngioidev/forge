@@ -2244,6 +2244,16 @@ describe('autopilot env preflight (#504) — statusline plugin path on disk (AC-
     expect(parseStatuslineScriptPath(undefined)).toBeNull();
   });
 
+  it('parseStatuslineScriptPath: a bare unquoted prefix before one quoted token still resolves (e.g. `node "script.mjs"`)', () => {
+    expect(parseStatuslineScriptPath('node "/plugins/forge/scripts/statusline.mjs"')).toBe('/plugins/forge/scripts/statusline.mjs');
+  });
+
+  it('review fix (#504): asymmetric quoting (only the FIRST token quoted, something trails it) is ambiguous — never guessed', () => {
+    // Is the quoted piece the node exe (script trails, unquoted) or the script itself?
+    // Can't tell from quoting alone — must not silently check the wrong path.
+    expect(parseStatuslineScriptPath('"C:\\Program Files\\nodejs\\node.exe" script.mjs')).toBeNull();
+  });
+
   it('AC-504.2d: no statusline wired at all -> ok, nothing to verify (doctor.mjs covers "wired" separately)', async () => {
     const p = await probeStatuslinePath({ cwd: '/repo', stat: async () => ({}), readJsonFn: async () => null });
     expect(p).toEqual({ id: 'statusline-path', status: 'ok', detail: 'no statusline wired — nothing to verify (doctor.mjs already advises on this separately)' });
@@ -2270,6 +2280,14 @@ describe('autopilot env preflight (#504) — statusline plugin path on disk (AC-
     const readJsonFn = async (p) => (p.includes('settings.local.json') ? { statusLine: { command: '"node" "/x/statusline.mjs"' } } : null);
     const stat = async () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; };
     await expect(probeStatuslinePath({ cwd: '/repo', stat, readJsonFn })).rejects.toThrow('busy');
+  });
+
+  it('AC-504.4 (security review fix): a genuine readJsonFn failure (corrupt/unreadable settings, not ENOENT) propagates — never silently folded into "no statusline wired"', async () => {
+    // readJson's own contract (lib/jsonfile.mjs): ENOENT -> null, everything else throws.
+    // probeStatuslinePath must NOT blanket-catch that into null — it would hide a real
+    // problem behind a false "ok: nothing to verify" instead of degrading to a warning.
+    const readJsonFn = async () => { const e = new SyntaxError('Unexpected token in JSON'); throw e; };
+    await expect(probeStatuslinePath({ cwd: '/repo', stat: async () => ({}), readJsonFn })).rejects.toThrow(/Unexpected token/);
   });
 });
 
