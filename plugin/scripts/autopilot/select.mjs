@@ -13,9 +13,13 @@ import { isShaped } from './readiness.mjs';
 import { pendingDecisions } from '../lib/situation.mjs';
 
 // Tier: lower runs first. Resume-in-flight beats fresh work; ready beats backlog.
-const TIER = { inProgress: 0, inReview: 0, ready: 1, backlog: 2 };
+// Exported (#504): the env preflight's board-status-keys probe compares the
+// live board's normalized Status option names against these exact keys, so
+// it fails loudly on drift instead of duplicating a copy that could itself
+// go stale.
+export const TIER = { inProgress: 0, inReview: 0, ready: 1, backlog: 2 };
 // Never selected — blocked has a pending decision; the rest are terminal.
-const SKIP = new Set(['blocked', 'done', 'wontDo']);
+export const SKIP = new Set(['blocked', 'done', 'wontDo']);
 // Umbrella types (#175) are containers, not units of work — a program/epic
 // ticket is never itself deliverable, so it must never be selected regardless
 // of status. normalize() already captures `type`; this is the guard that uses it.

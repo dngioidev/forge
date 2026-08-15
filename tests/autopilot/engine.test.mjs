@@ -21,6 +21,11 @@ import {
   shouldPauseForBudget, budgetCheckDue, evaluateRateBudget,
   DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N,
 } from '../../plugin/scripts/autopilot/ratebudget.mjs';
+import {
+  evaluateEnvPreflight, formatBlockers, probeExecutable, probeNodeModules,
+  probeBoardStatusKeys, probeStatuslinePath, parseStatuslineScriptPath, probeEnv,
+  SELECT_STATUS_KEYS,
+} from '../../plugin/scripts/autopilot/envpreflight.mjs';
 import { writeJson } from '../../plugin/scripts/lib/jsonfile.mjs';
 import { CONFIG_RELPATH } from '../../plugin/scripts/lib/config.mjs';
 import { makeGh } from '../../plugin/scripts/lib/exec.mjs';
@@ -2050,5 +2055,288 @@ describe('runMerge — platform-outage recovery is bounded and honest (AC-408.2/
       { execRun: async () => ({ ok: true, code: 0, stdout: '', stderr: '' }) },
     );
     expect(res).toMatchObject({ ok: true, retried: true, outage: true });
+  });
+});
+
+// #504 — the third RUN START gate: nothing verified the MACHINE before the merge-auth
+// and rate-budget preflights. Every test here drives the pure core and the IO wrapper
+// from injected doubles (AC-504.6) — no bare `run`/`makeGh(run)` call anywhere below.
+describe('autopilot env preflight (#504) — evaluateEnvPreflight (AC-504.1, pure)', () => {
+  it('AC-504.1: all probes ok -> verdict go, no blockers, no warnings', () => {
+    const d = evaluateEnvPreflight([
+      { id: 'gh', status: 'ok', detail: 'gh resolvable' },
+      { id: 'node', status: 'ok', detail: 'node resolvable' },
+    ]);
+    expect(d).toEqual({ verdict: 'go', blockers: [], warnings: [] });
+  });
+
+  it('AC-504.1: any fail -> verdict no-go, blocker carries stable id + detail + concrete fix', () => {
+    const d = evaluateEnvPreflight([
+      { id: 'gh', status: 'ok', detail: 'gh resolvable' },
+      { id: 'node-modules', status: 'fail', detail: 'node_modules not found in the checkout', fix: 'run pnpm install' },
+    ]);
+    expect(d.verdict).toBe('no-go');
+    expect(d.blockers).toEqual([{ id: 'node-modules', detail: 'node_modules not found in the checkout', fix: 'run pnpm install' }]);
+  });
+
+  it('AC-504.1: multiple failures all surface as separate blockers, each with its own id/detail/fix', () => {
+    const d = evaluateEnvPreflight([
+      { id: 'gh', status: 'fail', detail: 'gh is not resolvable on PATH', fix: 'install gh' },
+      { id: 'pnpm', status: 'fail', detail: 'pnpm is not resolvable on PATH', fix: 'install pnpm' },
+    ]);
+    expect(d.verdict).toBe('no-go');
+    expect(d.blockers.map((b) => b.id)).toEqual(['gh', 'pnpm']);
+    expect(d.blockers.every((b) => typeof b.fix === 'string' && b.fix.length > 0)).toBe(true);
+  });
+
+  it('AC-504.1: a warn-status probe never flips the verdict — degrade, don\'t block (AC-504.4 boundary)', () => {
+    const d = evaluateEnvPreflight([
+      { id: 'board-status-keys', status: 'warn', detail: 'could not fetch live board fields (network down)', fix: 'retry' },
+    ]);
+    expect(d.verdict).toBe('go');
+    expect(d.blockers).toEqual([]);
+    expect(d.warnings).toEqual([{ id: 'board-status-keys', detail: 'could not fetch live board fields (network down)', fix: 'retry' }]);
+  });
+
+  it('AC-504.1: no IO — a plain array literal is a complete, sufficient input (no filesystem, no shell)', () => {
+    expect(evaluateEnvPreflight([]).verdict).toBe('go');
+    expect(evaluateEnvPreflight(null).verdict).toBe('go'); // defensive: never throws on a malformed/missing input
+    expect(evaluateEnvPreflight(undefined).verdict).toBe('go');
+  });
+});
+
+describe('autopilot env preflight (#504) — formatBlockers (AC-504.3)', () => {
+  it('AC-504.3: no-go renders a NUMBERED blocker list with the fix inline, one line per blocker', () => {
+    const lines = formatBlockers([
+      { id: 'gh', detail: 'gh is not resolvable on PATH', fix: 'install the GitHub CLI' },
+      { id: 'node-modules', detail: 'node_modules not found in the checkout', fix: 'run pnpm install' },
+    ]);
+    expect(lines).toEqual([
+      '1. [gh] gh is not resolvable on PATH — fix: install the GitHub CLI',
+      '2. [node-modules] node_modules not found in the checkout — fix: run pnpm install',
+    ]);
+  });
+
+  it('AC-504.3: go (no blockers) formats to an empty list — no behaviour to signal', () => {
+    expect(formatBlockers([])).toEqual([]);
+    expect(formatBlockers(undefined)).toEqual([]);
+  });
+});
+
+describe('autopilot env preflight (#504) — probeExecutable: gh/node/pnpm resolvable (AC-504.2a)', () => {
+  it('AC-504.2a: exec resolves the tool -> status ok, first line of version output in the detail', async () => {
+    const exec = async (cmd, args) => {
+      expect(cmd).toBe('gh');
+      expect(args).toEqual(['--version']);
+      return { ok: true, code: 0, stdout: 'gh version 2.60.0\n(built from source)', stderr: '' };
+    };
+    const p = await probeExecutable('gh', 'gh', exec, 'install gh');
+    expect(p).toMatchObject({ id: 'gh', status: 'ok' });
+    expect(p.detail).toContain('gh version 2.60.0');
+  });
+
+  it('AC-504.2a: exec reports the tool missing (ok:false, e.g. ENOENT) -> status fail with the given fix', async () => {
+    const exec = async () => ({ ok: false, code: -1, stdout: '', stderr: 'spawn pnpm ENOENT' });
+    const p = await probeExecutable('pnpm', 'pnpm', exec, 'install pnpm (https://pnpm.io/installation)');
+    expect(p).toEqual({ id: 'pnpm', status: 'fail', detail: 'pnpm is not resolvable on PATH', fix: 'install pnpm (https://pnpm.io/installation)' });
+  });
+});
+
+describe('autopilot env preflight (#504) — probeNodeModules (AC-504.2b)', () => {
+  it('AC-504.2b: node_modules present -> ok', async () => {
+    const p = await probeNodeModules({ cwd: '/repo', stat: async () => ({}) });
+    expect(p).toEqual({ id: 'node-modules', status: 'ok', detail: 'node_modules present' });
+  });
+
+  it('AC-504.2b: node_modules absent (ENOENT) -> fail, concrete fix', async () => {
+    const stat = async () => { const e = new Error('no such file'); e.code = 'ENOENT'; throw e; };
+    const p = await probeNodeModules({ cwd: '/repo', stat });
+    expect(p).toEqual({ id: 'node-modules', status: 'fail', detail: 'node_modules not found in the checkout', fix: 'run pnpm install' });
+  });
+
+  it('AC-504.4: an unrelated stat error (not ENOENT) is NOT treated as "missing" — it propagates for the caller to degrade', async () => {
+    const stat = async () => { const e = new Error('permission denied'); e.code = 'EACCES'; throw e; };
+    await expect(probeNodeModules({ cwd: '/repo', stat })).rejects.toThrow('permission denied');
+  });
+});
+
+describe('autopilot env preflight (#504) — probeBoardStatusKeys (AC-504.2c)', () => {
+  const cfgOk = {
+    ok: true,
+    config: { board: { projectId: 'PVT_x', fields: { status: { id: 'FIELD_STATUS' } } } },
+  };
+  const liveFieldsAllKeys = {
+    ok: true,
+    fields: {
+      status: {
+        id: 'FIELD_STATUS',
+        options: [
+          { id: 'a', name: 'In Progress' }, { id: 'b', name: 'In Review' }, { id: 'c', name: 'Ready' },
+          { id: 'd', name: 'Backlog' }, { id: 'e', name: 'Blocked' }, { id: 'f', name: 'Done' },
+          { id: 'g', name: "Won't Do" },
+        ],
+      },
+    },
+  };
+
+  it('AC-504.2c: SELECT_STATUS_KEYS covers exactly what select.mjs consumes (TIER ∪ SKIP)', () => {
+    expect(new Set(SELECT_STATUS_KEYS)).toEqual(new Set(['inProgress', 'inReview', 'ready', 'backlog', 'blocked', 'done', 'wontDo']));
+  });
+
+  it('AC-504.2c: live board options normalize onto every key select.mjs consumes -> ok', async () => {
+    const p = await probeBoardStatusKeys({
+      cwd: '/repo', gh: async () => ({ ok: true }),
+      loadConfigFn: async () => cfgOk,
+      getFields: async () => liveFieldsAllKeys,
+    });
+    expect(p).toEqual({ id: 'board-status-keys', status: 'ok', detail: 'board Status option keys match select.mjs' });
+  });
+
+  it('AC-504.2c: a renamed Status option (drift) -> fail, missing keys named in the detail + fix (closes the doctor.mjs gap)', async () => {
+    const drifted = {
+      ok: true,
+      fields: {
+        status: {
+          id: 'FIELD_STATUS',
+          options: liveFieldsAllKeys.fields.status.options.filter((o) => o.name !== 'In Progress').concat({ id: 'z', name: 'Doing' }),
+        },
+      },
+    };
+    const p = await probeBoardStatusKeys({
+      cwd: '/repo', gh: async () => ({ ok: true }),
+      loadConfigFn: async () => cfgOk,
+      getFields: async () => drifted,
+    });
+    expect(p.status).toBe('fail');
+    expect(p.id).toBe('board-status-keys');
+    expect(p.detail).toContain('inProgress');
+    expect(p.fix).toContain('inProgress');
+  });
+
+  it('AC-504.2c/AC-504.4: config invalid/missing -> warn, never a blocker (doctor.mjs already gates config validity)', async () => {
+    const p = await probeBoardStatusKeys({
+      cwd: '/repo', gh: async () => ({ ok: true }),
+      loadConfigFn: async () => ({ ok: false, errors: ['.claude/forge.json not found'] }),
+      getFields: async () => liveFieldsAllKeys,
+    });
+    expect(p.status).toBe('warn');
+  });
+
+  it('AC-504.2c/AC-504.4: the live board fetch itself fails (network/auth) -> warn, not fail — the check could not complete', async () => {
+    const p = await probeBoardStatusKeys({
+      cwd: '/repo', gh: async () => ({ ok: false }),
+      loadConfigFn: async () => cfgOk,
+      getFields: async () => ({ ok: false, error: 'gh not authenticated' }),
+    });
+    expect(p.status).toBe('warn');
+    expect(p.detail).toMatch(/gh not authenticated/);
+  });
+});
+
+describe('autopilot env preflight (#504) — statusline plugin path on disk (AC-504.2d)', () => {
+  it('parseStatuslineScriptPath: two quoted argv tokens (node exe, script) -> the SECOND token (init.mjs\'s own format)', () => {
+    expect(parseStatuslineScriptPath('"C:\\node.exe" "C:\\plugins\\forge\\scripts\\statusline.mjs"')).toBe('C:\\plugins\\forge\\scripts\\statusline.mjs');
+  });
+
+  it('parseStatuslineScriptPath: a single quoted token -> that token; no quotes -> null', () => {
+    expect(parseStatuslineScriptPath('"/usr/local/bin/statusline.mjs"')).toBe('/usr/local/bin/statusline.mjs');
+    expect(parseStatuslineScriptPath('node statusline.mjs')).toBeNull();
+    expect(parseStatuslineScriptPath(undefined)).toBeNull();
+  });
+
+  it('AC-504.2d: no statusline wired at all -> ok, nothing to verify (doctor.mjs covers "wired" separately)', async () => {
+    const p = await probeStatuslinePath({ cwd: '/repo', stat: async () => ({}), readJsonFn: async () => null });
+    expect(p).toEqual({ id: 'statusline-path', status: 'ok', detail: 'no statusline wired — nothing to verify (doctor.mjs already advises on this separately)' });
+  });
+
+  it('AC-504.2d: wired AND the path resolves on disk -> ok', async () => {
+    const readJsonFn = async (p) => (p.includes('settings.local.json') ? { statusLine: { command: '"node" "/plugins/forge/scripts/statusline.mjs"' } } : null);
+    const p = await probeStatuslinePath({ cwd: '/repo', stat: async () => ({}), readJsonFn });
+    expect(p).toEqual({ id: 'statusline-path', status: 'ok', detail: 'statusline plugin path resolves on disk' });
+  });
+
+  it('AC-504.2d: wired but the path does NOT exist on disk -> fail (closes the gap: doctor.mjs only checks the key is present)', async () => {
+    const readJsonFn = async (p) => (p.includes('settings.local.json') ? { statusLine: { command: '"node" "/stale/cache/statusline.mjs"' } } : null);
+    const stat = async () => { const e = new Error('no such file'); e.code = 'ENOENT'; throw e; };
+    const p = await probeStatuslinePath({ cwd: '/repo', stat, readJsonFn });
+    expect(p).toEqual({
+      id: 'statusline-path', status: 'fail',
+      detail: 'statusline plugin path does not exist: /stale/cache/statusline.mjs',
+      fix: 're-run /forge:init --statusline (or forge:statusline) to re-wire the path',
+    });
+  });
+
+  it('AC-504.4: an unrelated stat error on a wired path is NOT treated as "missing" — it propagates for the caller to degrade', async () => {
+    const readJsonFn = async (p) => (p.includes('settings.local.json') ? { statusLine: { command: '"node" "/x/statusline.mjs"' } } : null);
+    const stat = async () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; };
+    await expect(probeStatuslinePath({ cwd: '/repo', stat, readJsonFn })).rejects.toThrow('busy');
+  });
+});
+
+describe('autopilot env preflight (#504) — probeEnv IO wrapper (AC-504.4, AC-504.6)', () => {
+  const okCtx = () => ({
+    cwd: '/repo',
+    gh: async () => ({ ok: true }),
+    exec: async () => ({ ok: true, code: 0, stdout: 'v1.0.0', stderr: '' }),
+    stat: async () => ({}),
+    readJsonFn: async () => null, // no statusline wired
+    // Fully inject the board-status-keys probe's dependencies too (AC-504.6):
+    // no real .claude/forge.json read, no real GraphQL call.
+    loadConfigFn: async () => ({ ok: true, config: { board: { projectId: 'PVT_x', fields: { status: { id: 'F' } } } } }),
+    getFields: async () => ({ ok: true, fields: { status: { id: 'F', options: [
+      { id: 'a', name: 'In Progress' }, { id: 'b', name: 'In Review' }, { id: 'c', name: 'Ready' },
+      { id: 'd', name: 'Backlog' }, { id: 'e', name: 'Blocked' }, { id: 'f', name: 'Done' },
+      { id: 'g', name: "Won't Do" },
+    ] } } }),
+  });
+
+  it('AC-504.6: six probes run, all injected — verdict go when everything resolves clean', async () => {
+    const d = await probeEnv(okCtx());
+    expect(d.verdict).toBe('go');
+    expect(d.blockers).toEqual([]);
+    expect(d.probes).toHaveLength(6);
+    expect(d.probes.map((p) => p.id).sort()).toEqual(
+      ['board-status-keys', 'gh', 'node', 'node-modules', 'pnpm', 'statusline-path'].sort(),
+    );
+  });
+
+  it('AC-504.3/AC-504.6: a genuine problem (node_modules missing) -> no-go, numbered blocker formats cleanly', async () => {
+    const ctx = {
+      ...okCtx(),
+      stat: async (p) => {
+        if (String(p).includes('node_modules')) { const e = new Error('nope'); e.code = 'ENOENT'; throw e; }
+        return {};
+      },
+    };
+    const d = await probeEnv(ctx);
+    expect(d.verdict).toBe('no-go');
+    expect(d.blockers).toEqual([{ id: 'node-modules', detail: 'node_modules not found in the checkout', fix: 'run pnpm install' }]);
+    expect(formatBlockers(d.blockers)).toEqual(['1. [node-modules] node_modules not found in the checkout — fix: run pnpm install']);
+  });
+
+  it('AC-504.4: a probe that CANNOT complete (throws) degrades to a warning, not a blocker — verdict stays go', async () => {
+    const ctx = {
+      ...okCtx(),
+      exec: async (cmd) => { if (cmd === 'gh') throw new Error('unexpected crash inside the gh probe'); return { ok: true, code: 0, stdout: 'v1', stderr: '' }; },
+    };
+    const d = await probeEnv(ctx);
+    expect(d.verdict).toBe('go'); // a broken probe must never block a healthy run
+    expect(d.blockers).toEqual([]);
+    expect(d.warnings.some((w) => w.id === 'gh' && /could not complete/.test(w.detail))).toBe(true);
+  });
+
+  it('AC-504.4: a crashed probe (warning) never MASKS a real blocker found by a different probe', async () => {
+    const ctx = {
+      ...okCtx(),
+      exec: async (cmd) => { if (cmd === 'node') throw new Error('boom'); return { ok: true, code: 0, stdout: 'v1', stderr: '' }; },
+      stat: async (p) => {
+        if (String(p).includes('node_modules')) { const e = new Error('nope'); e.code = 'ENOENT'; throw e; }
+        return {};
+      },
+    };
+    const d = await probeEnv(ctx);
+    expect(d.verdict).toBe('no-go');
+    expect(d.blockers.map((b) => b.id)).toEqual(['node-modules']);
+    expect(d.warnings.map((w) => w.id)).toEqual(['node']);
   });
 });
