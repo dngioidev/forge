@@ -217,6 +217,61 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     }
   });
 
+  it('AC-438.1/AC-438.2: `node` auto-allows any path resolving inside the workspace, not just forge\'s own tree', () => {
+    for (const cmd of [
+      'node plugin/scripts/board/move.mjs --issue 429 --status done',
+      'node ./scripts/x.mjs',
+      'node bin/forge.mjs board status',
+      'node some/other/deeply/nested/tool.mjs --flag',
+      'node README.md', // not a real script, but "any workspace path" is the chosen scope
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+  });
+
+  it('AC-438.2: `node` refuses a path that resolves outside the workspace — traversal and absolute escapes', () => {
+    for (const cmd of [
+      'node ../../../../tmp/evil.mjs',
+      'node ../outside.mjs',
+      'node ../../etc/passwd',
+      'node /etc/passwd',            // POSIX absolute — already excluded by PLAIN_OPERAND
+      'node C:/Windows/System32/evil.js', // Windows absolute — `:` excluded by PLAIN_OPERAND
+      'node .',                      // the workspace root itself, not a script path
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
+  it('AC-438.2: the workspace-containment check uses the supplied `cwd`, not always process.cwd()', () => {
+    const cwd = process.cwd().replace(/[\\/]+$/, '') + '/nested/fake-root';
+    // Escapes the SUPPLIED cwd two levels up (back to process.cwd() itself) —
+    // still outside the declared workspace root, so it must ask.
+    expect(isAllowedCommand('node ../../plugin/scripts/x.mjs', { segments: splitSegments, cwd })).toBe(false);
+    // Resolves inside the supplied cwd — allowed.
+    expect(isAllowedCommand('node plugin/scripts/x.mjs', { segments: splitSegments, cwd })).toBe(true);
+  });
+
+  it('AC-438.5 (fix wave, forge:security nit): a component-boundary escape check, not a bare string-prefix test — an in-workspace filename that merely starts with two dots is not mistaken for a `..` traversal', () => {
+    for (const cmd of ['node ...config.mjs', 'node ..hidden.mjs', 'node plugin/...weird-name.mjs']) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+    // The real traversal form must still refuse — proves the fix narrowed the
+    // check correctly rather than accidentally widening it.
+    expect(isAllowedCommand('node ../evil.mjs', { segments: splitSegments })).toBe(false);
+  });
+
+  it('AC-438.3 (regression): #429\'s inline-execution and bare-REPL guard is unaffected by the workspace-containment addition', () => {
+    for (const cmd of [
+      'node -e "require(\'os\').hostname()"',
+      'node --eval "1+1"',
+      'node -p "process.env"',
+      'node -',
+      'node',
+    ]) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(false);
+    }
+  });
+
   it('isAllowedCommand() rejects an unrecognised command and a look-alike prefix without the required word boundary', () => {
     expect(isAllowedCommand('curl https://example.com', { segments: splitSegments })).toBe(false);
     // "git pushx" must not be confused with the "git push" prefix.

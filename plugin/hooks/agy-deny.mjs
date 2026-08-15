@@ -51,6 +51,23 @@ async function main() {
 
   const tool = payload?.toolCall?.name;
   const cmd = payload?.toolCall?.args?.CommandLine ?? '';
+  // Workspace root for the `node` allowlist guard's containment check
+  // (#438) - same precedent as agy-capture.mjs's journal path resolution:
+  // agy's own `workspacePaths[0]`, falling back to this process's cwd.
+  //
+  // SECURITY (#438 fix wave, forge:security finding): `workspacePaths[0]`
+  // must be TYPE-CHECKED, not just truthiness-checked. A truthy non-string
+  // (a number, object, array...) would otherwise reach isWithinWorkspace()'s
+  // path.resolve()/path.relative() calls, which throw on a non-string cwd -
+  // an exception main() does not catch, so it propagates to this module's
+  // outer main().catch() below, which unconditionally answers
+  // {"decision":"allow"} for the WHOLE command. That would silently defeat
+  // the containment check this ticket exists to add - the "fails open on
+  // internal error" design (see file header) is meant for genuinely
+  // unparseable stdin, not for a parseable-but-malformed field feeding a
+  // security-relevant computation, so it must not apply here.
+  const rawWorkspace = payload?.workspacePaths?.[0];
+  const cwd = typeof rawWorkspace === 'string' && rawWorkspace.length > 0 ? rawWorkspace : process.cwd();
 
   let out = { decision: 'allow' };
   if (tool === 'run_command' && typeof cmd === 'string') {
@@ -62,7 +79,7 @@ async function main() {
         decision: 'deny',
         reason: escalateMessage(res.rule, res.msg),
       };
-    } else if (isAllowedCommand(cmd, { segments: splitSegments })) {
+    } else if (isAllowedCommand(cmd, { segments: splitSegments, cwd })) {
       out = { decision: 'allow' };
     } else {
       // New default (#429 AC.1): anything not explicitly known-good prompts
