@@ -8,9 +8,9 @@
 
 ## What is forge?
 
-forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code) that installs a complete software-delivery pipeline: 20 pipeline skills across 5 lanes, a 12-role Claude-native agent roster, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, and a graph-RAG code index. You describe the work as tickets; forge plans it, writes it, reviews it, gates it, and opens a pull request for you to merge.
+forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code) — and now Antigravity (`agy`) — that installs a complete software-delivery pipeline: 20 pipeline skills across 5 lanes, a 12-role Claude-native agent roster, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, and a graph-RAG code index. You describe the work as tickets; forge plans it, writes it, reviews it, gates it, and opens a pull request for you to merge.
 
-**Who it's for:** developers and small teams who work in Claude Code and want an opinionated, auditable pipeline — every change ticketed, planned, reviewed, and gated — instead of ad-hoc prompting. It works on a fresh project or adopts an existing one.
+**Who it's for:** developers and small teams who work in Claude Code or Antigravity and want an opinionated, auditable pipeline — every change ticketed, planned, reviewed, and gated — instead of ad-hoc prompting. It works on a fresh project or adopts an existing one.
 
 ## Quickstart
 
@@ -18,18 +18,25 @@ forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code)
 
 | need | check | fix |
 | --- | --- | --- |
-| [Claude Code](https://docs.claude.com/en/docs/claude-code) | — | required host for the plugin |
+| A host: [Claude Code](https://docs.claude.com/en/docs/claude-code) **or** Antigravity (`agy`) | — | pick one, see the branches below |
 | Node ≥ 22.13 | `node --version` | [nodejs.org](https://nodejs.org) |
 | pnpm 10.14+ | `pnpm --version` | `corepack enable` then `corepack prepare pnpm@10.14.0 --activate` |
 | git + a GitHub account | `git --version` | [git-scm.com](https://git-scm.com) |
 
-**Install** (run these inside Claude Code):
+**Install**
 
-```
-/plugin marketplace add dngioidev/forge
-/plugin install forge@forge
-/forge:init
-```
+- **Claude Code** (run these inside a Claude Code session):
+
+  ```
+  /plugin marketplace add dngioidev/forge
+  /plugin install forge@forge
+  /forge:init
+  ```
+
+- **Antigravity (`agy`)** — no Claude subscription needed: clone a forge
+  checkout, emit the plugin package into your project with an absolute path,
+  then commit it. Full three-step path: **[install guide's Antigravity
+  section](docs/guides/install.md#antigravity-agy)**.
 
 `/forge:init` wires forge into the current project (adopt-vs-create, board setup, status line, hooks). See the **[full install guide](docs/guides/install.md)** for prerequisites, per-feature wiring, and troubleshooting.
 
@@ -43,8 +50,11 @@ forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code)
 
 ## Runs on your host (Claude Code + Antigravity)
 
-forge's engine — board automation, the seven gates, graph RAG, the safety
-denylist, and the journal-capture learning loop — is host-agnostic Node, so the
+forge's engine — board automation, the seven gates, graph RAG, a denylist
+tripwire (a targeted backstop for a fixed set of known-catastrophic commands,
+**not a general security boundary** — see the handbook's [Permissions &
+safety](docs/guides/handbook.md#permissions--safety) section), and the
+journal-capture learning loop — is host-agnostic Node, so the
 same plugin runs on more than one GAI host. **Claude Code** is the primary host.
 **Antigravity (`agy`)** is proven today: `forge init --host agy` emits a native
 agy plugin package (co-located `plugin.json`, generated `mcp_config.json` +

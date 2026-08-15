@@ -54,7 +54,44 @@ The normal path, with your touch-points marked **[you]**:
 - **`terraform apply`** — never automatic, ever.
 - **`/distill` lessons** — you approve each proposed lesson individually; approved ones arrive as a PR.
 - **Repo settings** doctor can only warn about: branch protection, secret scanning, Dependabot alerts, auto-delete merged branches.
-- **The permission layer**: if a session asks you to confirm a destructive action by name, that's by design — name it or decline.
+- **The permission layer**: if a session asks you to confirm a destructive action by name, that's by design — name it or decline. See **Permissions & safety** below for what backs that prompt, and its limits.
+
+### Permissions & safety
+
+forge's denylist hook is a **tripwire, not a security boundary** — its own
+header describes it as a targeted backstop for a fixed set of
+known-catastrophic commands, not a general destructive-command sandbox.
+Anything outside that fixed set passes through untouched; a missing prompt is
+never proof a command was safe, only that nothing matched.
+
+- **Claude Code:** each destructive-looking command prompts you to confirm by
+  name, unless it's pre-authorized in `.claude/settings.local.json` — opt-in,
+  never a default (see [install guide's pre-authorization
+  section](install.md#6-pre-authorizing-outward-commands-optional)). That
+  grammar is a prefix glob with no way to narrow *within* a verb, so
+  pre-authorizing a guarded verb (e.g. `git add`) grants its full, unguarded
+  form, not just the safe subset.
+- **Antigravity (agy):** the default is `ask`, not `allow` (#429) — anything
+  not on the shared known-good allowlist prompts you. The verbs whose danger
+  lives in their *arguments* additionally carry a positive-model argument
+  guard (agy-only — Claude's settings grammar can't express a narrower form
+  than the whole verb). The hook also **fails open** on internal error or
+  timeout: agy's own host-level cutoff behaves like a race, clustering loosely
+  10–15 seconds rather than a clean boundary
+  ([spike](../spikes/2026-08-13-agy-file-write-gating.md)) — a hung or
+  errored hook silently degrades to the least-safe outcome, not the safest.
+
+One verb has no fallback once pre-authorized on Claude: `git push` is on the
+shared allowlist (`ALLOWED_COMMAND_PREFIXES`, and unrestricted in this repo's
+own `.claude/settings.local.json`), so a spelling the denylist's force-push
+rule misses gets neither a block nor a human prompt on that host. On agy the
+same verb's argument guard still asks about most unrecognised forms — the
+zero-fallback gap is Claude-specific, not host-agnostic.
+
+Full mechanics and the exact per-verb table: [install guide's
+pre-authorization section](install.md#6-pre-authorizing-outward-commands-optional)
+and [cross-GAI guide's permissions
+section](cross-gai.md#permissions-the-allow--ask--deny-default-429).
 
 ## 5. Care flows — when things break
 

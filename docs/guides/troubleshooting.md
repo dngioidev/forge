@@ -44,6 +44,32 @@ Still stale? Check you're not shadowed: a repo-local override (a same-named skil
 
 If you get the `warn`, the fix is the same reinstall ladder as **[§1 above](#1-updated-the-plugin-but-changes-arent-visible)** — walk it from the top until the live copy matches. This check is diagnostic only: it reports the mismatch, it does not change which copy actually gets enforced (that's a separate, open question tracked in #484).
 
+### Antigravity (agy): "it stopped prompting me"
+
+Symptom: an agy-hosted session that used to ask before running commands stops
+asking — it just runs them. Two independent causes; check both:
+
+1. **The hooks aren't loading at all.** `agy-deny.mjs` (PreToolUse) and
+   `agy-capture.mjs` (PostToolUse) are wired via the emitted `hooks.json`. A
+   Windows/agy command-quoting bug could silently break the hook's own module
+   resolution so it never runs (fixed in #478) — re-emit from a current forge
+   checkout (§1 above) if your package predates that fix.
+2. **The host-level hook timeout fired.** agy runs each hook under its own
+   `timeout: 10` (seconds) budget and **fails open** — defaults to `allow`,
+   suppressing its own prompt — if the hook doesn't answer in time.
+   Empirically this is not a clean 10-second boundary: it behaves like a
+   race and clusters loosely 10–15 seconds rather than firing at a fixed
+   point (`docs/spikes/2026-08-13-agy-file-write-gating.md`). A cold Node
+   start or system load under a heavy session can trip it even though the
+   hook itself is a fast, synchronous check. There's no separate symptom to
+   look for besides the missing prompt — the hook doesn't log a timeout, agy
+   just proceeds as though it had answered `allow`.
+
+Neither cause is fixable by retrying the same command. If you expected a
+prompt and didn't get one, treat it as **fail-open, not fail-safe** — verify
+by eye before trusting an unattended run, same posture the handbook's
+[Permissions & safety](handbook.md#permissions--safety) section describes.
+
 ## 5. Environment breaks (Windows portable installs)
 
 - **`gh: command not found` inside scripts** — gh must be on the *user* PATH, not just the current shell. In Git Bash, export it for the session (`export PATH="$PATH:/c/Users/$USER/AppData/Local/GitHub CLI"`) or add gh's `bin` dir to the user `Path` permanently so spawned scripts inherit it.
