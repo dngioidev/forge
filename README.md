@@ -10,7 +10,7 @@
 
 forge is a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code) — and now Antigravity (`agy`) — that installs a complete software-delivery pipeline: 20 pipeline skills across 5 lanes, a 12-role Claude-native agent roster, GitHub Projects board automation with a ticket-trail law, mechanical ship gates, a learning loop, and a graph-RAG code index. You describe the work as tickets; forge plans it, writes it, reviews it, gates it, and opens a pull request for you to merge.
 
-**Who it's for:** developers and small teams who work in Claude Code and want an opinionated, auditable pipeline — every change ticketed, planned, reviewed, and gated — instead of ad-hoc prompting. It works on a fresh project or adopts an existing one.
+**Who it's for:** developers and small teams who work in Claude Code or Antigravity and want an opinionated, auditable pipeline — every change ticketed, planned, reviewed, and gated — instead of ad-hoc prompting. It works on a fresh project or adopts an existing one.
 
 ## Quickstart
 

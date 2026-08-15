@@ -29,35 +29,35 @@ describe('#461 — permissions model has a Claude-facing home', () => {
 
     it('branches explicitly by host rather than being Claude-shaped with an agy footnote', async () => {
       const guide = await readFile(handbookPath, 'utf8');
-      const section = guide.slice(guide.indexOf('Permissions & safety'));
+      const section = guide.slice(guide.indexOf('### Permissions & safety'));
       expect(section).toMatch(/\*\*Claude Code:\*\*/);
       expect(section).toMatch(/\*\*Antigravity \(agy\):\*\*/);
     });
 
     it('states the agy `ask` default (#429)', async () => {
       const guide = await readFile(handbookPath, 'utf8');
-      const section = guide.slice(guide.indexOf('Permissions & safety'));
+      const section = guide.slice(guide.indexOf('### Permissions & safety'));
       expect(section).toMatch(/`ask`/);
       expect(section).toMatch(/429/);
     });
 
     it('names the agy fail-open timeout as non-deterministic, not a clean boundary', async () => {
       const guide = await readFile(handbookPath, 'utf8');
-      const section = guide.slice(guide.indexOf('Permissions & safety'));
+      const section = guide.slice(guide.indexOf('### Permissions & safety'));
       expect(section).toMatch(/fails? open/i);
       expect(section).toMatch(/10.{0,5}15\s*(s\b|seconds)|non-deterministic/i);
     });
 
     it('names the git push zero-fallback gap without a payload', async () => {
       const guide = await readFile(handbookPath, 'utf8');
-      const section = guide.slice(guide.indexOf('Permissions & safety'));
+      const section = guide.slice(guide.indexOf('### Permissions & safety'));
       expect(section).toMatch(/git push/);
       expect(section).toMatch(/no (block|fallback)|neither a block nor/i);
     });
 
     it('links to install.md and cross-gai.md for the full mechanics', async () => {
       const guide = await readFile(handbookPath, 'utf8');
-      const section = guide.slice(guide.indexOf('Permissions & safety'));
+      const section = guide.slice(guide.indexOf('### Permissions & safety'));
       expect(section).toMatch(/install\.md/);
       expect(section).toMatch(/cross-gai\.md/);
     });
