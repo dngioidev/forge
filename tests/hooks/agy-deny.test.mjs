@@ -198,6 +198,24 @@ describe('agy-deny default flip: allow -> ask (#429)', () => {
     }
   });
 
+  it('AC-438.2: the hook threads payload.workspacePaths[0] through to the `node` workspace-containment guard, not just isAllowedCommand() in isolation', async () => {
+    // A fabricated workspace root nested inside the real repo tree. The point
+    // is that the guard uses THIS declared root, not process.cwd() / disk
+    // reality — a path that traverses above it must ask even though the
+    // resolved location is still physically inside the real repo checkout.
+    const fakeRoot = join(process.cwd(), 'tests', 'fixtures', 'agy-438-fake-workspace');
+    const payload = (CommandLine) => ({
+      toolCall: { name: 'run_command', args: { CommandLine } },
+      workspacePaths: [fakeRoot],
+    });
+
+    const { out: escaped } = await runDeny(payload('node ../../evil.mjs'));
+    expect(JSON.parse(escaped)).toEqual({ decision: 'ask' });
+
+    const { out: contained } = await runDeny(payload('node plugin/scripts/x.mjs'));
+    expect(JSON.parse(contained)).toEqual({ decision: 'allow' });
+  });
+
   it('AC-429.8: opt-in-safe — a command that was silently pre-authorized before this fix now prompts instead of running unattended', async () => {
     // Pre-#429, agy-deny.mjs's only branch was `check()` -> deny on a hit, bare
     // `allow` otherwise. Every one of these commands cleared that old default

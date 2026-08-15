@@ -415,7 +415,7 @@ history"*.
 
 | verb | auto-approved | asks |
 | --- | --- | --- |
-| `node` | a script path (`node scripts/x.mjs --flag`) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution |
+| `node` | a script path resolving **inside the workspace** (`node scripts/x.mjs --flag`, any workspace-relative path) | `-e` / `--eval` / `-p` / `-`, and the bare REPL — inline code execution; a `..` path that traverses above the workspace root, or an absolute path outside it |
 | `pnpm verify` | the bare command, nothing else | any argument — pnpm forwards them to `vitest`, whose `--reporter=<path>` / `--config=<path>` `import()`s that module at startup |
 | `git push` | `git push`, `<remote> <branch>`, inert flags (`-u`/`--set-upstream`, `-q`, `-v`, `--dry-run`, `--porcelain`, `--progress`) | force, `--mirror`, `--delete`, `--prune`, refspecs, **any** unknown flag |
 | `git add` | `-A`/`--all`, `--no-ignore-removal`, `-u`/`--update`, `-n`/`--dry-run`, `-v`/`--verbose`, `--sparse`, `--refresh`, `--ignore-errors`, `--ignore-missing`, `--no-warn-embedded-repo`, `--renormalize`, plain paths | `-p`/`--patch`, `-i`/`--interactive` (interactive prompt loops), `-e`/`--edit` (opens `$EDITOR` — arbitrary program launch), `-f`/`--force` (overrides `.gitignore` — can silently stage a gitignored secret file) |
@@ -465,14 +465,20 @@ contents — that is the mechanism forge uses for every PR body and trail
 comment, so it stays unguarded by design; treat it as "this session can publish
 any file it can read", not as an oversight.
 
-And the `node` guard checks that a **script path** was given, not *which*
-script, so `node <any-on-disk-path>` still auto-approves. Executing an arbitrary on-disk script is the capability that
-allowlist entry exists to grant — it is the single entry covering forge's whole
-script tier — so narrowing it to forge's own tree is tracked as
-[#438](https://github.com/dngioidev/forge/issues/438) rather than quietly
-implied here. It compounds with
-[#436](https://github.com/dngioidev/forge/issues/436) (file writes are unhooked
-on agy): fixing either weakens the write-then-execute chain.
+And the `node` guard checks not just that a **script path** was given, but
+that it resolves **inside the workspace** — the owner's decision on
+[#438](https://github.com/dngioidev/forge/issues/438) (looser than
+forge's-own-tree, closing arbitrary path traversal and absolute-path escapes
+without needing to enumerate forge's own script layout). Executing any
+on-disk script *inside the workspace* is the capability that allowlist entry
+exists to grant — it is the single entry covering forge's whole script tier
+— so `node ../../../../tmp/evil.mjs` and `node /etc/passwd` now ask instead
+of silently auto-approving; `node scripts/x.mjs` and every other in-workspace
+path still auto-approve. It still compounds with
+[#436](https://github.com/dngioidev/forge/issues/436) (file writes are
+unhooked on agy): a script an agent writes and then `node`s is still
+in-workspace and therefore still auto-approved, so #436 remains the open half
+of that chain.
 
 Note the guards are **agy-side only**. Claude's `.claude/settings.local.json`
 grammar expresses `Bash(git checkout:*)` — a prefix glob with no way to

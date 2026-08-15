@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 /**
  * Single-sourced "known-good" command prefixes forge agents type DIRECTLY at a
  * host's approval surface (#429 AC.4).
@@ -158,6 +160,30 @@ const flagsAndOperands = (...safeFlags) => {
   return (args) => args.every((a) => allowed.has(a) || PLAIN_OPERAND.test(a));
 };
 
+/**
+ * True if `scriptArg`, resolved lexically against `cwd` (the workspace
+ * root), stays inside that workspace (#438). Blocks:
+ *   - `..` traversal that resolves above the workspace root
+ *     (`../../../../tmp/evil.mjs`)
+ *   - the workspace root itself named as a "script" (`node .` — not a real
+ *     script path, and `path.relative()` of a path against itself is `''`)
+ * `PLAIN_OPERAND` already rejects any argument starting `/` (a POSIX
+ * absolute path) or containing `:`/`\` (a Windows absolute or UNC path), so
+ * those never reach this check — this function's job is purely the
+ * traversal case `PLAIN_OPERAND`'s character class does not, and cannot,
+ * distinguish (`.` and `/` are both legitimate in an ordinary relative path).
+ *
+ * Purely lexical (`path.resolve`/`path.relative`) — does not dereference
+ * symlinks. A symlink planted inside the workspace pointing outside it is a
+ * distinct, pre-existing risk (an attacker able to write into the tree can
+ * already do worse) and is out of scope here: this narrows the ARGUMENT the
+ * command names, per #438, not the filesystem's own indirection.
+ */
+function isWithinWorkspace(scriptArg, cwd) {
+  const rel = path.relative(cwd, path.resolve(cwd, scriptArg));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 const ARGUMENT_SENSITIVE_PREFIXES = [
   {
     prefix: 'node',
@@ -169,13 +195,15 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
     // (`node scripts/x.mjs --flag`) auto-approved, which is the whole reason
     // `node` is on the allowlist.
     //
-    // Honest scope limit: this validates that a SCRIPT PATH was given, not
-    // WHICH script. `node <any-on-disk-path>` still auto-approves, including
-    // one outside the repo. Running an arbitrary on-disk script is the
-    // capability this allowlist entry deliberately grants; narrowing it to
-    // forge's own script tree is tracked separately (see #438), not silently
-    // implied here.
-    argsOk: (args) => args.length > 0 && PLAIN_OPERAND.test(args[0]),
+    // Scope (#438, owner decision esc-438-msrn1h5s): narrowed to anything
+    // INSIDE THE WORKSPACE — looser than forge's own script tree, but closed
+    // to path traversal (`..` segments resolving above the workspace root)
+    // and absolute-path escapes. `isWithinWorkspace()` below does the actual
+    // containment check; `ctx.cwd` is the workspace root, supplied by the
+    // caller (the agy hook threads its payload's `workspacePaths[0]` through
+    // — see agy-deny.mjs) and defaulting to `process.cwd()` when absent.
+    argsOk: (args, ctx) =>
+      args.length > 0 && PLAIN_OPERAND.test(args[0]) && isWithinWorkspace(args[0], ctx?.cwd ?? process.cwd()),
   },
   {
     prefix: 'pnpm verify',
@@ -299,12 +327,17 @@ const ARGUMENT_SENSITIVE_PREFIXES = [
  */
 export const ARGUMENT_SENSITIVE_COMMANDS = ARGUMENT_SENSITIVE_PREFIXES.map((s) => s.prefix);
 
-/** Every whitespace-separated argument after an argument-sensitive prefix is known-safe. */
-function argsAreSafe(segment, spec) {
+/**
+ * Every whitespace-separated argument after an argument-sensitive prefix is
+ * known-safe. `ctx` (currently just `{ cwd }`, the workspace root the `node`
+ * guard resolves paths against — #438) is passed through to every `argsOk`;
+ * the `flagsAndOperands()`-built ones simply ignore the extra parameter.
+ */
+function argsAreSafe(segment, spec, ctx) {
   const tail = segment.slice(spec.prefix.length).trim();
   // `node` with no argument opens a REPL, which an unattended session must not
   // silently enter, so its argsOk rejects the empty list rather than shortcutting.
-  return spec.argsOk(tail === '' ? [] : tail.split(/\s+/));
+  return spec.argsOk(tail === '' ? [] : tail.split(/\s+/), ctx);
 }
 
 /**
@@ -325,8 +358,13 @@ function argsAreSafe(segment, spec) {
  * This performs no denylist check of its own; callers MUST run the denylist
  * first and only consult this for commands the denylist has already cleared
  * (#429 AC.3 — denylist strictly outranks allowlist).
+ *
+ * `cwd` (#438) is the workspace root the `node` guard resolves script paths
+ * against; it defaults to `process.cwd()` so every pre-existing standalone
+ * call (no `cwd` supplied — see AC-429.3's "called standalone" test) keeps
+ * its prior behaviour unchanged.
  */
-export function isAllowedCommand(command, { segments } = {}) {
+export function isAllowedCommand(command, { segments, cwd = process.cwd() } = {}) {
   if (typeof command !== 'string' || command.trim().length === 0) return false;
   // Checked against the FULL command, not per-segment: a metacharacter is
   // disqualifying wherever it appears, including inside a separator the
@@ -341,6 +379,6 @@ export function isAllowedCommand(command, { segments } = {}) {
     );
     if (matched === undefined) return false;
     const sensitive = ARGUMENT_SENSITIVE_PREFIXES.find((s) => s.prefix === matched);
-    return sensitive ? argsAreSafe(trimmed, sensitive) : true;
+    return sensitive ? argsAreSafe(trimmed, sensitive, { cwd }) : true;
   });
 }

@@ -51,6 +51,10 @@ async function main() {
 
   const tool = payload?.toolCall?.name;
   const cmd = payload?.toolCall?.args?.CommandLine ?? '';
+  // Workspace root for the `node` allowlist guard's containment check
+  // (#438) - same precedent as agy-capture.mjs's journal path resolution:
+  // agy's own `workspacePaths[0]`, falling back to this process's cwd.
+  const cwd = (payload?.workspacePaths && payload.workspacePaths[0]) || process.cwd();
 
   let out = { decision: 'allow' };
   if (tool === 'run_command' && typeof cmd === 'string') {
@@ -62,7 +66,7 @@ async function main() {
         decision: 'deny',
         reason: escalateMessage(res.rule, res.msg),
       };
-    } else if (isAllowedCommand(cmd, { segments: splitSegments })) {
+    } else if (isAllowedCommand(cmd, { segments: splitSegments, cwd })) {
       out = { decision: 'allow' };
     } else {
       // New default (#429 AC.1): anything not explicitly known-good prompts
