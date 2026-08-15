@@ -54,7 +54,7 @@ loop): a new `plugin/scripts/monitors/agents-watch.mjs`.
   --phase` (the delivery subagent's own heartbeat call), `--clear --id` (the
   orchestrator's cleanup call).
 
-### AC.5 — detection only, never wired to resolution
+### AC-505.5 — detection only, never wired to resolution
 
 `classifyLiveness`/`poll` never call `resolveReturnedTicket` and never
 classify a report — there is no report for a subagent that never returned.
@@ -73,7 +73,7 @@ comfortably above every observed legitimate quiet phase in this repo (`pnpm
 verify`'s ~1300-test suite completes in low single-digit minutes; even a slow
 CI wait is realistically tens of minutes, not sixty) — while still catching a
 genuine stall in about an hour instead of the 5.3 hours #457 actually cost.
-AC.6 proves the number against an injected clock (a healthy long-running
+AC-505.6 proves the number against an injected clock (a healthy long-running
 agent whose heartbeat keeps refreshing every phase change never reads as
 stale), not just prose.
 
@@ -118,17 +118,17 @@ follow-up, not invented here.
 
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 
-- **AC.1** `classifyLiveness` is pure (no IO), takes an injected clock.
-- **AC.2** Staleness keys on elapsed-time-without-a-new-heartbeat
+- **AC-505.1** `classifyLiveness` is pure (no IO), takes an injected clock.
+- **AC-505.2** Staleness keys on elapsed-time-without-a-new-heartbeat
   (`lastArtifactAt`), not raw elapsed-since-spawn — a phase change resets it.
-- **AC.3** `.forge/agents/<id>.json` best-effort heartbeat write, mirroring
+- **AC-505.3** `.forge/agents/<id>.json` best-effort heartbeat write, mirroring
   `writeCiWatchState`'s never-fail-the-caller contract.
-- **AC.4** `forge-agents` monitor entry in `monitors.json`,
+- **AC-505.4** `forge-agents` monitor entry in `monitors.json`,
   `when: on-skill-invoke:autopilot`, pushing a line to the running loop on a
   liveness transition.
-- **AC.5** Detection is never wired to `resolveReturnedTicket` — surfaces a
+- **AC-505.5** Detection is never wired to `resolveReturnedTicket` — surfaces a
   line only; recovery stays #474's scope (documented explicitly).
-- **AC.6** The default threshold is justified in prose (this doc + SKILL.md)
+- **AC-505.6** The default threshold is justified in prose (this doc + SKILL.md)
   and proven by a healthy-long-running-agent test using an injected
   clock/records — not merely asserted.
 
@@ -138,25 +138,25 @@ Add an `AC-505.*`-titled block to `tests/monitors/monitors.test.mjs`
 (mirroring the file's existing per-watcher describes), covering, all written
 first against the not-yet-existing module so they fail:
 
-- `classifyLiveness` (AC.1/AC.2): a fresh record (`lastArtifactAt` = now) is
+- `classifyLiveness` (AC-505.1/AC-505.2): a fresh record (`lastArtifactAt` = now) is
   `healthy`; a record older than `thresholdMs` is `stale`; a record refreshed
   partway through the window (simulated phase change) resets the age instead
   of accumulating from `spawnedAt`; a missing/unparsable `lastArtifactAt` is
   `unknown`, never `stale` (fail-quiet on bad data); the boundary is
   inclusive (`age === thresholdMs` → stale, mirrors `shouldPause`'s `>=`).
-- `writeAgentHeartbeat`/`readAgentRecords` round-trip (AC.3): a write is
+- `writeAgentHeartbeat`/`readAgentRecords` round-trip (AC-505.3): a write is
   readable back with the same fields; a write failure (unwritable dir) never
   throws, returns `false`; a missing `.forge/agents/` dir reads as `[]`, not
   an error; one corrupt record among several valid ones is skipped, not
   fatal to the read.
 - `clearAgentHeartbeat`: removes a record; clearing a non-existent id is a
   quiet no-op (never throws).
-- `poll` (AC.4): emits a line only on a healthy→stale (and stale→healthy)
+- `poll` (AC-505.4): emits a line only on a healthy→stale (and stale→healthy)
   transition for a given id, never on an unchanged status or on repeated
   polls with the same classification; a genuine fs read error surfaces
   `ok:false` (mirrors the existing `decisions poll marks a real fs error`
   test in this file); an `unknown`-status record never emits a line.
-- **AC.6** — a healthy long-running-agent fixture: a record whose
+- **AC-505.6** — a healthy long-running-agent fixture: a record whose
   `lastArtifactAt` is refreshed every simulated phase change well inside
   `DEFAULT_STALE_MS`, driven across many polls with an injected clock —
   never classifies `stale`, proving the default threshold doesn't
@@ -172,7 +172,7 @@ wired to `resolveReturnedTicket`/never calls it, and names `#474` as the
 separate recovery scope.
 
 **Files:** tests/monitors/monitors.test.mjs, tests/skills/autopilot.test.mjs
-**AC map:** AC.1, AC.2, AC.3, AC.4, AC.5, AC.6
+**AC map:** AC-505.1, AC-505.2, AC-505.3, AC-505.4, AC-505.5, AC-505.6
 **Test plan:** `npx vitest run tests/monitors/monitors.test.mjs tests/skills/autopilot.test.mjs`
 
 ## Task 2 (code): `plugin/scripts/monitors/agents-watch.mjs`
@@ -199,7 +199,7 @@ separate recovery scope.
   persistent read-failure surfacing, printing each transition line.
 
 **Files:** plugin/scripts/monitors/agents-watch.mjs
-**AC map:** AC.1, AC.2, AC.3, AC.4, AC.6
+**AC map:** AC-505.1, AC-505.2, AC-505.3, AC-505.4, AC-505.6
 **Done:** Task 1's tests pass; `npx vitest run tests/monitors/monitors.test.mjs` green.
 
 ## Task 3 (wiring): monitors.json + SKILL.md
@@ -211,7 +211,7 @@ separate recovery scope.
   - § Monitor notifications gains a `forge-agents` subsection (mirroring the
     `forge-ci`/`forge-decisions`/`forge-outbox` write-ups): what it watches,
     the line shape, the threshold + justification (§ Design above,
-    condensed), and the AC.5 boundary — explicitly states this monitor never
+    condensed), and the AC-505.5 boundary — explicitly states this monitor never
     calls `resolveReturnedTicket` and never resolves a stall, only surfaces
     it; recovery is #474.
   - § Orchestration step 1's delivery-subagent brief gains an instruction to
@@ -226,5 +226,5 @@ separate recovery scope.
 - `docs/README.md`: add this plan to the route index (docsync).
 
 **Files:** plugin/monitors/monitors.json, plugin/skills/autopilot/SKILL.md, docs/README.md
-**AC map:** AC.4, AC.5, AC.6
+**AC map:** AC-505.4, AC-505.5, AC-505.6
 **Done:** `tests/skills/autopilot.test.mjs` AC-505.5 passes; `pnpm verify` green; docsync clean.
