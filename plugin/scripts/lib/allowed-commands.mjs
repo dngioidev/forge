@@ -178,10 +178,17 @@ const flagsAndOperands = (...safeFlags) => {
  * distinct, pre-existing risk (an attacker able to write into the tree can
  * already do worse) and is out of scope here: this narrows the ARGUMENT the
  * command names, per #438, not the filesystem's own indirection.
+ *
+ * The escape check is a COMPONENT-boundary test (`rel === '..'` or
+ * `rel` starts with `'..' + path.sep`), not a bare `startsWith('..')`
+ * string-prefix test — the latter would misfire on a legitimate in-workspace
+ * name that merely starts with two dots (e.g. `...config.mjs`, `..hidden`),
+ * over-blocking to `ask` for a false reason (forge:security fix-wave finding).
  */
 function isWithinWorkspace(scriptArg, cwd) {
   const rel = path.relative(cwd, path.resolve(cwd, scriptArg));
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const escapes = rel === '..' || rel.startsWith(`..${path.sep}`);
+  return rel !== '' && !escapes && !path.isAbsolute(rel);
 }
 
 const ARGUMENT_SENSITIVE_PREFIXES = [

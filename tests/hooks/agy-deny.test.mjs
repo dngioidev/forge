@@ -216,6 +216,27 @@ describe('agy-deny default flip: allow -> ask (#429)', () => {
     expect(JSON.parse(contained)).toEqual({ decision: 'allow' });
   });
 
+  it('AC-438.5 (fix wave, forge:security finding): a malformed non-string workspacePaths[0] does not fail open — the hook falls back to process.cwd() instead of crashing into a blanket allow', async () => {
+    // A truthy but non-string workspacePaths[0] (number/object/array) used to
+    // reach isWithinWorkspace()'s path.resolve()/path.relative() calls
+    // unvalidated, which throw on a non-string cwd. The uncaught throw
+    // propagated to this module's own main().catch(), which answers a bare
+    // {"decision":"allow"} for the WHOLE command — silently defeating the
+    // #438 containment check for exactly the traversal case it exists to
+    // catch. The fix type-checks workspacePaths[0] before trusting it; this
+    // pins that a malformed value degrades to the process.cwd() fallback
+    // (still enforcing containment against the real cwd) rather than a crash.
+    for (const workspacePaths of [[12345], [{ not: 'a string' }], [['nested', 'array']], [true]]) {
+      const { code, out } = await runDeny({
+        toolCall: { name: 'run_command', args: { CommandLine: 'node ../../../../../../../../tmp/evil.mjs' } },
+        workspacePaths,
+      });
+      expect(code, JSON.stringify(workspacePaths)).toBe(0);
+      // Never the naive-throw-then-catch-all-allow outcome this regresses.
+      expect(JSON.parse(out), JSON.stringify(workspacePaths)).toEqual({ decision: 'ask' });
+    }
+  });
+
   it('AC-429.8: opt-in-safe — a command that was silently pre-authorized before this fix now prompts instead of running unattended', async () => {
     // Pre-#429, agy-deny.mjs's only branch was `check()` -> deny on a hit, bare
     // `allow` otherwise. Every one of these commands cleared that old default

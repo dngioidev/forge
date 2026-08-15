@@ -251,6 +251,15 @@ describe('#429 — single-sourced command allowlist (AC-429.4)', () => {
     expect(isAllowedCommand('node plugin/scripts/x.mjs', { segments: splitSegments, cwd })).toBe(true);
   });
 
+  it('AC-438.5 (fix wave, forge:security nit): a component-boundary escape check, not a bare string-prefix test — an in-workspace filename that merely starts with two dots is not mistaken for a `..` traversal', () => {
+    for (const cmd of ['node ...config.mjs', 'node ..hidden.mjs', 'node plugin/...weird-name.mjs']) {
+      expect(isAllowedCommand(cmd, { segments: splitSegments }), cmd).toBe(true);
+    }
+    // The real traversal form must still refuse — proves the fix narrowed the
+    // check correctly rather than accidentally widening it.
+    expect(isAllowedCommand('node ../evil.mjs', { segments: splitSegments })).toBe(false);
+  });
+
   it('AC-438.3 (regression): #429\'s inline-execution and bare-REPL guard is unaffected by the workspace-containment addition', () => {
     for (const cmd of [
       'node -e "require(\'os\').hostname()"',

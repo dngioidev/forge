@@ -124,3 +124,46 @@ assertions pass; no existing test in either file regresses.
 **AC map:** AC-438.4
 **Done:** docsync gate clean; ac gate covers AC-438.4 with a passing test; no
 other doc references the old "any on-disk script" scope as current.
+
+## Fix wave: full-branch adversarial `reviewer` and `security` passes, run in parallel
+
+`reviewer`: verdict pass, zero findings — independently verified
+`isWithinWorkspace()`'s correctness (trailing-slash cwd, drive-letter case,
+no naive `startsWith(cwd)` prefix bug), the `PLAIN_OPERAND` claims in the
+comments, the `ctx` threading's non-breaking effect on the other seven
+argument-sensitive prefixes, the `agy-capture.mjs` cwd precedent, and the
+AC-id-to-passing-test mapping.
+
+`security`: verdict fail, one HIGH, one informational.
+
+- **HIGH (fixed):** `agy-deny.mjs`'s original `cwd` derivation,
+  `(payload?.workspacePaths && payload.workspacePaths[0]) || process.cwd()`,
+  only falls back on a FALSY value. A truthy but non-string
+  `workspacePaths[0]` (a number, object, array) passed straight through as
+  `cwd` into `isWithinWorkspace()`'s `path.resolve()`/`path.relative()` calls,
+  which throw `TypeError [ERR_INVALID_ARG_TYPE]` on a non-string `cwd`. That
+  throw was never caught inside `main()`'s body, so it propagated to the
+  module's outer `main().catch(() => process.stdout.write('{"decision":
+  "allow"}'))` — turning the ENTIRE hook response into an unconditional
+  `allow`, silently defeating the containment check for exactly the
+  traversal case #438 exists to catch. Fixed: `cwd` derivation now
+  type-checks (`typeof rawWorkspace === 'string' && rawWorkspace.length > 0`)
+  before trusting the value, falling back to `process.cwd()` on anything
+  else — never throws, never fails open. Regression-pinned (AC-438.5,
+  `tests/hooks/agy-deny.test.mjs`) with four malformed shapes.
+- **Informational (fixed anyway, cheap):** `isWithinWorkspace()`'s escape
+  check was a bare `rel.startsWith('..')` string-prefix test, which
+  misclassifies a legitimate in-workspace filename that merely starts with
+  two dots (e.g. `...config.mjs`, `..hidden.mjs`) as an escape — a false
+  `ask`, the safe direction, but not the intended precision. Fixed to a
+  component-boundary test (`rel === '..' || rel.startsWith('..' + path.sep)`).
+  Regression-pinned (AC-438.5, `tests/lib/allowed-commands.test.mjs`).
+
+Both cleared other items (Windows absolute/UNC/drive-relative escapes,
+symlink non-dereferencing as an honestly-disclosed non-goal, the
+`workspacePaths[0]` trust boundary as pre-existing precedent not a new one,
+denylist/metachar ordering, #429 non-regression) with no action needed.
+`pnpm verify` re-run clean after the fix wave (1348/1348; one unrelated,
+pre-existing `tests/lib/lock.test.mjs` concurrency flake observed once and
+confirmed non-reproducing in isolation and on rerun, in a file this branch
+never touches).
