@@ -16,5 +16,11 @@
     "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitors/outbox-watch.mjs\"",
     "description": "Local GitHub outbox drain status (.forge/autopilot/outbox.json)",
     "when": "on-skill-invoke:autopilot"
+  },
+  {
+    "name": "forge-agents",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitors/agents-watch.mjs\"",
+    "description": "Delivery subagent liveness heartbeat (.forge/agents) — detects a subagent that never returns",
+    "when": "on-skill-invoke:autopilot"
   }
 ]

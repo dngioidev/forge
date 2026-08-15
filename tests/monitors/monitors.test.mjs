@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { rollupState, transition, poll as ciPoll, isNoPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH, allQueued } from '../../plugin/scripts/monitors/ci-watch.mjs';
 import { newlyResolved, poll as decisionsPoll } from '../../plugin/scripts/monitors/decisions-watch.mjs';
 import { probeReachable, poll as outboxPoll } from '../../plugin/scripts/monitors/outbox-watch.mjs';
+import {
+  classifyLiveness,
+  writeAgentHeartbeat,
+  readAgentRecords,
+  clearAgentHeartbeat,
+  poll as agentsPoll,
+  DEFAULT_STALE_MS,
+} from '../../plugin/scripts/monitors/agents-watch.mjs';
 import { trackFailure, freshGuard, FAILURE_THRESHOLD, REEMIT_EVERY } from '../../plugin/scripts/monitors/poll-guard.mjs';
 import { makeBoardCtx } from '../../plugin/scripts/lib/boardctx.mjs';
 import { makeGh } from '../../plugin/scripts/lib/exec.mjs';
@@ -361,15 +369,162 @@ describe('monitor persistent-error surfacing (#318)', () => {
   });
 });
 
+describe('agent-liveness monitor (#505, epic #503)', () => {
+  describe('classifyLiveness — pure decision (AC-505.1/AC-505.2)', () => {
+    it('a fresh record is healthy; a record past the threshold is stale', () => {
+      const now = Date.parse('2026-08-15T12:00:00.000Z');
+      const fresh = classifyLiveness({ record: { lastArtifactAt: new Date(now - 1000).toISOString() }, now, thresholdMs: DEFAULT_STALE_MS });
+      expect(fresh.status).toBe('healthy');
+      const stale = classifyLiveness({ record: { lastArtifactAt: new Date(now - (DEFAULT_STALE_MS + 1000)).toISOString() }, now, thresholdMs: DEFAULT_STALE_MS });
+      expect(stale.status).toBe('stale');
+    });
+
+    it('the boundary is inclusive — age === thresholdMs classifies stale (mirrors shouldPause\'s >=)', () => {
+      const now = Date.parse('2026-08-15T12:00:00.000Z');
+      const atBoundary = classifyLiveness({ record: { lastArtifactAt: new Date(now - 1000).toISOString() }, now, thresholdMs: 1000 });
+      expect(atBoundary.status).toBe('stale');
+    });
+
+    it('AC-505.2: staleness keys on lastArtifactAt, not elapsed-since-spawn — a phase-change refresh resets the age', () => {
+      const t0 = Date.parse('2026-08-15T12:00:00.000Z');
+      // spawnedAt is old (well past the threshold), but a phase change refreshed
+      // lastArtifactAt recently — must classify healthy, not stale.
+      const record = { spawnedAt: new Date(t0 - DEFAULT_STALE_MS * 5).toISOString(), lastArtifactAt: new Date(t0 - 1000).toISOString() };
+      expect(classifyLiveness({ record, now: t0, thresholdMs: DEFAULT_STALE_MS }).status).toBe('healthy');
+    });
+
+    it('a missing/unparsable lastArtifactAt classifies unknown, never stale (fail-quiet on bad data)', () => {
+      expect(classifyLiveness({ record: {} }).status).toBe('unknown');
+      expect(classifyLiveness({ record: { lastArtifactAt: 'not-a-date' } }).status).toBe('unknown');
+      expect(classifyLiveness({ record: null }).status).toBe('unknown');
+    });
+
+    it('a record from the future (clock skew) is treated as healthy, not a manufactured negative-age stale', () => {
+      const now = Date.parse('2026-08-15T12:00:00.000Z');
+      const skewed = classifyLiveness({ record: { lastArtifactAt: new Date(now + 60000).toISOString() }, now });
+      expect(skewed.status).toBe('healthy');
+    });
+  });
+
+  describe('writeAgentHeartbeat / readAgentRecords / clearAgentHeartbeat (AC-505.3)', () => {
+    it('round-trips a written record', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      const ok = await writeAgentHeartbeat(cwd, { id: '505', issue: 505, branch: 'fix/505-x', phase: 'implementing', spawnedAt: '2026-08-15T10:00:00.000Z', lastArtifactAt: '2026-08-15T10:05:00.000Z' });
+      expect(ok).toBe(true);
+      const records = await readAgentRecords(cwd);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ id: '505', issue: 505, branch: 'fix/505-x', phase: 'implementing' });
+    });
+
+    it('a missing .forge/agents dir reads as [] — never throws', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      expect(await readAgentRecords(cwd)).toEqual([]);
+    });
+
+    it('a write failure (dir path occupied by a file) never throws — returns false', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      await mkdir(join(cwd, '.forge'), { recursive: true });
+      await writeFile(join(cwd, '.forge', 'agents'), 'not a dir'); // occupies the dir path itself
+      const ok = await writeAgentHeartbeat(cwd, { id: '1', issue: 1, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: 'now' });
+      expect(ok).toBe(false);
+    });
+
+    it('one corrupt record among valid ones is skipped, not fatal to the read', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      await writeAgentHeartbeat(cwd, { id: 'good', issue: 1, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: new Date().toISOString() });
+      await mkdir(join(cwd, '.forge', 'agents'), { recursive: true });
+      await writeFile(join(cwd, '.forge', 'agents', 'bad.json'), '{ not valid json');
+      const records = await readAgentRecords(cwd);
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe('good');
+    });
+
+    it('clearAgentHeartbeat removes a record; clearing a non-existent id is a quiet no-op', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      await writeAgentHeartbeat(cwd, { id: '9', issue: 9, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: new Date().toISOString() });
+      expect(await readAgentRecords(cwd)).toHaveLength(1);
+      await clearAgentHeartbeat(cwd, '9');
+      expect(await readAgentRecords(cwd)).toEqual([]);
+      await expect(clearAgentHeartbeat(cwd, 'never-existed')).resolves.toBe(true);
+    });
+  });
+
+  describe('poll — transitions only, never a line per poll (AC-505.4)', () => {
+    it('emits a line only on a healthy->stale transition, and again on recovery', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      const t0 = Date.parse('2026-08-15T12:00:00.000Z');
+      await writeAgentHeartbeat(cwd, { id: '1', issue: 1, branch: 'fix/1', phase: 'implementing', spawnedAt: new Date(t0).toISOString(), lastArtifactAt: new Date(t0).toISOString() });
+
+      const first = await agentsPoll(cwd, new Map(), { now: () => t0 });
+      expect(first.ok).toBe(true);
+      expect(first.lines).toEqual([]); // fresh — healthy, no prior status to transition from
+
+      const second = await agentsPoll(cwd, first.statuses, { now: () => t0 + 1000 });
+      expect(second.lines).toEqual([]); // still healthy, unchanged
+
+      const stale = await agentsPoll(cwd, second.statuses, { now: () => t0 + DEFAULT_STALE_MS + 1000 });
+      expect(stale.lines).toHaveLength(1);
+      expect(stale.lines[0]).toMatch(/Agent stall suspected.*issue #1/);
+
+      const stillStale = await agentsPoll(cwd, stale.statuses, { now: () => t0 + DEFAULT_STALE_MS + 2000 });
+      expect(stillStale.lines).toEqual([]); // no repeat line while unchanged
+
+      // recovery: refresh the heartbeat, then poll again
+      await writeAgentHeartbeat(cwd, { id: '1', issue: 1, branch: 'fix/1', phase: 'shipping', spawnedAt: new Date(t0).toISOString(), lastArtifactAt: new Date(t0 + DEFAULT_STALE_MS + 3000).toISOString() });
+      const recovered = await agentsPoll(cwd, stillStale.statuses, { now: () => t0 + DEFAULT_STALE_MS + 3000 });
+      expect(recovered.lines).toHaveLength(1);
+      expect(recovered.lines[0]).toMatch(/Agent recovered.*issue #1/);
+    });
+
+    it('an unknown-status record never emits a line', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      await writeAgentHeartbeat(cwd, { id: '2', issue: 2, branch: 'x', phase: 'p', spawnedAt: 'now', lastArtifactAt: 'not-a-date' });
+      const r = await agentsPoll(cwd, new Map());
+      expect(r.lines).toEqual([]);
+    });
+
+    it('a genuine fs read error surfaces ok:false (mirrors the decisions-poll fs-error test)', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      await mkdir(join(cwd, '.forge'), { recursive: true });
+      await writeFile(join(cwd, '.forge', 'agents'), 'not a dir'); // readdir on a file -> ENOTDIR
+      const r = await agentsPoll(cwd, new Map());
+      expect(r.ok).toBe(false);
+      expect(r.lines).toEqual([]);
+    });
+  });
+
+  describe('AC-505.6: threshold does not false-positive a healthy long-running agent', () => {
+    it('a heartbeat refreshed every phase change, well inside the threshold, across many polls never classifies stale', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-agents-'));
+      const t0 = Date.parse('2026-08-15T09:00:00.000Z');
+      const phases = ['scoping', 'planning', 'testing', 'implementing', 'reviewing', 'shipping', 'watching-ci'];
+      let statuses = new Map();
+      let clock = t0;
+      // Simulate a long-running healthy delivery: a phase change (and heartbeat
+      // refresh) every 15 minutes — comfortably inside the 60-minute threshold —
+      // for 7 phases (105 minutes of *wall clock*, well past DEFAULT_STALE_MS,
+      // but never past it *without* a refresh).
+      for (const phase of phases) {
+        clock += 15 * 60 * 1000;
+        await writeAgentHeartbeat(cwd, { id: '505', issue: 505, branch: 'fix/505-x', phase, spawnedAt: new Date(t0).toISOString(), lastArtifactAt: new Date(clock).toISOString() });
+        const r = await agentsPoll(cwd, statuses, { now: () => clock });
+        expect(r.lines).toEqual([]);
+        statuses = r.statuses;
+      }
+      expect(statuses.get('505')).toBe('healthy');
+    });
+  });
+});
+
 describe('monitors manifest', () => {
-  it('declares the three autopilot watchers with when: on-skill-invoke:autopilot', async () => {
+  it('declares the four autopilot watchers with when: on-skill-invoke:autopilot', async () => {
     const arr = JSON.parse(await readFile(join(root, 'plugin', 'monitors', 'monitors.json'), 'utf8'));
-    expect(arr).toHaveLength(3);
+    expect(arr).toHaveLength(4);
     for (const m of arr) {
       expect(m.name && m.command && m.description).toBeTruthy();
       expect(m.command).toContain('${CLAUDE_PLUGIN_ROOT}');
       expect(m.when).toBe('on-skill-invoke:autopilot');
     }
-    expect(arr.map((m) => m.name).sort()).toEqual(['forge-ci', 'forge-decisions', 'forge-outbox']);
+    expect(arr.map((m) => m.name).sort()).toEqual(['forge-agents', 'forge-ci', 'forge-decisions', 'forge-outbox']);
   });
 });

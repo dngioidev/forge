@@ -273,4 +273,19 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/resume or re-spawn/i);
     expect(s).toMatch(/never funnel to the merge bar|not.{0,10}the merge bar/i);
   });
+
+  it('AC-505.5: § Monitor notifications documents forge-agents — detection only, never wired to resolveReturnedTicket', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/forge-agents/);
+    expect(s).toMatch(/#505/);
+    expect(s).toMatch(/classifyLiveness/);
+    expect(s).toMatch(/\.forge\/agents/);
+    // AC.5 boundary: detection surfaces a line only, never classifies a returned report
+    expect(s).toMatch(/never calls `resolveReturnedTicket`|never.{0,20}resolveReturnedTicket/i);
+    // recovery/resume stays #474's scope, not built here
+    expect(s).toMatch(/#474/);
+    // the threshold is justified, not just asserted
+    expect(s).toMatch(/DEFAULT_STALE_MS/);
+    expect(s).toMatch(/60 minutes/i);
+  });
 });
