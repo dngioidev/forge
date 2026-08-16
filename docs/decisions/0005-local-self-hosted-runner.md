@@ -1,6 +1,6 @@
 # ADR-0005 — Local self-hosted runner: PAT/secret model, sharing path, isolation, OS coverage, advanced-CI
 
-**Date:** 2026-07-23 · **Status:** **accepted** (owner sign-off 2026-07-23, AC1 gate cleared — build AC2–AC6 authorised) · **Ticket:** #180 · **Route:** spike (deliverable = this decision record; the throwaway spike branch `spike/180-local-self-hosted-runner` never merges)
+**Date:** 2026-07-23 · **Status:** **accepted** (owner sign-off 2026-07-23, AC1 gate cleared — build AC2–AC6 authorised). **Superseded in practice for this repo by [#426](https://github.com/dngioidev/forge/issues/426) (2026-08-16, #462 annotation):** `dngioidev/forge` went public and CI here now runs hosted-only (`.claude/forge.json` `runner.enabled: false`); this ADR remains the accepted design for the **private-fork opt-in** case. · **Ticket:** #180 · **Route:** spike (deliverable = this decision record; the throwaway spike branch `spike/180-local-self-hosted-runner` never merges)
 
 ## Context
 

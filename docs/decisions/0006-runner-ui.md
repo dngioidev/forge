@@ -4,6 +4,8 @@
 
 ## Context
 
+> **Post-#426 annotation (2026-08-16, #462):** this repo (`dngioidev/forge`) is now **public**, and [#426](https://github.com/dngioidev/forge/issues/426) (PR #427) flipped `.claude/forge.json` `runner.enabled` to `false` — CI here now runs entirely on **GitHub-hosted runners**. The present-tense claims below (the runner fleet "already runs," was "shipped," and the `forge.json` `runner` block being the cockpit's live "config source of truth") describe the **private-fork opt-in** design, not this repo's current CI state. The decisions in this ADR are unchanged and still bind the cockpit's design; only this repo's applicability has changed. See [ADR-0005](0005-local-self-hosted-runner.md)'s Status line and `docs/guides/runner-adoption.md` for the same annotation.
+
 Epic #262 proposes a **Python** UI to manage the local self-hosted runner **fleet** that ADR-0005 (#180) shipped. AC1 is the gate: a spike must resolve four questions with a concrete recommendation grounded in the real scaffold, and the owner must approve before AC2+ (build). This ADR is that spike's deliverable, now with the owner's sign-off recorded.
 
 The four questions: (1) UI approach - desktop GUI vs local web app vs terminal UI; (2) Python stack + deps and how they are pinned/run cross-platform; (3) control strategy - how the tool discovers and controls services without reimplementing them; (4) home for the code - in-repo `tools/runner-ui/` vs a sibling repo.
