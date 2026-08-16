@@ -3,9 +3,14 @@
 **Ticket:** #465 (board #8, child of epic #183) - **Kind:** bug
 **Base:** main - **Branch:** fix/465-distill-blocked-edit-classification - **Verify:** `pnpm verify`
 
-Two consecutive `/distill` rounds (2026-08-13: 8/8 rejected, 2026-08-14: 6/6
-rejected — 14 role-card proposals, 0 approved) produced only false
-proposals. `distill.mjs`'s `signature()` clusters `blocked-edit` events by
+The 2026-08-13 `/distill` round the ticket reports produced 8 recurring
+`blocked-edit` clusters from 126 events, all 8 role-card proposals rejected
+because the premise was false (per the ticket body). A second dated archive,
+`.forge/journal-archive/2026-08-14.jsonl` (65 events, 60 `blocked-edit`),
+shows the journal was distilled and archived again the next day — this plan
+does not assert that round's own proposal/rejection count, only that its raw
+events are real, additional evidence for the classifier below.
+`distill.mjs`'s `signature()` clusters `blocked-edit` events by
 `event.rule` alone, so every blocked command that trips e.g. `hard-reset`
 lands in one cluster regardless of *why* it was blocked, and the fixed
 `PROPOSALS['blocked-edit']` text always reads "the agent keeps reaching for
@@ -14,27 +19,44 @@ cluster is close to 100% guard-testing.
 
 Measured against this run's real evidence (`.forge/journal-archive/
 2026-08-13.jsonl`, `.forge/journal-archive/2026-08-14.jsonl`, and the live
-`.forge/journal.jsonl` — 203 `blocked-edit` events total), a classifier keyed
-on the recorded `cmd` text (itself truncated to 300 chars by `denylist.mjs`
-at journal-write time) resolves 196/203 (96.6%) as carrying at least one
-guard-testing signal: importing/invoking the denylist-guard machinery itself
-(`check(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`
-or `plugin/scripts/`), a scratch/tmp/review-worktree path
+`.forge/journal.jsonl`, which keeps growing as the run continues — 119 + 60 +
+~25 = ~204 `blocked-edit` events at analysis time), the SHIPPED classifier
+(scoped deliberately narrower than an earlier draft — see below) resolves
+190/204 (93.1%) as carrying at least one guard-testing signal:
+importing/invoking the denylist-guard machinery itself
+(`check(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
+a scratch/tmp/review-worktree path
 (`scratchpad`/`/tmp`/`AppData\Local\Temp`/`forge-security-N`/
-`forge-review-N`), writing *about* a blocked command (`--body`/`--body-file`/
-heredoc — the literal-string caveat), or an adversarial-probe shape
-(brace-expansion, a long repeated-character/echo-padding tail, ANSI-C/quoted
-flag-spelling tricks, or a shell function shadowing the dangerous command's
-own name so it never actually runs).
+`forge-review-N`), writing *about* a blocked command via a heredoc or
+`--body-file` — the literal-string caveat — or an adversarial-probe shape
+(brace-expansion, a long repeated-character/echo-padding tail, or ANSI-C/
+quoted flag-spelling tricks).
 
-The remaining 7/203 (3.4%) are not a defect to be regex'd away — they split
-three honest ways: several are `node -e` proof-of-concept scripts whose
-identifying `import .../check(` text sits past the journal's 300-char `cmd`
-truncation (a real, disclosed recall ceiling, not a modelling gap); one is
-the single genuinely bare `git push --force origin main` with no
+An earlier draft of this classifier also matched anything under
+`plugin/scripts/` (not just `plugin/hooks/`) and any bare `--body` flag (not
+just `--body-file`), which would have caught a few more real noise cases —
+board/comment.mjs calls whose `--body` text happens to quote a blocked
+string as data. Deliberately walked back before shipping: `plugin/scripts/`
+is the path nearly every forge-authored command touches, tool or not, and a
+bare `--body` flag appears on completely ordinary trail comments too, so
+either one risks classifying a genuinely dangerous command as guard-testing
+whenever it happens to run near an unrelated forge script or comment call —
+exactly the false-positive direction AC.2's design caution warns against.
+Recall lost by walking back (about 3.5 points) is the acceptable trade for
+never widening the guard-testing label past what `plugin/hooks/`/
+`--body-file` can support with no manually-audited false positive in this
+data.
+
+The remaining ~14/204 (~6.9%) are not a defect to be regex'd away — they
+split several honest ways: a few are `node -e` proof-of-concept scripts
+whose identifying `import .../check(` text sits past the journal's 300-char
+`cmd` truncation (a real, disclosed recall ceiling, not a modelling gap); a
+few reference `plugin/scripts/` specifically (the walked-back signal above);
+one is the single genuinely bare `git push --force origin main` with no
 distinguishing context anywhere in this run's evidence; one is a real
-`git checkout -B ... && git reset --hard origin/main` mid-branch-fixup
-command that happens to trip `hard-reset` and reads as plausibly genuine
+`git checkout -B ... && git fetch origin main` mid-branch-fixup command
+(from this repo's own #454 branch history) that happens to trip
+`hard-reset` and reads as plausibly genuine
 work, not a probe. All seven correctly stay unclassified/visible rather than
 guessed either way — this is exactly why AC.2 exists.
 
