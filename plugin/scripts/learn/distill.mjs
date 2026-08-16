@@ -20,19 +20,27 @@ export const ARCHIVE_DIR = join('.forge', 'journal-archive');
  * attempt from an agent deliberately exercising the guard — see #465. Grounded
  * against the real 2026-08-13 round (119 blocked-edit events, all 8 role-card
  * proposals rejected because the premise was false): every discriminator below
- * was validated against that data, not invented. 117/119 carried at least one
- * signal, with zero false positives on manual audit of every single-signal hit.
+ * was validated against that data, not invented — and re-validated after three
+ * rounds of adversarial review (forge:reviewer, then forge:security twice)
+ * each tightened it to close a false-positive path. 115/119 carry at least one
+ * signal, with zero false positives on manual audit of every single-signal hit
+ * that survived all three rounds.
  *
  * Deliberately TWO states, not three. Absence of a guard-testing signal is not
  * proof of genuine intent — it just means this cheap text match found nothing —
  * so there is no confident "genuine" label here, only "guard-testing" (a
  * discriminator matched) and "unclassified" (none did, review the excerpt).
- * The 2 real events with no signal: one was the single genuinely bare
+ * The 4 real events with no signal: the single genuinely bare
  * `git push --force origin main` in the whole round (correctly stays
- * unclassified/visible), the other an adversarial CRLF-splitting probe with no
- * denylist reference at all — an honest can't-tell case. Erring toward keeping
- * an event visible (AC.2) is the point: a false "guard-testing" label is the
- * dangerous direction, a false "unclassified" one merely asks a human to look.
+ * unclassified/visible — required by AC.4); an adversarial CRLF-splitting
+ * probe with no denylist reference at all; and two CR/quote-splicing probes
+ * that use ANSI-C quoting (`$'"'"'…'"'"'`) purely to embed a literal
+ * single-quote, carrying neither a hex/octal escape nor a leading dash — all
+ * three honest can't-tell cases once the ANSI-C discriminator was tightened
+ * (see below) to stop treating bare `$'…'` as evidence on its own. Erring
+ * toward keeping an event visible (AC.2) is the point: a false "guard-testing"
+ * label is the dangerous direction, a false "unclassified" one merely asks a
+ * human to look.
  *
  * KNOWN LIMITATION, stated rather than hidden (adversarial security review,
  * #465 second fix wave): this is a text match over a flat (already-truncated)
@@ -104,15 +112,31 @@ export function classifyBlockedEdit(cmd) {
   // run, ANSI-C/quoted flag-spelling tricks, or brace-expansion obfuscation.
   // The brace check requires FOUR OR MORE consecutive `{...}` groups (spelling
   // obfuscation like `{r,Z}{e,Z}{c,Z}…`, or range-spam like `{a..a}{a..a}…`)
-  // or NESTED braces (`{{a,b},-D}`) — never one or two/three consecutive pairs
-  // (second adversarial-review finding, #465 fix wave): ordinary bash
-  // Cartesian-product multi-target syntax routinely chains 2-3 brace groups
-  // (`rm -rf backup{2024,2025}{01,02}` is a real, plausible destructive
-  // command), so a lower bar mislabelled it. The repeated-character run needs
-  // 30+ — comfortably below every real probe's tail (validated data: shortest
-  // is 35 chars, most are 260+) and comfortably above anything organic (an
-  // adversarial-review counterexample used 20).
-  if (/;\s*echo\s+y{5,}/.test(text) || /(\{[^{}]{0,20}\}){4,}/.test(text) || /\{[^{}]*\{/.test(text) || /(.)\1{29,}/.test(text) || /\$'/.test(text) || /-\\"[a-zA-Z]\\"/.test(text) || /-"[a-zA-Z]"/.test(text)) {
+  // — never one, two, or three consecutive pairs (second adversarial-review
+  // finding, #465 fix wave): ordinary bash Cartesian-product multi-target
+  // syntax routinely chains 2-3 brace groups (`rm -rf backup{2024,2025}{01,02}`
+  // is a real, plausible destructive command), so a lower bar mislabelled it.
+  // Nested braces are anchored to `{{` — braces glued with ZERO whitespace
+  // between them (third adversarial-review round, security): every real
+  // nested-brace probe (`{{a,b},-D}`) has this shape, but ordinary bash
+  // command-grouping (`{ cmd; }`) and nested code in a harness's own `node -e`
+  // script (`function f(){ if(1){…} }`) always have a space or other
+  // character between the braces, so `\{[^{}]*\{` — matching ANY two nested
+  // braces regardless of what sits between them — mislabelled both. ANSI-C
+  // quoting requires either a hex/octal/unicode escape (arbitrary-byte
+  // spelling, e.g. `$'\x2df'`) or the quoted content starting with a literal
+  // dash (`$'-f'`, denylist.mjs's own documented flag-hiding bypass class) —
+  // never a bare `$'…'` (third round, security): ordinary data-shaped ANSI-C
+  // usage (`$'\n'`, `$'hello\tworld'`) is explicitly pinned as benign by this
+  // repo's own `tests/hooks/denylist.test.mjs` (AC-437.5) and carries neither
+  // shape. The repeated-character run needs 30+ — comfortably below every real
+  // probe's tail (validated data: shortest is 35 chars, most are 260+) and
+  // comfortably above anything organic (an adversarial-review counterexample
+  // used 20).
+  const consecutiveBrace = /(\{[^{}]{0,20}\}){4,}/;
+  const nestedBrace = /\{\{/;
+  const ansiCFlagSpell = /\$'(?:\\(?:x[0-9a-fA-F]|[0-7]{1,3}|u[0-9a-fA-F]|U[0-9a-fA-F])|-)/;
+  if (/;\s*echo\s+y{5,}/.test(text) || consecutiveBrace.test(text) || nestedBrace.test(text) || /(.)\1{29,}/.test(text) || ansiCFlagSpell.test(text) || /-\\"[a-zA-Z]\\"/.test(text) || /-"[a-zA-Z]"/.test(text)) {
     reasons.push('adversarial-probe');
   }
   return { guardTesting: reasons.length > 0, reasons };

@@ -20,8 +20,8 @@ cluster is close to 100% guard-testing.
 Measured against this run's real evidence (`.forge/journal-archive/
 2026-08-13.jsonl`, `.forge/journal-archive/2026-08-14.jsonl`, and the live
 `.forge/journal.jsonl`, which keeps growing as the run continues — 119 + 60 +
-~31 = ~210 `blocked-edit` events at analysis time), the SHIPPED classifier
-resolves 195/210 (~92.9%) as carrying at least one guard-testing signal:
+~36 = ~215 `blocked-edit` events at analysis time), the SHIPPED classifier
+resolves 194/215 (~90.2%) as carrying at least one guard-testing signal:
 importing/invoking the denylist-guard machinery itself
 (`check(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
 a scratch/tmp/review-worktree path
@@ -80,23 +80,45 @@ false positive, all reproduced directly against `classifyBlockedEdit()`:
   in the validated data (shortest is 35 chars, most are 260+) and comfortably
   above the counterexample.
 
-Recall lost across all three walk-backs (~4 points total, from a peak of
-~96.6% on the first unreviewed draft down to ~92.9% shipped) is the accepted
+A follow-up re-review (`forge:reviewer`, verifying the third round's fixes)
+found the same class survived in two more forms, both closed in the same
+commit as the third round above:
+
+- The nested-brace check (`\{[^{}]*\{`) matched ANY two nested braces, so
+  ordinary bash command-grouping (`{ cmd; }`) and a harness's own embedded
+  code (`node -e "function f(){ if(1){…} }"`) — both real shapes in this
+  repo's own commands — mislabelled too. Every real nested-brace PROBE has
+  its braces glued with zero whitespace (`{{a,b},-D}`); ordinary
+  grouping/code always has a space or other character between them. Anchored
+  to `\{\{` specifically.
+- The bare `$'…'` check fired on any ANSI-C quote-open with no requirement of
+  an actual obfuscating escape — mislabelling ordinary data-shaped usage this
+  repo's OWN `tests/hooks/denylist.test.mjs` (AC-437.5) pins as benign
+  (`$'\n'`, `$'hello\tworld'`). Tightened to require either a hex/octal/
+  unicode escape (`$'\x2df'` — spelling an arbitrary byte) or the quoted
+  content starting with a literal dash (`$'-f'` — denylist.mjs's own
+  documented flag-hiding bypass class).
+
+Recall lost across all four walk-backs (~6 points total, from a peak of
+~96.6% on the first unreviewed draft down to ~90.2% shipped) is the accepted
 trade: never widen the guard-testing label past what survives adversarial
 review with no plausible false positive, per AC.2's design caution.
 
-The remaining ~15/210 (~7.1%) are not a defect to be regex'd away — they
+The remaining ~21/215 (~9.8%) are not a defect to be regex'd away — they
 split several honest ways: a few are `node -e` proof-of-concept scripts whose
 identifying `import .../check(` text sits past the journal's 300-char `cmd`
 truncation (a real, disclosed recall ceiling, not a modelling gap); a few
 reference `plugin/scripts/` specifically (the first walked-back signal
-above); one is the single genuinely bare `git push --force origin main` with
-no distinguishing context anywhere in this run's evidence; one is a real
-`git checkout -B ... && git fetch origin main` mid-branch-fixup command
-(from this repo's own #454 branch history) that happens to trip `hard-reset`
-and reads as plausibly genuine work, not a probe. All of them correctly stay
-unclassified/visible rather than guessed either way — this is exactly why
-AC.2 exists.
+above); a few use ANSI-C quoting purely to splice a literal quote character
+(`$'"'"'…'"'"'`, a real CR-handling test shape) with neither a flag-spelling
+escape nor a leading dash — now correctly ambiguous rather than
+over-confidently flagged; one is the single genuinely bare
+`git push --force origin main` with no distinguishing context anywhere in
+this run's evidence; one is a real `git checkout -B ... && git fetch origin
+main` mid-branch-fixup command (from this repo's own #454 branch history)
+that happens to trip `hard-reset` and reads as plausibly genuine work, not a
+probe. All of them correctly stay unclassified/visible rather than guessed
+either way — this is exactly why AC.2 exists.
 
 ## Design
 

@@ -74,6 +74,16 @@ const GENUINE_BRACE_MULTI_TARGET_CMD = 'rm -rf {important-secrets,customer-db}';
 const GENUINE_CARTESIAN_BRACE_CMD = 'rm -rf backup{2024,2025}{01,02}{a,b}';
 const GENUINE_COMMENT_DECOY_CMD = 'rm -rf /opt/danger # check(this) /tmp/decoy forge-review-42';
 const GENUINE_ORGANIC_REPEAT_CMD = 'rm -rf /data/aaaaaaaaaaaaaaaaaaaa/prod'; // 20-char repeat, below the 30-char probe floor
+const PROBE_ANSI_C_FLAG_CMD = "git push $'-f' origin main"; // real probe shape: ANSI-C quoting used to hide a flag, no hex escape needed
+const PROBE_ANSI_C_HEX_CMD = "git push $'\\x2d\\x2dforce' origin main"; // real probe shape: hex-escape flag spelling
+// Third adversarial-review round (security role, #465 second fix wave):
+// ordinary ANSI-C data usage ($'\n'/$'\t', pinned benign by this repo's own
+// tests/hooks/denylist.test.mjs AC-437.5) and nested braces from ordinary
+// bash command-grouping or a harness's own embedded code (not brace
+// expansion at all) must both stay unclassified.
+const GENUINE_ANSI_C_DATA_CMD = "printf $'line1\\nline2' > ./notes.txt";
+const GENUINE_NESTED_CODE_BRACE_CMD = 'node -e "function f(){ if(1){console.log(1)} }" && rm -rf /prod';
+const GENUINE_BASH_GROUPING_CMD = "bash -c '{ { rm -rf /prod; }; }'";
 
 describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () => {
   it('AC-465.4: a check()/denylist.mjs harness invocation classifies as guard-testing', () => {
@@ -133,6 +143,29 @@ describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () =>
 
   it('#465 second fix wave: an organic 20-char repeated-character run does NOT classify as guard-testing (real probes are 35+)', () => {
     const { guardTesting } = classifyBlockedEdit(GENUINE_ORGANIC_REPEAT_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 third fix wave: an ANSI-C-quoted flag (no hex escape needed, e.g. $\'-f\') still classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(PROBE_ANSI_C_FLAG_CMD).guardTesting).toBe(true);
+  });
+
+  it('#465 third fix wave: an ANSI-C hex-escape flag-spelling probe still classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(PROBE_ANSI_C_HEX_CMD).guardTesting).toBe(true);
+  });
+
+  it('#465 third fix wave: ordinary ANSI-C data quoting ($\'...\\n...\', pinned benign by denylist.mjs\'s own AC-437.5) does NOT classify as guard-testing', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_ANSI_C_DATA_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 third fix wave: nested braces from ordinary code in a node -e harness (not brace expansion) do NOT classify as guard-testing', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_NESTED_CODE_BRACE_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 third fix wave: nested braces from ordinary bash command-grouping do NOT classify as guard-testing', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_BASH_GROUPING_CMD);
     expect(guardTesting).toBe(false);
   });
 
