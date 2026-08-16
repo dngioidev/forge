@@ -274,6 +274,19 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/never funnel to the merge bar|not.{0,10}the merge bar/i);
   });
 
+  it('AC-522.5: § Return-then-resume watchdog documents the no-PR malformed shape as escalate, distinct from the with-PR respawn shape', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/#522/);
+    // the no-PR malformed report escalates — never respawned blindly (AC.2/AC.3)
+    expect(s).toMatch(/no PR at all[\s\S]{0,400}escalat/i);
+    // the distinction is explicitly keyed on whether a PR already exists
+    expect(s).toMatch(/PR already exists|a PR already open|a PR is already open|PR must already exist/i);
+    // the three verbatim #517 returns this ticket pins are named in the prose
+    expect(s).toMatch(/still waiting on the full verify suite to finish/i);
+    // the working-tree hazard that motivates escalate over respawn
+    expect(s).toMatch(/working[- ]tree/i);
+  });
+
   it('AC-505.5: § Monitor notifications documents forge-agents — detection only, never wired to resolveReturnedTicket', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     expect(s).toMatch(/forge-agents/);
