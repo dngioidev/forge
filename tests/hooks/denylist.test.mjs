@@ -1975,6 +1975,57 @@ describe('brace expansion (#448 fix wave 2) — nested brace groups are detected
   });
 });
 
+// #448 fix wave 3 — full-branch adversarial SECURITY finding (deciding
+// round), closed by replacing the depth-tracking scan with a flat existence
+// check — see tokenHasBraceGroup()'s own comment for the full history. Real
+// bash does not stop at the FIRST structurally-matching `}`: when that span
+// has no qualifying separator, bash re-absorbs the failed `}` as literal
+// content and keeps scanning right for a LATER `}` whose widened span does
+// qualify. `--for{.},ce}` real-bash-expands to `--for.}` and `--force` — the
+// first `}` (closing `{.}`, no separator inside) is not bash's actual
+// choice. The fix-wave-2 depth-tracking scan closed and discarded the group
+// at that first `}` and missed it; confirmed the identical shape defeats
+// `rm`, `git branch`, and `git reset` too, each independently verified
+// against real bash.
+describe('brace expansion (#448 fix wave 3) — a failed-looking close is not the end of the search (matches bash\'s own extend-past-failure behaviour)', () => {
+  it('a comma-less inner span followed by a later close-then-comma-then-close still completes a flag', () => {
+    for (const [cmd, rule] of [
+      ['git push --for{.},ce} origin main', 'force-push'],
+      ['rm -r{.},f} /opt/danger', 'recursive-delete'],
+      ['git branch -{.},D} main', 'env-branch-delete'],
+      ['git reset --{.},hard}', 'hard-reset'],
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule });
+    }
+  });
+
+  it('the flat existence check stays correctly inert on a token with { and } but no separator anywhere', () => {
+    expect(check('git push -{abc} origin main').blocked).toBe(false);
+    expect(check('rm -{abc} target').blocked).toBe(false);
+  });
+
+  it('an exhaustive small-alphabet fuzz stays linear and throws on nothing', () => {
+    // Not a bash-equivalence check (that's what the reproductions above
+    // pin) — a cheap total-and-fast sweep over short brace-shaped strings,
+    // the same class of construction that produced fix wave 3's finding.
+    const alphabet = ['{', '}', ',', '.', 'a'];
+    const started = Date.now();
+    let count = 0;
+    for (let len = 1; len <= 5; len++) {
+      let n = alphabet.length ** len;
+      for (let i = 0; i < n; i++) {
+        let rest = i;
+        let s = '-';
+        for (let k = 0; k < len; k++) { s += alphabet[rest % alphabet.length]; rest = Math.floor(rest / alphabet.length); }
+        expect(() => check(`git push ${s} origin main`)).not.toThrow();
+        count++;
+      }
+    }
+    expect(count).toBeGreaterThan(3000);
+    expect(Date.now() - started, `fuzzing ${count} short brace-shaped tokens`).toBeLessThan(5000);
+  });
+});
+
 describe('brace expansion (#448, AC-448.2/AC-448.3) — zero materialisation, hard latency ceiling', () => {
   // AC-448.2 — a 20k-repetition single-element-range construction (the exact
   // shape of removed-implementation defect 3) must complete without slowdown

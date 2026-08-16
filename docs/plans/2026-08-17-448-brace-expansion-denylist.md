@@ -244,6 +244,52 @@ correctly, plus a linear-time pin on the ~120KB unclosed-brace construction
 matching real bash's own "an unterminated brace never expands" behaviour).
 Full suite green (1517/1517).
 
+## Fix wave 3: full-branch adversarial SECURITY finding (deciding round), closed
+
+The re-dispatched `forge:security` pass (run in parallel with a re-dispatched
+`forge:reviewer` pass, both explicitly briefed as the deciding round before
+shipping) found a THIRD critical bug — narrower in cause than fix wave 2 but
+the same underlying failure shape: `tokenHasBraceGroup()`'s depth-tracking
+scan closed a group unconditionally at the FIRST `}` reached at matching
+depth, discarding it for good if the span up to that point had no qualifying
+separator. Real bash's own closing-brace search does not stop there either —
+when a span has no qualifying separator, bash treats the failed `}` as
+ordinary literal content and keeps scanning right for a LATER `}` whose
+widened span does qualify.
+
+Verified against real bash: `--for{.},ce}` real-bash-expands to `--for.}`
+and `--force` — the FIRST `}` (closing `{.}`, content `.`, no separator) is
+not the one bash actually uses; finding no qualifying separator there, bash
+re-absorbs that `}` as literal and extends to the SECOND `}`, whose widened
+content `.},ce` does contain a top-level comma. The fix-wave-2 depth
+tracker had no equivalent "extend past a failed close" step, so it missed
+this. An exhaustive fuzz (all `{`,`}`,`,`,`.`,`a` combinations up to length
+6 — 19,530 tokens, cross-checked word-for-word against real bash) found 101
+tokens where bash genuinely expands but the depth-tracking scan reported no
+brace group present. Confirmed to reproduce identically for `rm`, `git
+branch`, and `git reset` — all four rules were bypassable.
+
+**Fix:** rather than hand-roll bash's actual retry/extend grammar (a THIRD
+from-scratch state machine, after two which each turned out to have a real
+adversarially-found gap in this exact area), `tokenHasBraceGroup()` was
+rewritten to a deliberately WEAKER but provably SOUND question: does the
+token contain, in left-to-right order, an unquoted `{`, followed (anywhere
+later) by a qualifying `,`/`..`, followed (anywhere later still) by an
+unquoted `}`? This is a strict over-approximation of "bash would actually
+expand this" — never an under-approximation, since any string bash's brace
+expansion fires on must, by definition of the syntax, contain that character
+order somewhere, regardless of which exact retry path bash took internally.
+It cannot reproduce either fix wave 2's nesting bypass or fix wave 3's
+failed-close bypass, and it is simpler than both prior versions: two
+booleans, one linear pass, no stack, no retry.
+
+Regression-pinned as the four `{.},X}`-shaped reproductions blocking
+correctly (`git push --for{.},ce}`, `rm -r{.},f}`, `git branch -{.},D}`,
+`git reset --{.},hard}`), a paired control (a token with `{`/`}` but no
+separator anywhere stays allowed), and an exhaustive small-alphabet fuzz
+(3,000+ generated tokens) confirming `check()` never throws and stays fast.
+Full suite green (1520/1520: 1361 pre-existing + 159 in this file).
+
 ## Task 2 (code): the detector + four rule sites
 
 - Extend `normalizeShellText()`'s `guardedText` `maskable` set to include

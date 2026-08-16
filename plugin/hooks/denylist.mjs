@@ -306,7 +306,7 @@ function beforeEndOfOptions(command, guarded) {
 /**
  * Does `tok` contain a brace-group — comma list, range, or step range alike,
  * ONE uniform check that never classifies which kind — anywhere inside it,
- * at ANY nesting depth (#448)?
+ * regardless of nesting (#448)?
  *
  * That "never classifies which kind" is the load-bearing design decision for
  * this whole ticket, not a simplification of convenience. An earlier
@@ -327,79 +327,70 @@ function beforeEndOfOptions(command, guarded) {
  * there is no budget to exhaust, no pool to starve, no cross-product to
  * bound, and nothing for a ReDoS to run against.
  *
- * A single LINEAR left-to-right scan with an explicit depth counter, NOT a
- * regex — this replaced an earlier single-regex version
- * (`/\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}/`) after a full-branch adversarial
- * SECURITY pass (fix wave 2) found two independent, real problems with it:
+ * ## Fix wave 3: why this is a FLAT existence check, not a structural parse
  *
- *  1. **Nesting bypass.** The regex's `[^{}\s]*` deliberately would not
- *     cross a nested `{`/`}` boundary, so a token where the qualifying comma
- *     sits at the TOP level but a comma-less NESTED group sits between the
- *     flag's literal prefix and that comma — `--for{ce,c{xy}e}` — real-bash-
- *     expands to a literal `--force` while containing no FLAT `{...}`
- *     substring anywhere for the old regex to match. Verified against real
- *     bash: `printf '%s\n' --for{ce,c{xy}e}` prints `--force` and
- *     `--forc{xy}e`. Reproduced identically for `rm`, `git branch`, and
- *     `git reset`.
- *  2. **Quadratic backtracking.** The same regex's two adjacent unbounded
- *     `[^{}\s]*` runs either side of the comma/`..` alternation backtrack
- *     catastrophically on a token containing a long run of comma-bearing
- *     text with NO closing `}` ahead — measured at 8.7s through the real
- *     `check()` entry point on a ~120KB input (`-{` + `a,`×60000), breaching
- *     AC-448.3's 500ms ceiling and approaching agy's 10s fail-open budget
- *     (#428) — the exact failure class (a hang on a hook that runs on every
- *     Bash call) the whole detect-don't-enumerate design exists to
- *     eliminate, reopened by the regex ENGINE's own retry behaviour rather
- *     than by anything this file materialised.
+ * Two earlier versions of this function tried to determine the EXACT `{`/`}`
+ * pairing bash's own brace expansion would use — first a single regex, then
+ * a depth-counting scan that closed a group at the first matching `}` at
+ * that depth. Both were wrong, and both were wrong for the SAME underlying
+ * reason: **real bash's own closing-brace search does not stop at the first
+ * structurally-matching `}` either.** When the span up to that `}` contains
+ * no qualifying `,`/`..`, bash does not give up on that `{` — it treats the
+ * failed `}` as ordinary literal content and keeps scanning right for a
+ * LATER `}` whose (now-widened) span does qualify. Verified against real
+ * bash: `--for{.},ce}` expands to `--for.}` and `--force` — the FIRST `}`
+ * (closing `{.}`, no separator inside) is not the one bash actually uses;
+ * finding no qualifying separator there, it re-absorbs that `}` as literal
+ * and extends to the SECOND `}`, whose widened content `.},ce` DOES contain
+ * a top-level comma. A depth-tracking scan (fix wave 2's version) has no
+ * equivalent "extend past a failed close" step, so it closed and discarded
+ * the group at the first `}` and missed this — a full-branch adversarial
+ * SECURITY pass confirmed the identical shape defeats `rm`, `git branch`,
+ * and `git reset` too (`-r{.},f}` -> `-rf`, `-{.},D}` -> `-D`,
+ * `--{.},hard}` -> `--hard`, each independently verified against real bash).
  *
- * A depth-counting single pass has neither problem: it is genuinely
- * O(token length) — each character visited exactly once, only counter/flag
- * work at each position — with no backtracking possible because nothing is
- * ever re-scanned from an earlier position, and nesting is handled BY
- * CONSTRUCTION (a depth counter) rather than excluded by a character class.
- * This mirrors the file's own established pattern elsewhere
- * (`beforeEndOfOptions()`'s paren-depth tracker, `ampRunEnd`'s precomputed
- * backward pass) of replacing a regex whose worst case is hard to bound with
- * an explicit linear scan.
+ * Rather than hand-roll bash's actual retry/extend grammar — a THIRD
+ * from-scratch state machine, after two which each turned out to have a
+ * real, adversarially-found gap in this exact area — this function instead
+ * asks a deliberately WEAKER, but provably SOUND, question: does the token
+ * contain, in left-to-right order, an unquoted `{`, followed (anywhere
+ * later) by a qualifying `,`/`..`, followed (anywhere later still) by an
+ * unquoted `}`? This is a strict OVER-approximation of "bash would actually
+ * expand this", never an under-approximation: ANY string bash's brace
+ * expansion actually fires on, by the very definition of the syntax, must
+ * contain a `{` before a qualifying separator before a `}` somewhere in
+ * left-to-right order — regardless of which exact retry/extension path bash
+ * internally took to arrive at that pairing. So this check can only flag
+ * MORE than real bash would expand, never miss something real bash would.
+ * It cannot reproduce fix wave 2's nesting bypass (a `{` anywhere, in this
+ * flat model, "counts" toward every later separator and close regardless of
+ * intervening nested `{`/`}`) or this fix wave's failed-close bypass (a
+ * `}` that doesn't yet satisfy the condition is simply not a match YET —
+ * scanning continues, exactly mirroring bash's own "keep looking" behaviour,
+ * without needing to model WHY bash keeps looking).
  *
- * A brace-group "counts" — this function returns `true` — the instant ANY
- * comma or `..` is seen DIRECTLY inside a currently-open pair (not inside a
- * further-nested child pair that hasn't closed yet), independent of what any
- * alternative actually contains and independent of how deep it is nested.
- * An unmatched `{` (no closing `}` anywhere after it) or unmatched `}` (no
- * open `{` before it) is inert — exactly like real bash, which never treats
- * an unterminated brace as expansion syntax.
+ * Provably O(token length): two booleans and one linear pass, no stack, no
+ * retry, no backtracking — nothing is ever re-scanned from an earlier
+ * position, so there is no quadratic shape here for even an adversarial
+ * input (a long run with no closing `}` at all) to exploit; it simply never
+ * reaches the `return true` and finishes the single pass.
  */
 function tokenHasBraceGroup(tok) {
-  let depth = 0;
-  // sawSeparator[d] — has the group currently open at depth d+1 seen a
-  // qualifying `,` or `..` directly inside it (not inside a still-open
-  // nested child)?
-  const sawSeparator = [];
+  let openSeen = false; // has an unquoted `{` occurred anywhere so far?
+  let sepSeen = false;  // has a qualifying `,`/`..` occurred anywhere since?
   let prevWasDot = false;
   for (let i = 0; i < tok.length; i++) {
     const ch = tok[i];
-    if (ch === '{') {
-      sawSeparator.push(false);
-      depth++;
-      prevWasDot = false;
-      continue;
-    }
+    if (ch === '{') { openSeen = true; prevWasDot = false; continue; }
+    if (!openSeen) { prevWasDot = false; continue; } // nothing to look for yet
     if (ch === '}') {
-      if (depth === 0) { prevWasDot = false; continue; } // unmatched close — inert
-      depth--;
-      if (sawSeparator.pop()) return true;
+      if (sepSeen) return true;
       prevWasDot = false;
-      continue;
+      continue; // a `}` with no separator seen yet is not (yet) a match — keep scanning, matching bash's own "extend past a failed close" behaviour
     }
-    if (depth === 0) { prevWasDot = false; continue; } // outside any brace — irrelevant
-    if (ch === ',') {
-      sawSeparator[depth - 1] = true;
-      prevWasDot = false;
-      continue;
-    }
+    if (ch === ',') { sepSeen = true; prevWasDot = false; continue; }
     if (ch === '.') {
-      if (prevWasDot) { sawSeparator[depth - 1] = true; prevWasDot = false; }
+      if (prevWasDot) { sepSeen = true; prevWasDot = false; }
       else prevWasDot = true;
       continue;
     }
