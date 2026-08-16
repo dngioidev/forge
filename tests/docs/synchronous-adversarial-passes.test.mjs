@@ -10,6 +10,16 @@ const executeAgentsSkillPath = join(repoRoot, 'plugin', 'skills', 'execute-agent
 const autopilotSkillPath = join(repoRoot, 'plugin', 'skills', 'autopilot', 'SKILL.md');
 
 describe('#475 — synchronous adversarial passes spike (follow-up to #464)', () => {
+  it('AC-475.1: the doc follows the house spike style — grounding methodology, numbered sections, an honest tradeoff, a stated recommendation', async () => {
+    const doc = await readFile(spikePath, 'utf8');
+    expect(doc).toMatch(/## Grounding methodology/);
+    expect(doc).toMatch(/## 1\. What "spawn-and-await" actually is/);
+    expect(doc).toMatch(/## 6\. Recommendation/);
+    expect(doc).toMatch(/## Sources/);
+    // grounded against real, checkable artifacts — not just the ticket's own framing
+    expect(doc).toMatch(/gh issue view.*gh pr view|verified against real repo state/i);
+  });
+
   it('AC-475.2: the doc weighs spawn-and-await\'s parallelism and context isolation honestly, not dismissively', async () => {
     const doc = await readFile(spikePath, 'utf8');
     expect(doc).toMatch(/## 2\. What spawn-and-await \(a\) buys/);
@@ -43,7 +53,7 @@ describe('#475 — synchronous adversarial passes spike (follow-up to #464)', ()
     expect(doc).toMatch(/false-relay bugs|false relays/i);
   });
 
-  it('AC-475.5: the recommendation is framed as a decision point with live options, not an autonomous verdict', async () => {
+  it('AC-475.5a: the recommendation is framed as a decision point with live options, not an autonomous verdict', async () => {
     const doc = await readFile(spikePath, 'utf8');
     expect(doc).toMatch(/## 6\. Recommendation/);
     expect(doc).toMatch(/decision for the human, not this ticket's to make unilaterally/i);
@@ -52,7 +62,7 @@ describe('#475 — synchronous adversarial passes spike (follow-up to #464)', ()
     expect(doc).toMatch(/3\. \*\*Hybrid/);
   });
 
-  it('AC-475.5: no delivery-contract file is claimed changed, and none is touched by this branch', async () => {
+  it('AC-475.5b: no delivery-contract file is claimed changed, and none is touched by this branch', async () => {
     const doc = await readFile(spikePath, 'utf8');
     expect(doc).toMatch(/no change to `forge:deliver`, `forge:execute-agents`, or the autopilot delivery brief/i);
     // the skill files themselves must be untouched by this diff — read as reference only
