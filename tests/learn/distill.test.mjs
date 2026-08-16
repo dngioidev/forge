@@ -235,6 +235,27 @@ describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () =>
     expect(guardTesting).toBe(false);
   });
 
+  // Seventh round (re-review): three more shapes of the same family, none
+  // needing a code fix — the sixth round's hedged proposal (see the
+  // AC-465.1/AC-465.2 test below) already covers them, so these pin the
+  // KNOWN LIMITATION documentation rather than assert new classifier
+  // behaviour. Listed so the next reader does not rediscover them from
+  // scratch.
+  it('seventh fix wave (KNOWN LIMITATION #3, disclosed not fixed): an ordinary un-chained multi-target command trips scratch-path on one argument while a second argument is genuinely destructive', () => {
+    const { guardTesting } = classifyBlockedEdit('rm -rf /tmp/foo /etc/important');
+    expect(guardTesting).toBe(true);
+  });
+
+  it('seventh fix wave (KNOWN LIMITATION #4, disclosed not fixed): a traversal via an INTERVENING path segment (not immediately after the marker) still classifies as scratch-path', () => {
+    const { guardTesting } = classifyBlockedEdit('rm -rf /tmp/foo/../../etc/passwd');
+    expect(guardTesting).toBe(true);
+  });
+
+  it('seventh fix wave (KNOWN LIMITATION #5, disclosed not fixed): denylist-harness markers have no traversal-escape guard, unlike scratch-path\'s', () => {
+    const { guardTesting } = classifyBlockedEdit('rm -rf plugin/hooks/../../../etc');
+    expect(guardTesting).toBe(true);
+  });
+
   it('AC-465.1: same rule, different classification -> two distinct clusters, not one', () => {
     const events = [
       ev('blocked-edit', { rule: 'force-push', cmd: HARNESS_CMD }),

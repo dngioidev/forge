@@ -62,6 +62,25 @@ export const ARCHIVE_DIR = join('.forge', 'journal-archive');
  * redesign of distill or an absorption of denylist mechanics) — tracked as a
  * disclosed, linked follow-up rather than silently dropped.
  *
+ * SEVENTH round (re-review) found three more shapes of the same family,
+ * simpler than 1-2 above — no chaining or nesting needed at all:
+ *   3. A single, ordinary multi-target `rm -rf /tmp/foo /etc/important`
+ *      trips `scratch-path` on ITS OWN first argument while a second,
+ *      unrelated argument is genuinely destructive — no adversarial
+ *      technique, just plain argv.
+ *   4. `scratchEscape` only rejects a `..` segment IMMEDIATELY following a
+ *      scratch marker; a traversal via an intervening segment
+ *      (`/tmp/foo/../../etc/passwd`) still reads as scratch-path.
+ *   5. The `denylist-harness` markers (`plugin/hooks/` etc.) have no
+ *      traversal-escape guard at all — the class case 4 already covers for
+ *      `scratch-path` was never applied to this sibling discriminator.
+ * None of the three needed a code fix: the sixth round's hedge (see
+ * `proposalFor()`) already covers them — a `guardTesting: true` verdict is a
+ * hypothesis with the excerpt printed alongside it, never a claim of
+ * certainty, regardless of which of these five shapes (or a still-undiscovered
+ * sixth) produced it. Listed here so the next reader does not rediscover them
+ * from scratch, not because the report's own invariant depends on closing them.
+ *
  * SIXTH round (two more adversarial passes, one each from forge:reviewer and
  * forge:security) found further instances of this same class —
  * `stripComment()` itself is quote-blind (a `#` inside an executed quoted
