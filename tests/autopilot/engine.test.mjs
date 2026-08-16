@@ -13,7 +13,7 @@ import {
   applyBudgetReading, recentBudgetDeltas, recordBudgetReading, MAX_BUDGET_READINGS,
 } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
-import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
+import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME, matchHeldVerdicts } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
@@ -1001,6 +1001,123 @@ describe('autopilot watchdog — malformed/absent report, unrecoverable (no PR) 
       expect(dec.pr).toBeNull();
       expect(dec.action).not.toBe('continue');
     });
+  });
+});
+
+describe('autopilot watchdog — matchHeldVerdicts: relay a held verdict to a stalled subagent (#474, epic #183)', () => {
+  // #464's own #460 example, and this run's #469/#472, all stalled BEFORE a PR existed — exactly
+  // resolveReturnedTicket's no-PR branch, which #522 deliberately hard-escalates (its concern is a
+  // BLIND RESPAWN of a fresh subagent onto an unobservable working tree). SendMessage is a different
+  // mechanism — it resumes the SAME already-running subagent from its own transcript — so a confident
+  // match between "what the report says it's waiting on" and "verdicts the loop already holds" can act
+  // ahead of, and independent of, resolveReturnedTicket's pr-based branch, without ever weakening #522's
+  // escalate-on-ambiguity default. matchHeldVerdicts is that pure match step; it never calls
+  // resolveReturnedTicket and resolveReturnedTicket is never modified by this ticket (regression-pinned
+  // by the two describe blocks above staying green, untouched).
+
+  it('AC-474.1/AC-474.3 / #460 shape: a report implying BOTH verdicts, with both held for the same issue, relays both', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 460, outcome: "I'm waiting on both re-review verdicts for the final tip." },
+      [
+        { issue: 460, role: 'reviewer', verdict: 'pass', summary: 'reviewer: pass, zero findings' },
+        { issue: 460, role: 'security', verdict: 'pass', summary: 'security: pass, zero findings' },
+      ],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts).toHaveLength(2);
+    expect(dec.verdicts.map((v) => v.role).sort()).toEqual(['reviewer', 'security']);
+    expect(dec.reason).toMatch(/relay|held/i);
+  });
+
+  it('AC-474.1/AC-474.3 / #469 shape (verbatim): reviewer resolved inline, only security named as outstanding, only security held — relays just security', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 469, outcome: "Reviewer passed clean. Now waiting for the security agent's completion notification before proceeding to ship." },
+      [{ issue: 469, role: 'security', verdict: 'pass', summary: 'security: pass, zero findings' }],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts).toHaveLength(1);
+    expect(dec.verdicts[0].role).toBe('security');
+  });
+
+  it('AC-474.1/AC-474.3 / #472 shape (verbatim): no role individually named, "both agents" implied, both held — relays both', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 472, outcome: "I'll wait for the notification when both agents finish; no further action needed from me right now." },
+      [
+        { issue: 472, role: 'reviewer', verdict: 'pass', summary: 'reviewer: pass' },
+        { issue: 472, role: 'security', verdict: 'pass', summary: 'security: pass, zero findings; non-blocking note on an uncommitted comment fix' },
+      ],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts.map((v) => v.role).sort()).toEqual(['reviewer', 'security']);
+  });
+
+  it('AC-474.2: no held verdicts at all — defers, never guesses', () => {
+    const dec = matchHeldVerdicts({ issue: 469, outcome: 'Waiting for the security agent to finish.' }, []);
+    expect(dec.action).toBe('defer');
+    expect(dec.action).not.toBe('relay');
+    expect(dec.reason).toMatch(/no held verdict|none held/i);
+  });
+
+  it('AC-474.2: "both" named but only ONE role held — partial match still defers, never a partial relay', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 472, outcome: "I'll wait for the notification when both agents finish." },
+      [{ issue: 472, role: 'reviewer', verdict: 'pass' }],
+    );
+    expect(dec.action).toBe('defer');
+    expect(dec.reason).toMatch(/security/i);
+  });
+
+  it('AC-474.2: held verdict exists but for a DIFFERENT issue — never cross-wires tickets', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 469, outcome: "Waiting for the security agent's completion notification." },
+      [{ issue: 999, role: 'security', verdict: 'pass' }],
+    );
+    expect(dec.action).toBe('defer');
+  });
+
+  it('AC-474.2: free text names no recognisable role — cannot match, defers', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 517, outcome: 'Still waiting on the full verify suite to finish.' },
+      [
+        { issue: 517, role: 'reviewer', verdict: 'pass' },
+        { issue: 517, role: 'security', verdict: 'pass' },
+      ],
+    );
+    expect(dec.action).toBe('defer');
+  });
+
+  it('AC-474.2: an already-resolved outcome defers immediately, without even inspecting held verdicts', () => {
+    const resolved = matchHeldVerdicts({ issue: 1, outcome: 'merged' }, [{ issue: 1, role: 'security', verdict: 'fail' }]);
+    expect(resolved.action).toBe('defer');
+    // every RESOLVED_OUTCOMES value defers the same way
+    for (const outcome of RESOLVED_OUTCOMES) {
+      expect(matchHeldVerdicts({ issue: 1, outcome }, []).action).toBe('defer');
+    }
+  });
+
+  it('AC-474.2: the awaiting-merge sentinel defers untouched — resolveReturnedTicket alone handles it', () => {
+    const dec = matchHeldVerdicts({ issue: 1, outcome: STALL_OUTCOME }, [{ issue: 1, role: 'reviewer', verdict: 'pass' }]);
+    expect(dec.action).toBe('defer');
+  });
+
+  it('AC-474.4: matchHeldVerdicts stays pure — same input always yields the same output, no IO', () => {
+    const report = { issue: 472, outcome: "I'll wait for the notification when both agents finish." };
+    const held = [
+      { issue: 472, role: 'reviewer', verdict: 'pass' },
+      { issue: 472, role: 'security', verdict: 'pass' },
+    ];
+    const a = matchHeldVerdicts(report, held);
+    const b = matchHeldVerdicts({ ...report }, held.map((v) => ({ ...v })));
+    expect(a).toEqual(b);
+  });
+
+  it('AC-474.4: a matched security-only verdict that FAILED is still relayed (relay is agnostic to pass/fail — the subagent needs to know either way)', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 469, outcome: "Waiting for the security agent's completion notification." },
+      [{ issue: 469, role: 'security', verdict: 'fail', summary: 'security: 1 critical finding' }],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts[0].verdict).toBe('fail');
   });
 });
 

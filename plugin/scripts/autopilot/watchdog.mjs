@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * autopilot return-then-resume watchdog (#319, #464, #522, epic #183).
+ * autopilot return-then-resume watchdog (#319, #464, #474, #522, epic #183).
  *
- * Three distinct stalls share the same root cause — a subagent RETURNS
+ * Four distinct stalls share the same root cause — a subagent RETURNS
  * instead of resolving to a real terminal state, discarding the context that
  * would have let it finish, and nothing re-invokes it:
  *
@@ -34,6 +34,30 @@
  *    recorded, and gated on a human/orchestrator actually looking at
  *    `git status`/`git log` before anything touches the tree again — never a
  *    silent auto-retry.
+ * 4. **Relay a held verdict, automatically (#474).** Shapes 2 and 3 above are
+ *    both non-conforming reports that RESOLVE mechanically once classified —
+ *    but six real instances (#429, #437, #446, #460, and this run's #469,
+ *    #472) share something more specific: the report names what it's
+ *    waiting on (a reviewer/security verdict), and the orchestrator is
+ *    ALREADY HOLDING that exact verdict, received as a task notification
+ *    from the nested review subagent while the delivery subagent was still
+ *    running. Manual recovery in every one of those six cases was the same
+ *    move — relay the held verdict(s) back via `SendMessage`, which resumes
+ *    the SAME already-running subagent from its own transcript (context
+ *    intact), not a fresh subagent placed onto a shared tree. That
+ *    distinction matters against shape 3's fail-closed default: #469 and
+ *    #472 both stalled with NO PR open yet — exactly the branch shape 3
+ *    hard-escalates, because a *blind respawn* there risks clobbering an
+ *    unobserved working tree. A `SendMessage` relay carries no such risk —
+ *    it never touches the tree, never spawns anything new — so it is safe
+ *    to attempt ahead of, and independent of, `resolveReturnedTicket`'s
+ *    pr-based branch, PROVIDED the match is confident. `matchHeldVerdicts`
+ *    (below) is that match: pure, narrow, and safe-by-default — any
+ *    ambiguity defers straight through to shapes 2/3 unchanged, never
+ *    weakening #522's escalate-on-no-PR invariant for the genuinely
+ *    unmatched case. It is a separate function that runs BEFORE
+ *    `resolveReturnedTicket`, not a branch inside it — `resolveReturnedTicket`
+ *    itself is untouched by #474 (regression-pinned).
  *
  * Before #464, shapes 2 and 3 both fell through the same
  * `outcome !== STALL_OUTCOME` branch as an already-resolved report, silently
@@ -106,6 +130,115 @@ export const RESOLVED_OUTCOMES = ['merged', 'escalated', 'awaiting-human', 'skip
  * carries it) — never a silent `continue`/`outcome: null`.
  */
 export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
+
+/**
+ * Narrow, word-boundary parse of which review role(s) a free-text report
+ * names as outstanding — deliberately NOT a fuzzy/NLP match (AC.2's "never
+ * guess" is the load-bearing rule for #474). Only text inside a clause that
+ * itself contains a wait/await keyword counts, so a report that RESOLVES one
+ * role inline ("Reviewer passed clean.") and only awaits the other in a
+ * separate clause ("waiting for the security agent...") correctly yields
+ * just the awaited one (#469's shape) — not both merely because both words
+ * appear somewhere in the report.
+ *
+ * @param {string} text the report's free-text `outcome`.
+ * @returns {Array<'reviewer'|'security'>} sorted, deduplicated awaited roles (possibly empty).
+ */
+function parseAwaitedRoles(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
+  const WAIT_RE = /\b(?:wait(?:ing)?|await(?:ing)?)\b/i;
+  const BOTH_RE = /\bboth\b/i;
+  const SECURITY_RE = /\bsecurity\b/i;
+  const REVIEWER_RE = /\breview(?:er)?\b/i;
+  const roles = new Set();
+  for (const segment of text.split(/[.!?;]/)) {
+    if (!WAIT_RE.test(segment)) continue; // this clause isn't a "waiting on" clause at all
+    if (BOTH_RE.test(segment)) {
+      roles.add('reviewer');
+      roles.add('security');
+      continue;
+    }
+    if (SECURITY_RE.test(segment)) roles.add('security');
+    if (REVIEWER_RE.test(segment)) roles.add('reviewer');
+  }
+  return [...roles].sort();
+}
+
+/**
+ * #474: match a non-conforming terminal report's free text against review
+ * verdicts the loop is ALREADY HOLDING (task notifications from nested
+ * `forge:reviewer`/`forge:security` subagents that arrived at the main loop
+ * while the delivery subagent was still running — see shape 4 in the
+ * file-level comment). Runs BEFORE `resolveReturnedTicket`, not inside it —
+ * `resolveReturnedTicket` is untouched by #474, and this function never
+ * calls it. On a full, confident match, the caller relays the matched
+ * verdict(s) via `SendMessage` (the IO side — never performed here) to
+ * resume the SAME already-running subagent from its own transcript, which
+ * is why this is safe to attempt independent of whether a PR exists yet
+ * (unlike a blind respawn, #522's concern — see the file-level comment).
+ *
+ * PURE — no IO, no randomness; `heldVerdicts` is entirely caller-observed
+ * state (never parsed out of the report's own text), same trust-boundary
+ * discipline `resolveReturnedTicket`'s own JSDoc documents for its
+ * `pr`/`ciGreen`/`mergeMode` params.
+ *
+ * @param {object} report
+ * @param {number} [report.issue]   the ticket this report belongs to.
+ * @param {string} [report.outcome] the subagent's returned (possibly non-conforming) outcome text.
+ * @param {Array<{issue:number, role:('reviewer'|'security'), verdict:string, summary?:string}>} [heldVerdicts]
+ *   verdicts the loop already holds this run, from task notifications — caller-assembled, not fetched here.
+ * @returns {{ action:'relay'|'defer', verdicts:Array<object>, reason:string }}
+ *   `relay` → the caller should `SendMessage` `verdicts` to the stalled subagent and await its next report;
+ *             ONLY the roles the text actually names, never every held verdict for the issue.
+ *   `defer` → no confident match (AC.2 — never guessed); the caller falls straight through to
+ *             `resolveReturnedTicket`'s existing, unmodified respawn/escalate classification.
+ */
+export function matchHeldVerdicts({ issue, outcome } = {}, heldVerdicts = []) {
+  // A report that already conforms to a resolved outcome or the awaiting-merge sentinel is
+  // resolveReturnedTicket's job alone — never even inspect heldVerdicts for it (#474 must not
+  // second-guess an already-classifiable report).
+  if (outcome === STALL_OUTCOME || RESOLVED_OUTCOMES.includes(outcome)) {
+    return {
+      action: 'defer',
+      verdicts: [],
+      reason: `outcome '${outcome}' is already a resolved/awaiting-merge state — resolveReturnedTicket handles it, no match attempted`,
+    };
+  }
+
+  const awaitedRoles = parseAwaitedRoles(outcome);
+  if (awaitedRoles.length === 0) {
+    return {
+      action: 'defer',
+      verdicts: [],
+      reason: 'no recognisable awaited role (security/reviewer) named in the report text — cannot match, falling through to the resume/escalate path',
+    };
+  }
+
+  const issueVerdicts = (Array.isArray(heldVerdicts) ? heldVerdicts : []).filter((v) => v && v.issue === issue);
+  const matched = [];
+  const missing = [];
+  for (const role of awaitedRoles) {
+    const held = issueVerdicts.find((v) => v && v.role === role);
+    if (held) matched.push(held);
+    else missing.push(role);
+  }
+
+  if (missing.length > 0) {
+    return {
+      action: 'defer',
+      verdicts: [],
+      reason: issueVerdicts.length === 0
+        ? `no held verdicts for issue #${issue} — the report names ${awaitedRoles.join('/')} as outstanding, none held; falling through to the resume/escalate path`
+        : `missing held verdict(s) for: ${missing.join(', ')} — the report names ${awaitedRoles.join('/')} but only ${matched.map((v) => v.role).join(', ') || 'none'} of that is held; never a partial relay`,
+    };
+  }
+
+  return {
+    action: 'relay',
+    verdicts: matched,
+    reason: `report names ${awaitedRoles.join('/')} as outstanding and the loop already holds ${matched.length > 1 ? 'all of those verdicts' : 'that verdict'} for issue #${issue} — relay via SendMessage and resume the same subagent rather than surfacing the stall`,
+  };
+}
 
 /**
  * Resolve a delivery subagent's terminal report into a loop action.
@@ -243,9 +376,31 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(proc
 if (isMain) {
   const argv = process.argv.slice(2);
   const val = (flag) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
+  const issueRaw = val('--issue');
+  const issue = issueRaw != null ? Number(issueRaw) : null;
+  const outcome = val('--outcome');
+  const heldRaw = val('--held');
+  // #474: when the caller passes --held (a JSON array of {issue, role, verdict, summary?}), try the
+  // relay match FIRST — same ordering as the orchestrator's own composition (§ Return-then-resume
+  // watchdog): a match short-circuits before resolveReturnedTicket is even consulted.
+  if (heldRaw != null) {
+    let heldVerdicts;
+    try {
+      heldVerdicts = JSON.parse(heldRaw);
+    } catch {
+      console.error(`watchdog: --held is not valid JSON: ${heldRaw}`);
+      process.exit(1);
+    }
+    const match = matchHeldVerdicts({ issue, outcome }, heldVerdicts);
+    if (match.action === 'relay') {
+      console.log(`watchdog: relay (issue #${issue}, ${match.verdicts.length} verdict(s)) — ${match.reason}`);
+      process.exit(5); // #474 — distinct from continue(0)/escalate(3)/respawn(4)
+    }
+    // action === 'defer': fall through to resolveReturnedTicket below, unchanged.
+  }
   const prRaw = val('--pr');
   const dec = resolveReturnedTicket({
-    outcome: val('--outcome'),
+    outcome,
     pr: prRaw != null ? Number(prRaw) : null,
     ciGreen: argv.includes('--ci-green'),
     mergeMode: val('--mode') ?? null,
