@@ -1159,6 +1159,28 @@ describe('autopilot watchdog — matchHeldVerdicts: relay a held verdict to a st
     });
   });
 
+  describe('AC-474.2 fix-wave round 2: completion/mootness phrasing ("the wait is over") — forge:security reproduced 8 false relays against round-1 code', () => {
+    // Round 1's NEGATION_RE only covered grammatical negation (not/n't/no need/...). forge:security's
+    // second pass found the wait itself can be described as CONCLUDED without any grammatical negation
+    // at all — "the wait is over", "done waiting", "nothing left to wait for", etc. — and round 1's
+    // parser still relayed on every one of these. Each string below is verbatim from that finding.
+    const held = (issue, role) => [{ issue, role, verdict: 'pass' }];
+
+    it.each([
+      [21, "Waiting is unnecessary for the security agent's sign-off at this point; already resolved via Slack.", 'security'],
+      [22, "The wait on the security agent's clearance is over.", 'security'],
+      [23, "We are done waiting on the reviewer's sign-off, it already came through separately.", 'reviewer'],
+      [24, "Formerly waiting on the reviewer's confirmation, but that's moot now since it was handled out of band.", 'reviewer'],
+      [25, "There is nothing left to wait for regarding the security agent's clearance.", 'security'],
+      [26, "Stopped waiting on the reviewer's confirmation once it was clear the PR was closed.", 'reviewer'],
+      [27, 'Used to be waiting on the security agent\'s clearance, however that requirement was waived.', 'security'],
+      [28, "Hardly waiting on the reviewer's sign-off anymore since it's essentially done.", 'reviewer'],
+    ])('issue #%i: %s → defers (never a false relay for a concluded/moot wait)', (issue, outcome, role) => {
+      const dec = matchHeldVerdicts({ issue, outcome }, held(issue, role));
+      expect(dec.action, outcome).toBe('defer');
+    });
+  });
+
   it('AC-474.4: matchHeldVerdicts stays pure — same input always yields the same output, no IO', () => {
     const report = { issue: 472, outcome: "I'll wait for the notification when both agents finish." };
     const held = [

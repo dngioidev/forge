@@ -145,8 +145,45 @@ resolved/`awaiting-merge` outcome) — corrected to match.
 
 Six new regression tests pin every adversarial phrasing found (a fix-wave
 `describe` block in `tests/autopilot/engine.test.mjs`, titled `AC-474.2
-fix-wave`). Both `forge:reviewer` and `forge:security` were re-run after
-these fixes (not merely re-read) and returned clean.
+fix-wave`).
+
+### Round 2: forge:security found the negation word-list was itself incomplete
+
+Re-running both adversarial passes against the round-1 fix: `forge:reviewer`
+confirmed all three of its own round-1 repros now correctly `defer`, probed
+several new adversarial phrasings of its own, and returned `verdict: pass`
+with zero findings. `forge:security` confirmed its own three round-1 repros
+were fixed and the CLI/issue-filtering surface was safe, but found a genuine
+new gap: round 1's `NEGATION_RE` only covered grammatical negation
+(`not`/`n't`/`no need`/…) — it does not cover a wait described as
+CONCLUDED without any grammatical negation at all. Reproduced live against
+the actual CLI (`node watchdog.mjs --held ...`, exit code 5 = relay) with
+eight plausible strings: *"The wait on the security agent's clearance is
+over."* / *"We are done waiting on the reviewer's sign-off…"* / *"…that's
+moot now…"* / *"There is nothing left to wait for…"* / *"Stopped waiting
+on…"* / *"Used to be waiting on…however that requirement was waived."* /
+*"Hardly waiting on…anymore since it's essentially done."* / *"Waiting is
+unnecessary for…"* — every one incorrectly relayed.
+
+Fixed by widening `NEGATION_RE` to also cover completion/mootness cues
+(`done`/`over`/`unnecessary`/`moot`/`nothing left`/`stopped`/`used to`/
+`formerly`/`waived`/`concluded`/`hardly`) alongside the round-1 grammatical
+ones — closing all eight repro strings (pinned verbatim as a new `AC-474.2
+fix-wave round 2` describe block, 8 more regression tests). This is
+explicitly documented as a curated cue-word list, not a semantic negation
+parser — it cannot be exhaustive against arbitrary free text, and the code's
+own JSDoc now carries an "Honest limit" paragraph (matching this codebase's
+established precedent, e.g. #465's hedged-not-certain framing, #505's
+"Honest limit" section) naming the residual risk and why it's bounded rather
+than eliminated: `outcome` is a delivery subagent's own cooperative
+narration, not adversarial human-crafted input, and a wrong relay's blast
+radius is small — it only resumes the SAME already-running subagent with a
+verdict message for it to reason about in context, and every downstream gate
+(adversarial review, the merge bar) independently re-verifies everything
+regardless of what this heuristic decided.
+
+Both `forge:reviewer` and `forge:security` re-run a third time against this
+round-2 fix; see the PR body for the final verdicts.
 
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 

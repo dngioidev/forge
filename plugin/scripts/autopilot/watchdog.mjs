@@ -144,13 +144,29 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
  * Fix-wave hardening (#474, adversarial `forge:reviewer` + `forge:security`
  * both independently reproduced the same class of false relay against
  * ordinary, non-adversarial phrasing — see the plan doc's Fix wave
- * section):
- *   - **A negated clause is never extracted from** ("Not waiting on the
- *     reviewer, just security." / "No need to wait on the security or
- *     reviewer sign-off anymore…") — a `not`/`no need`/`n't`-style cue
+ * section, round 2):
+ *   - **A negated OR already-concluded clause is never extracted from** —
+ *     a grammatical negation ("Not waiting on the reviewer, just security."
+ *     / "No need to wait…") OR a completion/mootness cue ("The wait…is
+ *     over." / "done waiting" / "nothing left to wait for" / "used to be
+ *     waiting" / "that's moot now" / "hardly…anymore" / a wait "waived") —
  *     anywhere in the same clause as the wait keyword makes the WHOLE
  *     clause untrustworthy, so it contributes no roles at all rather than
- *     risk reading a disclaimed role as awaited.
+ *     risk reading a disclaimed or already-resolved role as still awaited.
+ *     **Honest limit:** this is a curated cue-word list, not a semantic
+ *     negation parser — it cannot be exhaustive against arbitrary free
+ *     text (a #474 fix-wave round 2 finding: the round-1 list, covering
+ *     only grammatical negation, missed "the wait is over"-style
+ *     completion phrasing). The residual risk is bounded, not eliminated:
+ *     (a) `outcome` is a delivery subagent's own cooperative narration, not
+ *     adversarial human-crafted input; (b) a wrong relay's blast radius is
+ *     small — it only resumes the SAME already-running subagent with a
+ *     verdict message for it to reason about in its own context, and every
+ *     downstream gate (adversarial review, the merge bar) independently
+ *     re-verifies everything regardless. AC.2's "never guess" is honored
+ *     as best-effort-with-a-documented-ceiling, not as a claim of
+ *     completeness — matching this codebase's established precedent for
+ *     free-text heuristics (see #465's own hedged-not-certain framing).
  *   - **`reviewer` requires the full word, never bare `review`** — "review"
  *     alone collides with too many unrelated, plausible phrases ("security
  *     review", "code review", "review the deployment logs") to be a safe
@@ -167,7 +183,10 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
 function parseAwaitedRoles(text) {
   if (typeof text !== 'string' || !text.trim()) return [];
   const WAIT_RE = /\b(?:wait(?:ing)?|await(?:ing)?)\b/i;
-  const NEGATION_RE = /\b(?:not|n't|never|no\s+(?:need|longer)|isn't|aren't|doesn't|didn't|won't)\b/i;
+  // Grammatical negation (round 1) + completion/mootness cues (round 2 fix-wave finding — see JSDoc
+  // "Honest limit" above): either kind anywhere in the clause disqualifies the whole clause.
+  const NEGATION_RE =
+    /\b(?:not|n't|never|no\s+(?:need|longer)|isn't|aren't|doesn't|didn't|won't|done|over|unnecessary|moot|nothing\s+left|stopped|used\s+to|formerly|waived|concluded|hardly)\b/i;
   const BOTH_RE = /\bboth\b/i;
   const SECURITY_RE = /\bsecurity\b/i;
   const SECURITY_ANCHOR_RE = /\b(?:agent|verdict|check|pass|notification|confirmation|clear(?:ance)?|sign-?off|review(?:er)?|result|hold)\b/i;
