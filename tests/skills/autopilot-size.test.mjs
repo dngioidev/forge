@@ -73,6 +73,13 @@ describe('forge:autopilot skill size (#467)', () => {
     expect(monitorRef).toMatch(/where it runs the full gate pipeline again/);
     expect(monitorRef).toMatch(/mirroring `ci-watch\.mjs`'s `writeCiWatchState` never-fail-the-caller contract/);
     expect(monitorRef).toMatch(/Staleness keys on `lastArtifactAt`/);
+    // #467 reviewer round 2 found a fourth dropped clause (SKILL.md's AC.5
+    // paragraph trimmed two explanatory clauses with nowhere to land) —
+    // restored verbatim inline (this one stayed inline, not relocated).
+    expect(skill).toMatch(/there is no report for a subagent that never returned, so there is nothing here for the watchdog to consume/);
+    expect(skill).toMatch(/The `forge-agents` line is exactly what it says: a notice surfaced to the \(blocked\) main loop while the spawn is still in flight/);
+    // the "Honest limit" bold lead-in itself, dropped when converted to a heading
+    expect(monitorRef).toMatch(/\*\*Honest limit — the cooperation dependency, not quietly shipped\.\*\*/);
   });
 
   it('AC-467.4: every tests/skills/autopilot.test.mjs assertion still targets content actually present in SKILL.md', async () => {
