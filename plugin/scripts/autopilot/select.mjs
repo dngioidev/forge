@@ -11,6 +11,7 @@ import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { isShaped } from './readiness.mjs';
 import { pendingDecisions } from '../lib/situation.mjs';
+import { WORK_TYPES } from '../lib/ticket.mjs';
 
 // Tier: lower runs first. Resume-in-flight beats fresh work; ready beats backlog.
 // Exported (#504): the env preflight's board-status-keys probe compares the
@@ -90,15 +91,47 @@ export function actionableQueue(tickets, opts = {}) {
   return ranked;
 }
 
+// #526: the WORK_TYPES prefix among the two kinds ratebudget.mjs's KIND_COST_ESTIMATES has
+// measured evidence for. `estimateTicketCost` only knows a real per-kind number for docs/spike
+// tickets (#462, #448) — every other real ticket-type prefix (feat/fix/chore/refactor/test/
+// perf/hotfix) still falls through to the existing recentDeltas-based estimate untouched, so
+// ticketKind deliberately does not surface them even though the regex below is built from the
+// full WORK_TYPES vocabulary (reusing lib/ticket.mjs's branch-naming prefix list instead of
+// re-inventing a parallel one, so a scoped/case-varied prefix like "spike(auth):" or "DOCS:" is
+// recognized the same way a branch name would be).
+const COST_KNOWN_KINDS = ['docs', 'spike'];
+// Leading `<type>:` / `<type>(scope):` only — a trailing marker like "(spike)" with no leading
+// prefix must never read as cheap (no false-cheap positives feeding the rate-budget gate), so
+// the match is anchored to the start of the title. Requires exactly one space after the colon
+// (the `(?!\s)` blocks a second space) to match real commit/branch-style titles, not "docs:  x".
+const KIND_PREFIX_RE = new RegExp(`^(${WORK_TYPES.join('|')})(\\([^)]*\\))?: (?!\\s)`, 'i');
+
+/**
+ * Classify a ticket title by its leading `<type>:`/`<type>(scope):` prefix (#526), case-
+ * insensitive. Returns the lowercase matched type when it's one of `COST_KNOWN_KINDS`
+ * (docs/spike — the only kinds `ratebudget.mjs`'s `estimateTicketCost` has a measured per-kind
+ * cost for), else `null`. Never throws on a malformed `title` (non-string, `null`, `undefined`,
+ * an object) — returns `null` instead, mirroring `parseBranch`'s fail-to-unknown contract.
+ */
+export function ticketKind(title) {
+  if (typeof title !== 'string') return null;
+  const m = KIND_PREFIX_RE.exec(title);
+  if (!m) return null;
+  const type = m[1].toLowerCase();
+  return COST_KNOWN_KINDS.includes(type) ? type : null;
+}
+
 /** Map a raw board item (gh project item-list) to the normalized shape. */
 export function normalize(ctx, item) {
+  const title = item.content?.title ?? item.title ?? '';
   return {
     number: item.content?.number ?? null,
-    title: item.content?.title ?? item.title ?? '',
+    title,
     status: ctx.itemFieldKey(item, 'status'),
     priority: ctx.itemFieldKey(item, 'priority'),
     type: ctx.itemFieldKey(item, 'type'),
     area: ctx.itemFieldKey(item, 'area'), // #146: null when the board has no Area field
+    kind: ticketKind(title), // #526: feeds estimateTicketCost's per-kind rate-budget estimate
   };
 }
 

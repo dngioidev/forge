@@ -287,6 +287,51 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/working[- ]tree/i);
   });
 
+  it("AC-526.5: § The loop reorders the periodic rate-budget recheck to after selection, threading the selected ticket's kind", async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    const loopStart = s.indexOf('## The loop');
+    const loopEnd = s.indexOf('## Orchestration');
+    expect(loopStart, '§ The loop heading not found').toBeGreaterThan(-1);
+    expect(loopEnd, '§ Orchestration heading not found').toBeGreaterThan(loopStart);
+    const loop = s.slice(loopStart, loopEnd);
+
+    const selectIdx = loop.search(/select next actionable ticket/i);
+    const rekindedRecheckIdx = loop.search(/evaluateRateBudget\(gh,\s*\{[^}]*kind[^}]*\}\)/);
+    expect(selectIdx, 'select-next-ticket line missing from § The loop').toBeGreaterThan(-1);
+    expect(
+      rekindedRecheckIdx,
+      'periodic evaluateRateBudget recheck threading `kind` not found in § The loop'
+    ).toBeGreaterThan(-1);
+    expect(
+      rekindedRecheckIdx,
+      "the periodic rate-budget recheck must appear AFTER 'select next actionable ticket', not before"
+    ).toBeGreaterThan(selectIdx);
+  });
+
+  it('AC-526.5: § Rate-budget preflight documents the per-kind estimate and the unattributed-drain floor', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    const secStart = s.indexOf('## Rate-budget preflight');
+    const secEnd = s.indexOf('## Environment preflight');
+    expect(secStart, '§ Rate-budget preflight heading not found').toBeGreaterThan(-1);
+    expect(secEnd, '§ Environment preflight heading not found').toBeGreaterThan(secStart);
+    const section = s.slice(secStart, secEnd);
+    expect(section).toMatch(/KIND_COST_ESTIMATES/);
+    expect(section).toMatch(/UNATTRIBUTED_DRAIN_FLOOR/);
+    expect(section).toMatch(/ticketKind|selected ticket'?s kind|next selected ticket/i);
+  });
+
+  it('AC-526.5: § Stop conditions no longer claims the rate-budget recheck fires at the SAME iteration-top boundary as selection', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).not.toMatch(/At the SAME iteration-top boundary, also call/);
+  });
+
+  it("AC-526.5: reference/driver-scripts.md documents the kind-aware estimateTicketCost/evaluateRateBudget signatures and select.mjs's ticketKind export", async () => {
+    const d = await read('plugin/skills/autopilot/reference/driver-scripts.md');
+    expect(d).toMatch(/estimateTicketCost\(recentDeltas,\s*kind,\s*fallback/);
+    expect(d).toMatch(/evaluateRateBudget\(gh,\s*\{lowWater,\s*recentDeltas,\s*kind\}\)/);
+    expect(d).toMatch(/ticketKind/);
+  });
+
   it('AC-505.5: § Monitor notifications documents forge-agents — detection only, never wired to resolveReturnedTicket', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     expect(s).toMatch(/forge-agents/);

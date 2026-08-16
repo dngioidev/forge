@@ -6,7 +6,7 @@
  * Hotfix:         hotfix/<issue#>-<slug>  (incident-exempt in situation gating)
  * Environment branches come from deploy.environments; main is main.
  */
-const WORK_TYPES = ['feat', 'fix', 'chore', 'docs', 'refactor', 'test', 'perf', 'spike', 'hotfix'];
+export const WORK_TYPES = ['feat', 'fix', 'chore', 'docs', 'refactor', 'test', 'perf', 'spike', 'hotfix'];
 // slug = alnum runs joined by single hyphens, so `--` can never be part of a
 // slug and always delimits the agent-child role suffix
 const BRANCH_RE = new RegExp(`^(${WORK_TYPES.join('|')})/(\\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)(?:--([a-z][a-z-]*))?$`);
