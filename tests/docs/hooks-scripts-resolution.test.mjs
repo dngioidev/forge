@@ -72,6 +72,17 @@ describe('#519 — hooks/scripts working-tree-vs-cache resolution spike (for #48
     expect(doc).toMatch(/What would still need to happen/);
   });
 
+  it('AC-519.4: the substantive per-surface advice is pinned, not just the recommendation section\'s framing', async () => {
+    const doc = await readFile(spikePath, 'utf8');
+    // hooks: adopt the additive project-level-hooks mechanism (d)
+    expect(doc).toMatch(/For `hooks\/\*\*`:\*\* adopt \(d\)/);
+    // scripts: no mechanism beats a documented working-tree-path convention
+    expect(doc).toMatch(/For `scripts\/\*\*`:\*\* no mechanism tested here achieves live resolution without a real cost/);
+    expect(doc).toMatch(/documented convention\*\*, not a mechanism change/);
+    // option 1's two originally-named mechanisms are explicitly closed, not left open
+    expect(doc).toMatch(/should be considered closed, not open/);
+  });
+
   it('the spike doc and its plan are linked from the docs route index', async () => {
     const index = await readFile(routeIndexPath, 'utf8');
     expect(index).toContain('spikes/2026-08-16-hooks-scripts-resolution.md');
