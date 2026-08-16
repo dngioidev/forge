@@ -77,27 +77,49 @@ export function budgetPauseNotice(budget) {
 }
 
 /**
+ * Security fix-wave (#517): the minimum delta treated as real evidence of what a ticket costs,
+ * rather than idle-window noise or a corrupted/hand-edited `run.json`. `run.rateBudgetReadings`
+ * is disk state — the same trust boundary `ledger.mjs`'s `sanitizePositiveInt`/`sanitizeIterations`
+ * already fail-closed against (#488) — and a history of near-flat consecutive readings (e.g.
+ * `[5000,4999,4998,4997,4996,4995]`, deltas of 1) is indistinguishable in shape from a genuine
+ * check-to-check gap where nothing was actually delivered. Without a floor, `estimateTicketCost`
+ * would happily derive a ~1-point low-water threshold from either case, which silently disables
+ * the pause guard (`low = remaining <= lowWater` never true until the bucket is essentially
+ * already gone) — the exact failure #407/#517 exist to prevent. Set below the lowest ever-measured
+ * REAL per-ticket cost (~975, #517 correction comment) with margin, so a genuinely cheap ticket's
+ * delta still counts as evidence (AC-517.3b) while noise/corruption cannot.
+ */
+export const MIN_PLAUSIBLE_DELTA = 500;
+
+/**
  * Derives the low-water threshold for THIS check from THIS run's own recent
  * GraphQL-remaining deltas rather than a flat constant (#517). Real
  * per-ticket cost varies ~5x by ticket kind, so no single number protects a
  * ticket boundary without either idling a usable bucket (too conservative)
  * or starting a ticket it can't finish (too optimistic).
  *
- * Uses the MAX of the valid (finite, positive) deltas, not an average: the
- * question being answered is "does 'continue' guarantee THIS ticket can
- * complete," which demands the conservative reading of recent evidence, not
- * the typical one. A delta is measured between two actual `remaining`
- * readings — whatever consumed the bucket in between, delivery or
- * otherwise — so taking the max means any unattributed background drain
- * observed in a recent window automatically raises the bar for the next
- * check, without needing to know its cause (#517 correction comment).
+ * Uses the MAX of the valid (finite, plausible — see `MIN_PLAUSIBLE_DELTA`)
+ * deltas, not an average: the question being answered is "does 'continue'
+ * guarantee THIS ticket can complete," which demands the conservative
+ * reading of recent evidence, not the typical one. A delta is measured
+ * between two actual `remaining` readings — whatever consumed the bucket in
+ * between, delivery or otherwise — so taking the max means any unattributed
+ * background drain observed in a recent window automatically raises the bar
+ * for the next check, without needing to know its cause (#517 correction
+ * comment). `Array.prototype.reduce`, not a spread into `Math.max`, so an
+ * oversized `recentDeltas` (a corrupted/hand-edited history) cannot blow the
+ * call stack (#517 security fix-wave) — this function must never throw.
  *
  * Falls back to `fallback` (the cold-start `DEFAULT_LOW_WATER`) when there
- * is no history yet.
+ * is no history yet, OR when every supplied delta is below
+ * `MIN_PLAUSIBLE_DELTA` — i.e. "no plausible evidence" degrades exactly like
+ * "no evidence," never toward zero.
  */
 export function estimateTicketCost(recentDeltas, fallback = DEFAULT_LOW_WATER) {
-  const valid = Array.isArray(recentDeltas) ? recentDeltas.filter((d) => Number.isFinite(d) && d > 0) : [];
-  return valid.length ? Math.max(...valid) : fallback;
+  const valid = Array.isArray(recentDeltas)
+    ? recentDeltas.filter((d) => Number.isFinite(d) && d >= MIN_PLAUSIBLE_DELTA)
+    : [];
+  return valid.length ? valid.reduce((max, d) => Math.max(max, d), -Infinity) : fallback;
 }
 
 /**

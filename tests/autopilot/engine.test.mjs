@@ -23,7 +23,7 @@ import {
 } from '../../plugin/scripts/autopilot/sessionpause.mjs';
 import {
   shouldPauseForBudget, budgetCheckDue, evaluateRateBudget, estimateTicketCost,
-  DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N,
+  DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N, MIN_PLAUSIBLE_DELTA,
 } from '../../plugin/scripts/autopilot/ratebudget.mjs';
 import {
   evaluateEnvPreflight, formatBlockers, probeExecutable, probeNodeModules,
@@ -1656,6 +1656,32 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       expect(estimateTicketCost([], 111)).toBe(111);
       expect(estimateTicketCost([-50, NaN, 0], 111)).toBe(111);
     });
+
+    // #517 security fix-wave: a plausibility floor (MIN_PLAUSIBLE_DELTA), not just a
+    // finite/positive check, so implausibly tiny deltas — a genuinely idle check-to-check
+    // window with no ticket delivered, OR a corrupted/hand-edited run.json — can never drag
+    // the derived threshold toward zero and silently disable the pause guard.
+    it('SECURITY (#517): a delta below MIN_PLAUSIBLE_DELTA is NOT treated as evidence — falls back instead of collapsing toward zero', () => {
+      expect(estimateTicketCost([1])).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([200])).toBe(DEFAULT_LOW_WATER); // the OLD, already-proven-unsafe DEFAULT_LOW_WATER magnitude
+      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA - 1])).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA])).toBe(MIN_PLAUSIBLE_DELTA); // the floor itself is plausible
+    });
+
+    it('SECURITY (#517): a hostile/corrupted near-flat history ([5000,4999,4998,4997,4996,4995] -> deltas of 1) cannot disable the guard — falls back to the safe DEFAULT_LOW_WATER', () => {
+      // recentBudgetDeltas([5000,4999,4998,4997,4996,4995]) === [1,1,1,1,1]
+      expect(estimateTicketCost([1, 1, 1, 1, 1])).toBe(DEFAULT_LOW_WATER);
+    });
+
+    it('SECURITY (#517): a real plausible delta among noise still wins the max — the floor doesn\'t suppress genuine evidence', () => {
+      expect(estimateTicketCost([1, 1, 975, 1])).toBe(975);
+    });
+
+    it('SECURITY (#517): an oversized recentDeltas array does not throw (RangeError via Math.max(...spread)) — uses reduce instead', () => {
+      const huge = new Array(200_000).fill(999);
+      expect(() => estimateTicketCost(huge)).not.toThrow();
+      expect(estimateTicketCost(huge)).toBe(999);
+    });
   });
 
   describe('AC-517.3: evaluateRateBudget at the real observed 1543/5000 reading — must pause ahead of a ~4000pt ticket AND continue ahead of a ~975pt ticket', () => {
@@ -1678,6 +1704,19 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 1543, reset: 100 } } }), stderr: '' }));
       const decision = await evaluateRateBudget(gh, { lowWater: 100, recentDeltas: [4993] });
       expect(decision.pause).toBe(false); // 1543 > explicit lowWater 100, ignoring the far-higher recentDeltas-derived threshold
+    });
+
+    // #517 security fix-wave: the exact end-to-end scenario the adversarial security pass
+    // demonstrated — a rateBudgetReadings history of near-flat consecutive readings
+    // ([5000,4999,4998,4997,4996,4995] -> deltas of [1,1,1,1,1]) must NOT collapse the
+    // effective low-water threshold toward zero and silently disable the guard.
+    it('SECURITY (#517): a hostile/idle near-flat reading history still pauses at a genuinely low remaining, via the safe DEFAULT_LOW_WATER fallback', async () => {
+      const readings = [5000, 4999, 4998, 4997, 4996, 4995];
+      const deltas = recentBudgetDeltas({ ...freshRun(), rateBudgetReadings: readings });
+      expect(deltas).toEqual([1, 1, 1, 1, 1]); // confirms the exact adversarial shape reproduces
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 500, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: deltas });
+      expect(decision.pause).toBe(true); // WITHOUT the MIN_PLAUSIBLE_DELTA floor this incorrectly reads pause:false (lowWater≈1)
     });
   });
 });
