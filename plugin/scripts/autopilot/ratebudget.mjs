@@ -28,11 +28,27 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh, rateBudget } from '../lib/exec.mjs';
 
-/** Default GraphQL remaining-points floor that trips a pause (mirrors `rateBudget`'s own default). */
-export const DEFAULT_LOW_WATER = 200;
+/**
+ * Cold-start low-water fallback, used ONLY when a run has no `recentDeltas`
+ * history yet (its first check) — see `estimateTicketCost` below for the
+ * calibrated-from-history path this backs up. This is the empirically
+ * measured worst-case single-ticket GraphQL cost (#438, PR #514: 4995 -> 2
+ * remaining), not a guess. Deliberately NOT rounded up to 5000 (the account
+ * limit): at exactly 5000, nearly every possible `remaining` reading would
+ * read as "low," permanently pausing a fresh run before it can ever start —
+ * the inverse failure this ticket also guards against.
+ */
+export const DEFAULT_LOW_WATER = 4993;
 
-/** Re-check cadence: every N iterations, on top of the mandatory run-start check. */
-export const DEFAULT_CHECK_EVERY_N = 10;
+/**
+ * Re-check cadence: every N iterations, on top of the mandatory run-start
+ * check. The bucket can drain within ~1.3 iterations at observed real-world
+ * per-ticket cost, so anything less frequent than every iteration is
+ * structurally too late to ever fire before the damage. This check is one
+ * cheap REST call (`gh api rate_limit`) that does not itself count against
+ * any bucket, so checking every iteration costs nothing extra.
+ */
+export const DEFAULT_CHECK_EVERY_N = 1;
 
 /**
  * Pure boundary decision (mirrors `shouldPause`/`guardTripped`): no IO. Only a
@@ -61,14 +77,67 @@ export function budgetPauseNotice(budget) {
 }
 
 /**
+ * Security fix-wave (#517): the minimum delta treated as real evidence of what a ticket costs,
+ * rather than idle-window noise or a corrupted/hand-edited `run.json`. `run.rateBudgetReadings`
+ * is disk state — the same trust boundary `ledger.mjs`'s `sanitizePositiveInt`/`sanitizeIterations`
+ * already fail-closed against (#488) — and a history of near-flat consecutive readings (e.g.
+ * `[5000,4999,4998,4997,4996,4995]`, deltas of 1) is indistinguishable in shape from a genuine
+ * check-to-check gap where nothing was actually delivered. Without a floor, `estimateTicketCost`
+ * would happily derive a ~1-point low-water threshold from either case, which silently disables
+ * the pause guard (`low = remaining <= lowWater` never true until the bucket is essentially
+ * already gone) — the exact failure #407/#517 exist to prevent. Set below the lowest ever-measured
+ * REAL per-ticket cost (~975, #517 correction comment) with margin, so a genuinely cheap ticket's
+ * delta still counts as evidence (AC-517.3b) while noise/corruption cannot.
+ */
+export const MIN_PLAUSIBLE_DELTA = 500;
+
+/**
+ * Derives the low-water threshold for THIS check from THIS run's own recent
+ * GraphQL-remaining deltas rather than a flat constant (#517). Real
+ * per-ticket cost varies ~5x by ticket kind, so no single number protects a
+ * ticket boundary without either idling a usable bucket (too conservative)
+ * or starting a ticket it can't finish (too optimistic).
+ *
+ * Uses the MAX of the valid (finite, plausible — see `MIN_PLAUSIBLE_DELTA`)
+ * deltas, not an average: the question being answered is "does 'continue'
+ * guarantee THIS ticket can complete," which demands the conservative
+ * reading of recent evidence, not the typical one. A delta is measured
+ * between two actual `remaining` readings — whatever consumed the bucket in
+ * between, delivery or otherwise — so taking the max means any unattributed
+ * background drain observed in a recent window automatically raises the bar
+ * for the next check, without needing to know its cause (#517 correction
+ * comment). `Array.prototype.reduce`, not a spread into `Math.max`, so an
+ * oversized `recentDeltas` (a corrupted/hand-edited history) cannot blow the
+ * call stack (#517 security fix-wave) — this function must never throw.
+ *
+ * Falls back to `fallback` (the cold-start `DEFAULT_LOW_WATER`) when there
+ * is no history yet, OR when every supplied delta is below
+ * `MIN_PLAUSIBLE_DELTA` — i.e. "no plausible evidence" degrades exactly like
+ * "no evidence," never toward zero.
+ */
+export function estimateTicketCost(recentDeltas, fallback = DEFAULT_LOW_WATER) {
+  const valid = Array.isArray(recentDeltas)
+    ? recentDeltas.filter((d) => Number.isFinite(d) && d >= MIN_PLAUSIBLE_DELTA)
+    : [];
+  return valid.length ? valid.reduce((max, d) => Math.max(max, d), -Infinity) : fallback;
+}
+
+/**
  * Orchestrator-facing decision (IO wrapper, #407 AC.1): run the live
  * `rate_limit` check (`rateBudget`, itself a REST call that does NOT count
  * against any bucket) and map it through `shouldPauseForBudget`. Never hard-
  * fails the run on a broken check — degrades to "don't pause" so today's
  * reactive per-call retry keeps covering individual 403s.
+ *
+ * `lowWater` (#517): an explicit numeric value still wins outright — a
+ * caller opting into the old explicit-constant behavior keeps it. Otherwise
+ * the effective threshold is derived from `recentDeltas` via
+ * `estimateTicketCost`, falling back to `DEFAULT_LOW_WATER` when there's no
+ * history yet.
  */
-export async function evaluateRateBudget(gh, { lowWater = DEFAULT_LOW_WATER } = {}) {
-  const budget = await rateBudget(gh, { lowWater });
+export async function evaluateRateBudget(gh, { lowWater, recentDeltas } = {}) {
+  const effectiveLowWater = Number.isFinite(lowWater) ? lowWater : estimateTicketCost(recentDeltas, DEFAULT_LOW_WATER);
+  const budget = await rateBudget(gh, { lowWater: effectiveLowWater });
   if (!budget.ok) {
     return {
       pause: false,

@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
-import { applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun, RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR, sanitizePositiveInt, sanitizeIterations } from '../../plugin/scripts/autopilot/ledger.mjs';
+import {
+  applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun,
+  RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR, sanitizePositiveInt, sanitizeIterations,
+  applyBudgetReading, recentBudgetDeltas, recordBudgetReading, MAX_BUDGET_READINGS,
+} from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
@@ -18,8 +22,8 @@ import {
   DEFAULT_THRESHOLD_PCT, USAGE_RELPATH,
 } from '../../plugin/scripts/autopilot/sessionpause.mjs';
 import {
-  shouldPauseForBudget, budgetCheckDue, evaluateRateBudget,
-  DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N,
+  shouldPauseForBudget, budgetCheckDue, evaluateRateBudget, estimateTicketCost,
+  DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N, MIN_PLAUSIBLE_DELTA,
 } from '../../plugin/scripts/autopilot/ratebudget.mjs';
 import {
   evaluateEnvPreflight, formatBlockers, probeExecutable, probeNodeModules,
@@ -1577,15 +1581,16 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
     expect(shouldPauseForBudget(undefined)).toBe(false);
   });
 
-  it('budgetCheckDue: fires only every Nth iteration — never on iteration 0 (the run-start check owns that)', () => {
-    expect(DEFAULT_CHECK_EVERY_N).toBe(10);
-    expect(budgetCheckDue(0)).toBe(false);
-    expect(budgetCheckDue(1)).toBe(false);
-    expect(budgetCheckDue(9)).toBe(false);
+  it('AC-517.2: budgetCheckDue fires every iteration now (cadence 1) — never on iteration 0 (the run-start check owns that)', () => {
+    // #517: a bucket can drain within ~1.3 iterations, so the old every-10 cadence was
+    // structurally too late to ever fire before the damage. Every-iteration is the only
+    // cadence that reliably catches a single-iteration drain.
+    expect(DEFAULT_CHECK_EVERY_N).toBe(1);
+    expect(budgetCheckDue(0)).toBe(false); // iteration 0 is the mandatory run-start check — never double-fires
+    expect(budgetCheckDue(1)).toBe(true);
+    expect(budgetCheckDue(9)).toBe(true);
     expect(budgetCheckDue(10)).toBe(true);
-    expect(budgetCheckDue(20)).toBe(true);
-    expect(budgetCheckDue(11)).toBe(false);
-    expect(budgetCheckDue(5, 5)).toBe(true); // a custom cadence
+    expect(budgetCheckDue(5, 5)).toBe(true); // a custom cadence still works
   });
 
   it('AC-407.4: evaluateRateBudget PAUSES the run on a mocked low-budget rate_limit response — no real API, no real sleep', async () => {
@@ -1604,21 +1609,178 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
   });
 
   it('AC-407.1: a comfortable budget does not pause the run', async () => {
-    const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 4000, reset: 0 } } }), stderr: '' }));
+    // #517: DEFAULT_LOW_WATER is now the empirical worst-case per-ticket cost (4993), so
+    // "comfortable" against it means a near-full bucket, not the old 200-era 4000 (which is
+    // now genuinely low — 4000 < 4993 — and correctly pauses).
+    const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 5000, reset: 0 } } }), stderr: '' }));
     const decision = await evaluateRateBudget(gh, { lowWater: DEFAULT_LOW_WATER });
     expect(decision).toMatchObject({ pause: false, ok: true });
     expect(decision.reason).toMatch(/budget OK/);
   });
 
-  it('spec §3.1: a FAILED budget check degrades to reactive per-call retry — it never hard-blocks the run', async () => {
+  it('AC-517.4: spec §3.1 — a FAILED budget check degrades to reactive per-call retry — it never hard-blocks the run', async () => {
     const gh = makeGh(async () => ({ ok: false, code: 1, stdout: '', stderr: 'network down' }));
     const decision = await evaluateRateBudget(gh);
     expect(decision).toMatchObject({ pause: false, ok: false });
     expect(decision.reason).toMatch(/degrading to reactive per-call retry, not pausing/);
   });
 
-  it('DEFAULT_LOW_WATER matches rateBudget\'s own default (200)', () => {
-    expect(DEFAULT_LOW_WATER).toBe(200);
+  // #517: DEFAULT_LOW_WATER is NOT "rateBudget's own default" (that framing was the #407
+  // bug) — it's the documented cold-start fallback used only until a run has its own
+  // rateBudgetReadings history: the empirically measured worst-case single-ticket GraphQL
+  // cost (#438, PR #514: 4995 -> 2 remaining). Deliberately not rounded up to 5000 (see
+  // plan § Cold-start value) so a fresh run isn't permanently paused before it starts.
+  it('AC-517.1: DEFAULT_LOW_WATER is the documented worst-case cold-start fallback (4993, #438/PR #514), not a flat guess', () => {
+    expect(DEFAULT_LOW_WATER).toBe(4993);
+  });
+
+  describe('AC-517.1: estimateTicketCost — the low-water threshold derived from recent actual deltas', () => {
+    it('no recentDeltas (absent or empty) falls back to DEFAULT_LOW_WATER', () => {
+      expect(estimateTicketCost(undefined)).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([])).toBe(DEFAULT_LOW_WATER);
+    });
+
+    it('a single valid delta is used as-is', () => {
+      expect(estimateTicketCost([975])).toBe(975);
+    });
+
+    it('multiple deltas take the MAX — the conservative read, not the average or most-recent', () => {
+      expect(estimateTicketCost([4993, 3457, 975])).toBe(4993);
+    });
+
+    it('non-finite/negative/zero entries are filtered out before taking the max', () => {
+      expect(estimateTicketCost([4000, -50, NaN, undefined, 0, 2000])).toBe(4000);
+    });
+
+    it('a custom fallback is honoured when recentDeltas has no valid entries', () => {
+      expect(estimateTicketCost([], 111)).toBe(111);
+      expect(estimateTicketCost([-50, NaN, 0], 111)).toBe(111);
+    });
+
+    // #517 security fix-wave: a plausibility floor (MIN_PLAUSIBLE_DELTA), not just a
+    // finite/positive check, so implausibly tiny deltas — a genuinely idle check-to-check
+    // window with no ticket delivered, OR a corrupted/hand-edited run.json — can never drag
+    // the derived threshold toward zero and silently disable the pause guard.
+    it('SECURITY (#517): a delta below MIN_PLAUSIBLE_DELTA is NOT treated as evidence — falls back instead of collapsing toward zero', () => {
+      expect(estimateTicketCost([1])).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([200])).toBe(DEFAULT_LOW_WATER); // the OLD, already-proven-unsafe DEFAULT_LOW_WATER magnitude
+      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA - 1])).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA])).toBe(MIN_PLAUSIBLE_DELTA); // the floor itself is plausible
+    });
+
+    it('SECURITY (#517): a hostile/corrupted near-flat history ([5000,4999,4998,4997,4996,4995] -> deltas of 1) cannot disable the guard — falls back to the safe DEFAULT_LOW_WATER', () => {
+      // recentBudgetDeltas([5000,4999,4998,4997,4996,4995]) === [1,1,1,1,1]
+      expect(estimateTicketCost([1, 1, 1, 1, 1])).toBe(DEFAULT_LOW_WATER);
+    });
+
+    it('SECURITY (#517): a real plausible delta among noise still wins the max — the floor doesn\'t suppress genuine evidence', () => {
+      expect(estimateTicketCost([1, 1, 975, 1])).toBe(975);
+    });
+
+    it('SECURITY (#517): an oversized recentDeltas array does not throw (RangeError via Math.max(...spread)) — uses reduce instead', () => {
+      const huge = new Array(200_000).fill(999);
+      expect(() => estimateTicketCost(huge)).not.toThrow();
+      expect(estimateTicketCost(huge)).toBe(999);
+    });
+  });
+
+  describe('AC-517.3: evaluateRateBudget at the real observed 1543/5000 reading — must pause ahead of a ~4000pt ticket AND continue ahead of a ~975pt ticket', () => {
+    it('(a) recent history implying a ~4993pt ticket ahead -> pause (max delta 4993 > 1543 remaining)', async () => {
+      const gh = makeGh(async (cmd, args) => {
+        expect(args).toEqual(['api', 'rate_limit']);
+        return { ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 1543, reset: 100 } } }), stderr: '' };
+      });
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [4993, 3457] });
+      expect(decision.pause).toBe(true);
+    });
+
+    it('(b) the SAME mocked remaining:1543 reading, recent history implying a ~975pt ticket ahead -> continue (975 < 1543)', async () => {
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 1543, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [975] });
+      expect(decision.pause).toBe(false);
+    });
+
+    it('back-compat: an explicit lowWater still overrides recentDeltas when both are supplied', async () => {
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 1543, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { lowWater: 100, recentDeltas: [4993] });
+      expect(decision.pause).toBe(false); // 1543 > explicit lowWater 100, ignoring the far-higher recentDeltas-derived threshold
+    });
+
+    // #517 security fix-wave: the exact end-to-end scenario the adversarial security pass
+    // demonstrated — a rateBudgetReadings history of near-flat consecutive readings
+    // ([5000,4999,4998,4997,4996,4995] -> deltas of [1,1,1,1,1]) must NOT collapse the
+    // effective low-water threshold toward zero and silently disable the guard.
+    it('SECURITY (#517): a hostile/idle near-flat reading history still pauses at a genuinely low remaining, via the safe DEFAULT_LOW_WATER fallback', async () => {
+      const readings = [5000, 4999, 4998, 4997, 4996, 4995];
+      const deltas = recentBudgetDeltas({ ...freshRun(), rateBudgetReadings: readings });
+      expect(deltas).toEqual([1, 1, 1, 1, 1]); // confirms the exact adversarial shape reproduces
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 500, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: deltas });
+      expect(decision.pause).toBe(true); // WITHOUT the MIN_PLAUSIBLE_DELTA floor this incorrectly reads pause:false (lowWater≈1)
+    });
+  });
+});
+
+// #517 (epic #183): the rolling history of GraphQL-remaining readings that
+// estimateTicketCost's recentDeltas are derived from. Mirrors applyOutcome/
+// recordOutcome's pure-transition + IO-wrapper split.
+describe('ledger rate-budget history (AC-517.1, #517)', () => {
+  describe('applyBudgetReading — pure append + cap', () => {
+    it('accumulates readings onto a fresh run', () => {
+      let run = freshRun();
+      run = applyBudgetReading(run, 4995);
+      run = applyBudgetReading(run, 2);
+      expect(run.rateBudgetReadings).toEqual([4995, 2]);
+    });
+
+    it(`caps at MAX_BUDGET_READINGS (${MAX_BUDGET_READINGS}), dropping the OLDEST reading, not the newest`, () => {
+      let run = freshRun();
+      const readings = Array.from({ length: MAX_BUDGET_READINGS + 3 }, (_, i) => 5000 - i * 10);
+      for (const r of readings) run = applyBudgetReading(run, r);
+      expect(run.rateBudgetReadings).toHaveLength(MAX_BUDGET_READINGS);
+      // the last MAX_BUDGET_READINGS entries survive, in order — the earliest ones are dropped.
+      expect(run.rateBudgetReadings).toEqual(readings.slice(-MAX_BUDGET_READINGS));
+    });
+
+    it('ignores a non-finite (NaN/Infinity) or negative reading — returns the run unchanged', () => {
+      let run = freshRun();
+      run = applyBudgetReading(run, 4000);
+      const before = [...run.rateBudgetReadings];
+      expect(applyBudgetReading(run, NaN).rateBudgetReadings).toEqual(before);
+      expect(applyBudgetReading(run, Infinity).rateBudgetReadings).toEqual(before);
+      expect(applyBudgetReading(run, -1).rateBudgetReadings).toEqual(before);
+    });
+  });
+
+  describe('recentBudgetDeltas — consecutive-reading drops only', () => {
+    it('two consecutive DECREASING readings produce one positive delta', () => {
+      const run = { ...freshRun(), rateBudgetReadings: [4995, 2] };
+      expect(recentBudgetDeltas(run)).toEqual([4993]);
+    });
+
+    it('an INCREASING reading (an hourly window reset) is excluded, not counted as a negative/zero delta', () => {
+      const run = { ...freshRun(), rateBudgetReadings: [2, 5000] };
+      expect(recentBudgetDeltas(run)).toEqual([]);
+    });
+
+    it('fewer than 2 readings returns []', () => {
+      expect(recentBudgetDeltas({ ...freshRun(), rateBudgetReadings: [] })).toEqual([]);
+      expect(recentBudgetDeltas({ ...freshRun(), rateBudgetReadings: [4995] })).toEqual([]);
+    });
+
+    it('a realistic mixed sequence keeps the real drops in order and excludes the reset step', () => {
+      const run = { ...freshRun(), rateBudgetReadings: [4995, 2, 5000, 4525] };
+      expect(recentBudgetDeltas(run)).toEqual([4993, 475]); // 2->5000 (reset) excluded
+    });
+  });
+
+  it('recordBudgetReading (IO): writes a reading, loadRun reads it back appended', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    await recordBudgetReading(cwd, 4995);
+    await recordBudgetReading(cwd, 2);
+    const run = await loadRun(cwd);
+    expect(run.rateBudgetReadings[run.rateBudgetReadings.length - 1]).toBe(2);
+    expect(run.rateBudgetReadings).toContain(4995);
   });
 });
 
