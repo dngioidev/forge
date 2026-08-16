@@ -1880,12 +1880,107 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       expect(ticketKind('(spike) improve caching')).toBeNull();
     });
 
-    it('normalize() carries the kind field from ticketKind(title)', () => {
-      const ctx = { itemFieldKey: () => null };
+    it('#530: normalize() falls back to ticketKind(title) ONLY when the board type field is unavailable', () => {
+      const ctx = { itemFieldKey: () => null }; // no Type field / unreadable — the fallback case
       expect(normalize(ctx, { content: { number: 10, title: 'docs: update readme' } }).kind).toBe('docs');
       expect(normalize(ctx, { content: { number: 11, title: 'spike(x): try thing' } }).kind).toBe('spike');
       expect(normalize(ctx, { content: { number: 12, title: 'feat: add thing' } }).kind).toBe(null);
       expect(normalize(ctx, { content: { number: 13, title: 'plain title' } }).kind).toBe(null);
+    });
+  });
+
+  // #530: ticketKind(title) classified only 2/8 real board titles (docs:/spike: — the rest,
+  // including conventional repo prefixes like `denylist:`/`tests:` that simply aren't in
+  // WORK_TYPES, returned null). The board `type` single-select field is populated on every
+  // ticket (set via board/create.mjs --type, which needs Projects-v2 board-write access, not
+  // free-text issue-title access) — normalize() now sources `kind` from it FIRST, so all 8
+  // classify. Table below is the ticket's own measured evidence: title -> actual live board
+  // `type` (queried via `gh project field-list`/`item-list` against board #8 while delivering
+  // this ticket) -> old ticketKind(title) result, for comparison.
+  describe('AC-530: kind is now derived from the board `type` field, not the title prefix', () => {
+    // Mirrors real itemFieldKey/optionKey (lib/board.mjs): the raw option label ('Bug') is
+    // lowercased before it reaches normalize() — real ctx never hands back mixed case.
+    const mkCtx = (rawType) => ({ itemFieldKey: (item, key) => (key === 'type' ? rawType.toLowerCase() : null) });
+
+    it('AC-530.1: board type is the PRIMARY signal — it wins even when a title also carries a docs:/spike: prefix', () => {
+      const ctx = mkCtx('Bug');
+      const item = normalize(ctx, { content: { number: 448, title: 'docs: this title lies about its own kind' } });
+      expect(item.kind).toBe('bug'); // board type wins, not the (mistitled) prefix — closes the #526 trust-boundary gap
+    });
+
+    it('AC-530.5: all 8 titles from the ticket\'s measured-evidence table classify (non-null) via their real board type, vs. 2/8 under the old title-only classifier', () => {
+      const evidence = [
+        // [title, live board type, old ticketKind(title) result]
+        ['denylist: brace expansion can complete a flag the command text never spells', 'Bug', null],
+        ["forge:triage lacks a terminal report-contract section for its {issue, verdict, outcome} return shape", 'Bug', null],
+        ['denylist: shortFlagCluster() has no subshell awareness (false-positive class)', 'Bug', null],
+        ['autopilot/SKILL.md is 49KB (~12k tokens) loaded at every invoke', 'Item', null],
+        ['docs: ADR-0006/0005 and runner-adoption assert self-hosted CI as current state', 'Item', 'docs'],
+        ['spike: is parallel wave delivery + a serialized merge train worth breaking autopilot', 'Item', 'spike'],
+        ['tests: denylist perf test is timing-flaky on CI', 'Bug', null],
+        ['agy: re-verify hooks.json command-quoting fix on macOS/Linux (sh -c) once agy access exists', 'Bug', null],
+      ];
+      for (const [title, boardType, oldTitleKind] of evidence) {
+        expect(ticketKind(title)).toBe(oldTitleKind); // reproduces the ticket's measured 2/8 baseline
+        const item = normalize(mkCtx(boardType), { content: { number: 1, title } });
+        expect(item.kind).not.toBeNull(); // 8/8 now classify
+        expect(item.kind).toBe(boardType.toLowerCase());
+      }
+    });
+
+    it('AC-530.5: the three tickets queued when #530 was filed (#448, #469, #449) all classify as `bug`, not null', () => {
+      const queued = [
+        [448, 'denylist: brace expansion can complete a flag the command text never spells'],
+        [469, 'forge:triage lacks a terminal report-contract section for its {issue, verdict, outcome} return shape'],
+        [449, 'denylist: shortFlagCluster() has no subshell awareness (false-positive class)'],
+      ];
+      for (const [number, title] of queued) {
+        expect(ticketKind(title)).toBeNull(); // the #530 pathology this ticket fixes
+        expect(normalize(mkCtx('Bug'), { content: { number, title } }).kind).toBe('bug');
+      }
+    });
+
+    it('AC-530.2/AC-530.4: a real board-type-derived kind (item/bug/test) is NOT a KIND_COST_ESTIMATES key — every one degrades to the conservative MAX path, unchanged', () => {
+      for (const type of ['item', 'bug', 'test']) {
+        expect(Object.prototype.hasOwnProperty.call(KIND_COST_ESTIMATES, type)).toBe(false);
+        expect(estimateTicketCost([4993, 3457, 975], type)).toBe(4993); // byte-identical to an unrecognized kind
+        expect(estimateTicketCost([], type, 111)).toBe(111); // falls to fallback, not an optimistic cheap number
+      }
+    });
+
+    it('AC-530.4 evidence: #462 (docs, ~975pt) and #438 (contested, ~4993pt) are both board type `item` — proves a single type is not a safe cost proxy, so `item` correctly has no table entry', () => {
+      // Both a cheap and a near-worst-case ticket share the same live board `type`. Mapping
+      // `item` to either number would be optimistic for the other case — exactly what AC.2/
+      // AC.4 forbid. `estimateTicketCost` must therefore treat `item` as unknown, same as null.
+      expect(estimateTicketCost([1000], 'item')).toBe(estimateTicketCost([1000], null));
+    });
+
+    it('AC-530.2: unrecognized/empty board type (unmapped Type option, or a board with no Type field) falls back to ticketKind(title), preserving the conservative default when that also misses', () => {
+      const ctx = { itemFieldKey: () => null };
+      expect(normalize(ctx, { content: { number: 1, title: 'plain title, no prefix, no type' } }).kind).toBeNull();
+    });
+
+    it('AC-530.3: the UNATTRIBUTED_DRAIN_FLOOR safety floor from #526 still applies to any known-kind estimate — a cheap kind can never be gated below it, regardless of kind vocabulary', () => {
+      // estimateTicketCost's floor logic (Math.max(KIND_COST_ESTIMATES[kind], UNATTRIBUTED_DRAIN_FLOOR))
+      // is untouched by #530 — still exercised today via the docs/spike fallback-path entries
+      // (975 < 1500 floors to 1500), and ready for whatever type-keyed entries a future ticket adds.
+      expect(estimateTicketCost([], 'docs')).toBe(UNATTRIBUTED_DRAIN_FLOOR);
+      expect(KIND_COST_ESTIMATES.docs).toBeLessThan(UNATTRIBUTED_DRAIN_FLOOR);
+    });
+
+    it('AC-530.6: estimateTicketCost stays pure and non-throwing for every board-type-derived kind, including the reduce-not-spread oversized-recentDeltas guard', () => {
+      const huge = new Array(200_000).fill(999);
+      for (const type of ['item', 'bug', 'test', 'epic', null, undefined]) {
+        expect(() => estimateTicketCost(huge, type)).not.toThrow();
+      }
+      expect(estimateTicketCost(huge, 'item')).toBe(999);
+    });
+
+    it('AC-530.6: #407\'s degrade-on-failed-check behaviour is unchanged — a FAILED rate-budget check never pauses regardless of the (now board-type-derived) kind threaded through', async () => {
+      const gh = makeGh(async () => ({ ok: false, code: 1, stdout: '', stderr: 'network unreachable' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [4993], kind: 'bug' });
+      expect(decision.pause).toBe(false);
+      expect(decision.ok).toBe(false);
     });
   });
 

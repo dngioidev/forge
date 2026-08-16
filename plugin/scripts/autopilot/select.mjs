@@ -93,7 +93,7 @@ export function actionableQueue(tickets, opts = {}) {
 
 // #526: the WORK_TYPES prefix among the two kinds ratebudget.mjs's KIND_COST_ESTIMATES has
 // measured evidence for. `estimateTicketCost` only knows a real per-kind number for docs/spike
-// tickets (#462, #448) — every other real ticket-type prefix (feat/fix/chore/refactor/test/
+// tickets (#462, #438) — every other real ticket-type prefix (feat/fix/chore/refactor/test/
 // perf/hotfix) still falls through to the existing recentDeltas-based estimate untouched, so
 // ticketKind deliberately does not surface them even though the regex below is built from the
 // full WORK_TYPES vocabulary (reusing lib/ticket.mjs's branch-naming prefix list instead of
@@ -107,25 +107,36 @@ const COST_KNOWN_KINDS = ['docs', 'spike'];
 const KIND_PREFIX_RE = new RegExp(`^(${WORK_TYPES.join('|')})(\\([^)]*\\))?: (?!\\s)`, 'i');
 
 /**
- * Classify a ticket title by its leading `<type>:`/`<type>(scope):` prefix (#526), case-
- * insensitive. Returns the lowercase matched type when it's one of `COST_KNOWN_KINDS`
- * (docs/spike — the only kinds `ratebudget.mjs`'s `estimateTicketCost` has a measured per-kind
- * cost for), else `null`. Never throws on a malformed `title` (non-string, `null`, `undefined`,
- * an object) — returns `null` instead, mirroring `parseBranch`'s fail-to-unknown contract.
+ * Classify a ticket title by its leading `<type>:`/`<type>(scope):` prefix, case-insensitive.
+ * Returns the lowercase matched type when it's one of `COST_KNOWN_KINDS` (docs/spike — the only
+ * kinds `ratebudget.mjs`'s `estimateTicketCost` has a measured per-kind cost for), else `null`.
+ * Never throws on a malformed `title` (non-string, `null`, `undefined`, an object) — returns
+ * `null` instead, mirroring `parseBranch`'s fail-to-unknown contract.
  *
- * Trust boundary (#526 security pass): a ticket TITLE is editable by anyone with repo issue-
- * write/triage access — a broader, DIFFERENT permission scope than the Projects-v2 board-write
- * access required to move a ticket to `ready`. A mistitled ticket (e.g. a `docs:` prefix on
- * genuinely contested code) therefore CAN under-price that ticket's rate-budget check. This is
- * an accepted, bounded trust extension, not an oversight: (1) the ground-truth `remaining`
- * reading is still a real `gh api rate_limit` call, never attacker-supplied — only the
- * *threshold* is influenced, not the observation; (2) `UNATTRIBUTED_DRAIN_FLOOR`
- * (`ratebudget.mjs`) still floors every known-kind estimate, so it can never collapse toward
- * zero; (3) worst case is a degraded/exhausted-mid-delivery run (an availability/robustness
- * hit on the autopilot loop itself), not data exposure or an auth bypass. Title text is now as
- * trusted as `run.rateBudgetReadings`/`recentDeltas` for this one purpose — treat a change that
- * widens `ticketKind`'s recognized vocabulary or removes the drain floor as a trust-boundary
- * change, not a routine tweak.
+ * #530 DEMOTION — no longer the primary signal. Measured against 8 real board titles, only 2
+ * classified (docs/spike); the rest — including conventional repo prefixes like `denylist:` and
+ * `tests:` that simply aren't in `WORK_TYPES` — returned `null` and took the conservative MAX
+ * path unconditionally, so the per-kind mechanism (#526) almost never fired. `normalize()` below
+ * now sources `t.kind` from the board `type` field first (~100% coverage, see its own docblock);
+ * this function survives only as the fallback for the type-missing case, per #530's own note that
+ * it "need not be deleted... but must not be the primary or sole source for a decision that gates
+ * spending." Kept here, unchanged in behavior, so that fallback path's cost evidence (see below)
+ * remains available.
+ *
+ * Trust boundary (#526 security pass, narrowed by #530): a ticket TITLE is editable by anyone
+ * with repo issue-write/triage access — a broader, DIFFERENT permission scope than the
+ * Projects-v2 board-write access required to move a ticket to `ready` (or, per `create.mjs`, to
+ * set its `type`). A mistitled ticket (e.g. a `docs:` prefix on genuinely contested code) can
+ * still under-price the FALLBACK check that only runs when the board `type` field is absent. This
+ * is now a materially narrower trust extension than #526 shipped (the title only matters when
+ * type is unavailable, not on every ticket): (1) the ground-truth `remaining` reading is still a
+ * real `gh api rate_limit` call, never attacker-supplied — only the *threshold* is influenced,
+ * not the observation; (2) `UNATTRIBUTED_DRAIN_FLOOR` (`ratebudget.mjs`) still floors every
+ * known-kind estimate, so it can never collapse toward zero; (3) worst case is a degraded/
+ * exhausted-mid-delivery run (an availability/robustness hit on the autopilot loop itself), not
+ * data exposure or an auth bypass. Treat a change that widens `ticketKind`'s recognized
+ * vocabulary, removes the drain floor, or promotes it back above the board `type` field as a
+ * trust-boundary change, not a routine tweak.
  */
 export function ticketKind(title) {
   if (typeof title !== 'string') return null;
@@ -135,17 +146,38 @@ export function ticketKind(title) {
   return COST_KNOWN_KINDS.includes(type) ? type : null;
 }
 
-/** Map a raw board item (gh project item-list) to the normalized shape. */
+/**
+ * Map a raw board item (gh project item-list) to the normalized shape.
+ *
+ * #530 (AC.1): `t.kind` — the signal `ratebudget.mjs`'s `evaluateRateBudget`/`estimateTicketCost`
+ * gate spending on — is now sourced from the board `type` field FIRST, falling back to the
+ * title-prefix `ticketKind(title)` classifier only when `type` is unavailable (a missing Type
+ * field on the board, or a raw item shape that predates one). This is a strict coverage
+ * improvement: `type` is set on every ticket by `board/create.mjs --type` (Projects-v2 board-
+ * write access, not free-text issue-title access — closing the #526 trust-boundary finding) and
+ * was measured populated on 100% of this board's 30 currently-open tickets, vs. 2/8 for the old
+ * title-only classifier on the same real titles (#530 evidence table). Unlike the title prefix,
+ * `type` is never used as a cost-table lookup key here (see `ratebudget.mjs` `KIND_COST_ESTIMATES`
+ * for why: this board's `type` vocabulary — epic/item/bug/test, confirmed live via
+ * `gh project field-list` — has no `docs`/`spike` value at all, and the one clean same-type data
+ * point available (#462 "docs" ~975pt vs. #438 "contested" ~4993pt — BOTH board type `Item`)
+ * proves a single type spans a >5x measured cost range, so an unrecognized/no-cost-evidence type
+ * MUST fall through to the existing #517 MAX-based path (AC.2/AC.4), unchanged.
+ */
 export function normalize(ctx, item) {
   const title = item.content?.title ?? item.title ?? '';
+  const type = ctx.itemFieldKey(item, 'type');
   return {
     number: item.content?.number ?? null,
     title,
     status: ctx.itemFieldKey(item, 'status'),
     priority: ctx.itemFieldKey(item, 'priority'),
-    type: ctx.itemFieldKey(item, 'type'),
+    type,
     area: ctx.itemFieldKey(item, 'area'), // #146: null when the board has no Area field
-    kind: ticketKind(title), // #526: feeds estimateTicketCost's per-kind rate-budget estimate
+    // #530: board type first (primary, ~100% coverage); ticketKind(title) only when type is
+    // absent (secondary/fallback — see both docblocks above). Feeds estimateTicketCost's
+    // per-kind rate-budget estimate (ratebudget.mjs).
+    kind: type ?? ticketKind(title),
   };
 }
 
