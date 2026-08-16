@@ -20,8 +20,8 @@ cluster is close to 100% guard-testing.
 Measured against this run's real evidence (`.forge/journal-archive/
 2026-08-13.jsonl`, `.forge/journal-archive/2026-08-14.jsonl`, and the live
 `.forge/journal.jsonl`, which keeps growing as the run continues — 119 + 60 +
-~27 = ~206 `blocked-edit` events at analysis time), the SHIPPED classifier
-resolves 191/206 (~92.7%) as carrying at least one guard-testing signal:
+~31 = ~210 `blocked-edit` events at analysis time), the SHIPPED classifier
+resolves 195/210 (~92.9%) as carrying at least one guard-testing signal:
 importing/invoking the denylist-guard machinery itself
 (`check(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
 a scratch/tmp/review-worktree path
@@ -54,12 +54,38 @@ audit alone did not surface either:
   to see either two-or-more CONSECUTIVE groups (the real spelling-obfuscation
   and range-spam shapes below) or NESTED braces, never a single pair.
 
-Recall lost by both walk-backs (~4 points total, from a peak of ~96.6% on an
-unreviewed draft down to ~92.7% shipped) is the accepted trade: never widen
-the guard-testing label past what survives adversarial review with no
-plausible false positive, per AC.2's design caution.
+A THIRD adversarial round (security role, run separately from the reviewer
+pass above) found two more instances of the same class, plus one organic
+false positive, all reproduced directly against `classifyBlockedEdit()`:
 
-The remaining ~15/206 (~7.3%) are not a defect to be regex'd away — they
+- Every discriminator matched anywhere in the (already-truncated) `cmd`
+  string with no requirement the match characterize the whole command — so a
+  genuinely destructive command could borrow a guard-testing label by
+  appending a free decoy, e.g. a trailing `# check(this)` shell comment
+  (inert, never executed) or a `; echo $'x'` tail chained after the real
+  payload. Closed the comment-decoy case (cheapest for an attacker — no real
+  guard-testing shape needed, just a `#`) with a `stripComment()` pass before
+  any discriminator runs; the compound-command case (a decoy segment chained
+  via a real `&&`/`;`) is a documented, accepted residual limitation — closing
+  it fully needs `denylist.mjs`'s own quote-aware segmentation, out of this
+  ticket's scope (see the KNOWN LIMITATION comment in `distill.mjs`). AC.3's
+  printed excerpt is the backstop: a maintainer approving "no role-card
+  change" is always looking at the same text the classifier saw.
+- The "two-or-more consecutive brace groups" bar from the prior fix wave still
+  passed ordinary bash Cartesian-product syntax (`backup{2024,2025}{01,02}`,
+  2-3 groups is a completely normal multi-dimension target list). Raised to
+  four-or-more.
+- The repeated-character-run bar (15+) could fire on an organic 20-char run in
+  a real path/token. Raised to 30+ — comfortably below every real probe tail
+  in the validated data (shortest is 35 chars, most are 260+) and comfortably
+  above the counterexample.
+
+Recall lost across all three walk-backs (~4 points total, from a peak of
+~96.6% on the first unreviewed draft down to ~92.9% shipped) is the accepted
+trade: never widen the guard-testing label past what survives adversarial
+review with no plausible false positive, per AC.2's design caution.
+
+The remaining ~15/210 (~7.1%) are not a defect to be regex'd away — they
 split several honest ways: a few are `node -e` proof-of-concept scripts whose
 identifying `import .../check(` text sits past the journal's 300-char `cmd`
 truncation (a real, disclosed recall ceiling, not a modelling gap); a few

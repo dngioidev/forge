@@ -33,19 +33,59 @@ export const ARCHIVE_DIR = join('.forge', 'journal-archive');
  * denylist reference at all — an honest can't-tell case. Erring toward keeping
  * an event visible (AC.2) is the point: a false "guard-testing" label is the
  * dangerous direction, a false "unclassified" one merely asks a human to look.
+ *
+ * KNOWN LIMITATION, stated rather than hidden (adversarial security review,
+ * #465 second fix wave): this is a text match over a flat (already-truncated)
+ * `cmd` string, not a shell parser — it cannot always tell which SEGMENT of a
+ * multi-part command a discriminator match belongs to. A destructive command
+ * chained via `&&`/`;` with an unrelated, genuinely guard-testing-shaped
+ * segment (e.g. `<destructive> && cat <<EOF … EOF`) can still borrow that
+ * segment's label. `stripComment()` closes the cheapest, most likely version
+ * of this (appending `# check(this)` or similar, which costs an attacker
+ * nothing and needs no real guard-testing shape at all) with no recall cost;
+ * closing the compound-command case fully would need denylist.mjs's own
+ * quote-aware segmentation, which is a materially bigger change than this
+ * ticket's scope (its non-goal: this ticket is about how the journal is
+ * interpreted, not a redesign of distill or an absorption of denylist
+ * mechanics). The real backstop for this residual case is AC.3: a
+ * `blocked-edit` cluster's proposal is never rendered without the excerpt
+ * that earned it printed right below, so a maintainer approving a "no
+ * role-card change" proposal is always looking at the same text this
+ * function did.
  */
+/**
+ * Strip an inert shell comment (a space/line-start-preceded `#` and
+ * everything after it, per line) before any discriminator runs (adversarial
+ * review finding, #465 second fix wave). Text after a bare `#` is never
+ * executed — it is exactly the kind of free decoy an agent gaming this
+ * classifier would reach for first (append `# check(this)` or `# /tmp/foo`
+ * after an unrelated destructive command to borrow a guard-testing label
+ * that command never earned). This is a heuristic, not a parser — it does
+ * not know a `#` is inert only OUTSIDE quotes — but for the destructive verbs
+ * this classifier ever sees (git/rm/etc., never data containing a literal
+ * `#`), a bare space-preceded `#` reliably marks a real comment start in
+ * every case observed in the validated data.
+ */
+function stripComment(cmd) {
+  return cmd.split('\n').map((line) => {
+    const idx = line.search(/(?:^|\s)#/);
+    return idx === -1 ? line : line.slice(0, idx);
+  }).join('\n');
+}
+
 export function classifyBlockedEdit(cmd) {
   if (typeof cmd !== 'string' || !cmd) return { guardTesting: false, reasons: [] };
+  const text = stripComment(cmd);
   const reasons = [];
   // Testing the guard itself: invoking check()/denylist.mjs, the agy shim's
   // toolCall envelope, or importing anything under plugin/hooks/.
-  if (/denylist\.mjs/.test(cmd) || /check\(/.test(cmd) || /toolCall/.test(cmd) || /isAllowedCommand/.test(cmd) || /spawnSync/.test(cmd) || /agy-deny\.mjs/.test(cmd) || /plugin\/hooks\//.test(cmd)) {
+  if (/denylist\.mjs/.test(text) || /check\(/.test(text) || /toolCall/.test(text) || /isAllowedCommand/.test(text) || /spawnSync/.test(text) || /agy-deny\.mjs/.test(text) || /plugin\/hooks\//.test(text)) {
     reasons.push('denylist-harness');
   }
   // A throwaway or review-worktree target, never the working tree the agent
   // actually cares about (forge-security-N / forge-review-N are this repo's
   // own adversarial-review worktree naming, per #433/#437).
-  if (/\/tmp\//.test(cmd) || /AppData[\\/]Local[\\/]Temp/.test(cmd) || /scratchpad/.test(cmd) || /\.tmp-review/.test(cmd) || /forge-(security|review)-\d+/.test(cmd)) {
+  if (/\/tmp\//.test(text) || /AppData[\\/]Local[\\/]Temp/.test(text) || /scratchpad/.test(text) || /\.tmp-review/.test(text) || /forge-(security|review)-\d+/.test(text)) {
     reasons.push('scratch-path');
   }
   // Writing ABOUT a blocked command (PR body, heredoc doc/test fixture) rather
@@ -57,19 +97,22 @@ export function classifyBlockedEdit(cmd) {
   // payload delivered that way must not read as "just documentation". Every
   // real doc-write shape in the validated data pipes the heredoc into `cat`
   // (`cat > file <<EOF`, `cat >> file <<EOF`, `$(cat <<EOF`).
-  if (/--body-file/.test(cmd) || /\bcat\b[^<\n]{0,40}<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(cmd)) {
+  if (/--body-file/.test(text) || /\bcat\b[^<\n]{0,40}<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(text)) {
     reasons.push('doc-write');
   }
   // Adversarial probe shapes: ReDoS/length tails, a long repeated-character
   // run, ANSI-C/quoted flag-spelling tricks, or brace-expansion obfuscation.
-  // The brace check requires TWO OR MORE consecutive `{...}` groups (spelling
+  // The brace check requires FOUR OR MORE consecutive `{...}` groups (spelling
   // obfuscation like `{r,Z}{e,Z}{c,Z}…`, or range-spam like `{a..a}{a..a}…`)
-  // or NESTED braces (`{{a,b},-D}`) — never a single `{a,b}` pair (adversarial
-  // review finding, #465 fix wave): a lone brace pair is ordinary shell
-  // multi-target syntax (`rm -rf {secretA,secretB}` is a real, plausible
-  // destructive command), so matching it unconditionally mislabelled a
-  // genuine multi-target delete as guard-testing.
-  if (/;\s*echo\s+y{5,}/.test(cmd) || /(\{[^{}]{0,20}\}){2,}/.test(cmd) || /\{[^{}]*\{/.test(cmd) || /(.)\1{14,}/.test(cmd) || /\$'/.test(cmd) || /-\\"[a-zA-Z]\\"/.test(cmd) || /-"[a-zA-Z]"/.test(cmd)) {
+  // or NESTED braces (`{{a,b},-D}`) — never one or two/three consecutive pairs
+  // (second adversarial-review finding, #465 fix wave): ordinary bash
+  // Cartesian-product multi-target syntax routinely chains 2-3 brace groups
+  // (`rm -rf backup{2024,2025}{01,02}` is a real, plausible destructive
+  // command), so a lower bar mislabelled it. The repeated-character run needs
+  // 30+ — comfortably below every real probe's tail (validated data: shortest
+  // is 35 chars, most are 260+) and comfortably above anything organic (an
+  // adversarial-review counterexample used 20).
+  if (/;\s*echo\s+y{5,}/.test(text) || /(\{[^{}]{0,20}\}){4,}/.test(text) || /\{[^{}]*\{/.test(text) || /(.)\1{29,}/.test(text) || /\$'/.test(text) || /-\\"[a-zA-Z]\\"/.test(text) || /-"[a-zA-Z]"/.test(text)) {
     reasons.push('adversarial-probe');
   }
   return { guardTesting: reasons.length > 0, reasons };

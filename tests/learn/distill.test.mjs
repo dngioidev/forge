@@ -67,6 +67,13 @@ const GENUINE_BARE_CMD = 'git push --force origin main';
 // syntax — both must stay unclassified, not read as guard-testing evidence.
 const GENUINE_HEREDOC_EXEC_CMD = "bash <<'EOF'\nrm -rf /prod\nEOF";
 const GENUINE_BRACE_MULTI_TARGET_CMD = 'rm -rf {important-secrets,customer-db}';
+// Second adversarial-review round (security role, #465 fix wave): a Cartesian-
+// product brace chain (2-3 groups, ordinary bash idiom for a multi-dimension
+// target list) and a comment-appended decoy (free — costs an attacker nothing,
+// needs no real guard-testing shape) must both stay unclassified.
+const GENUINE_CARTESIAN_BRACE_CMD = 'rm -rf backup{2024,2025}{01,02}{a,b}';
+const GENUINE_COMMENT_DECOY_CMD = 'rm -rf /opt/danger # check(this) /tmp/decoy forge-review-42';
+const GENUINE_ORGANIC_REPEAT_CMD = 'rm -rf /data/aaaaaaaaaaaaaaaaaaaa/prod'; // 20-char repeat, below the 30-char probe floor
 
 describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () => {
   it('AC-465.4: a check()/denylist.mjs harness invocation classifies as guard-testing', () => {
@@ -111,6 +118,21 @@ describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () =>
 
   it('#465 fix wave: a single non-nested brace pair (ordinary multi-target shell syntax) does NOT classify as guard-testing', () => {
     const { guardTesting } = classifyBlockedEdit(GENUINE_BRACE_MULTI_TARGET_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 second fix wave: an ordinary 2-3 group Cartesian-product brace chain does NOT classify as guard-testing', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_CARTESIAN_BRACE_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 second fix wave: appending a "# check(this) /tmp/decoy" comment to a destructive command does NOT borrow a guard-testing label', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_COMMENT_DECOY_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 second fix wave: an organic 20-char repeated-character run does NOT classify as guard-testing (real probes are 35+)', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_ORGANIC_REPEAT_CMD);
     expect(guardTesting).toBe(false);
   });
 
