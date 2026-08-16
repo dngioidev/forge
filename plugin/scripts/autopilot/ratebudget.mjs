@@ -100,18 +100,47 @@ export const MIN_PLAUSIBLE_DELTA = 500;
  * even though its OWN cost was already known and small. Values are the
  * actually-measured GraphQL spend for each kind, not estimates: `docs: 975`
  * is #462's measured docs+regression-test cost; `spike: 3457` is #448's
- * measured spike+docs-PR cost. Only these two kinds carry evidence — every
+ * measured spike+docs-PR cost (#448 as it stood when #526 was measured — its
+ * title/content has since changed; see the AC-530 evidence below for why this
+ * makes per-title historical citations fragile and the board `type` field a
+ * more stable classification key going forward). Only these two kinds carry
+ * evidence — every
  * other WORK_TYPES prefix still falls through to the recentDeltas-based
  * estimate below unchanged (see `ticketKind` in `select.mjs`).
  *
- * Trust boundary (#526 security pass): `kind` originates from a ticket TITLE
- * (`select.mjs` `ticketKind`), which is editable by anyone with repo issue-
- * write/triage access — a broader scope than the board-write access needed
- * to reach `ready`. A mistitled ticket can therefore steer this lookup. That
- * is an accepted, bounded risk (see `ticketKind`'s own docblock for the full
- * reasoning): the live `remaining` reading this feeds into is never
- * attacker-controlled, and `UNATTRIBUTED_DRAIN_FLOOR` below still bounds how
- * low a known-kind result can go.
+ * #530 — still keyed by the TITLE-prefix vocabulary (`docs`/`spike`), not the
+ * board `type` field, and deliberately so. `select.mjs`'s `normalize()` now
+ * sources `t.kind` from the board `type` field FIRST (primary signal, ~100%
+ * coverage, AC.1) and only falls back to `ticketKind(title)` — the sole
+ * remaining consumer of this table — when `type` is unavailable. This table
+ * was NOT re-keyed to the board's `type` vocabulary (AC.4) because there is no
+ * safe mapping yet: the live board (`gh project field-list`) has exactly 4
+ * `type` options — `epic`/`item`/`bug`/`test` — with no `docs`/`spike` value
+ * at all (`newwork.mjs`'s `KIND_TO_TYPE` independently documents the same
+ * fact: "No 'spike' type — a spike is tracked as an item"). Worse, the one
+ * clean same-type data point available PROVES type is not a safe cost proxy
+ * on this board: issue #462 (~975pt, the `docs` figure above) and issue #438
+ * (~4993pt, `DEFAULT_LOW_WATER`'s source) are BOTH board type `item` — a
+ * single type value spans a >5x measured range. Assigning any board `type`
+ * value an optimistic cost from this table would therefore be exactly the
+ * failure AC.2/AC.4 forbid (an unrecognized-or-unproven type must degrade
+ * conservatively, not optimistically) — so no `type`-keyed entries exist
+ * here. A future ticket can add real `type`-keyed entries once per-type
+ * evidence (not per-title-prefix evidence) actually exists; until then every
+ * real ticket's board-`type`-derived `kind` (`item`/`bug`/`test`/`epic`) is,
+ * correctly, not a `KIND_COST_ESTIMATES` key, so it falls through to the
+ * unchanged path 2 (recentDeltas MAX / `DEFAULT_LOW_WATER`) below.
+ *
+ * Trust boundary (#526 security pass, narrowed by #530): `kind` reaching this
+ * table is now ONLY ever title-derived in the type-missing fallback case (see
+ * `ticketKind`'s docblock in `select.mjs`) — a materially smaller attack
+ * surface than #526 shipped, since the board `type` field (Projects-v2
+ * board-write access, not free-text issue-title access) is the primary path
+ * for every ticket that has one. A mistitled ticket in the fallback case can
+ * still steer this lookup; that residual risk is bounded the same way #526
+ * accepted it: the live `remaining` reading is never attacker-supplied, only
+ * the *threshold* is influenced, and `UNATTRIBUTED_DRAIN_FLOOR` below still
+ * floors how low a known-kind result can go.
  */
 export const KIND_COST_ESTIMATES = { docs: 975, spike: 3457 };
 
@@ -131,6 +160,13 @@ export const UNATTRIBUTED_DRAIN_FLOOR = 1500;
 
 /**
  * Derives the low-water threshold for THIS check. Two paths (#526):
+ *
+ * #530: `kind`'s SOURCE changed (board `type` field first, `ticketKind(title)`
+ * only as fallback — `select.mjs` `normalize()`) but this function's own logic
+ * is byte-identical to #526/#517. `KIND_COST_ESTIMATES` still has no entries
+ * for the board `type` vocabulary (see its docblock for the evidence why), so
+ * in practice every real ticket today — `kind` of `item`/`bug`/`test`/`epic`
+ * — takes path 2 below, same as an unrecognized kind always did.
  *
  * 1. Known kind (`kind` is a `KIND_COST_ESTIMATES` key, e.g. 'docs'/'spike'):
  *    short-circuits straight to `Math.max(KIND_COST_ESTIMATES[kind],
