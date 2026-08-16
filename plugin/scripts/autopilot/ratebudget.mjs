@@ -99,8 +99,12 @@ export const MIN_PLAUSIBLE_DELTA = 500;
  * known-cheap ticket kind was held hostage by a past expensive ticket's cost,
  * even though its OWN cost was already known and small. Values are the
  * actually-measured GraphQL spend for each kind, not estimates: `docs: 975`
- * is #462's measured docs+regression-test cost; `spike: 3457` is #438-era
- * measured spike+docs-PR cost. Only these two kinds carry evidence — every
+ * is #462's measured docs+regression-test cost; `spike: 3457` is #448's
+ * measured spike+docs-PR cost (#448 as it stood when #526 was measured — its
+ * title/content has since changed; see the AC-530 evidence below for why this
+ * makes per-title historical citations fragile and the board `type` field a
+ * more stable classification key going forward). Only these two kinds carry
+ * evidence — every
  * other WORK_TYPES prefix still falls through to the recentDeltas-based
  * estimate below unchanged (see `ticketKind` in `select.mjs`).
  *

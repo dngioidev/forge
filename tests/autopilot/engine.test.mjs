@@ -1908,7 +1908,7 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       expect(item.kind).toBe('bug'); // board type wins, not the (mistitled) prefix — closes the #526 trust-boundary gap
     });
 
-    it('AC-530.5: all 8 titles from the ticket\'s measured-evidence table classify (non-null) via their real board type, vs. 2/8 under the old title-only classifier', () => {
+    it('AC-530.5a: all 8 titles from the ticket\'s measured-evidence table classify (non-null) via their real board type, vs. 2/8 under the old title-only classifier', () => {
       const evidence = [
         // [title, live board type, old ticketKind(title) result]
         ['denylist: brace expansion can complete a flag the command text never spells', 'Bug', null],
@@ -1928,7 +1928,7 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       }
     });
 
-    it('AC-530.5: the three tickets queued when #530 was filed (#448, #469, #449) all classify as `bug`, not null', () => {
+    it('AC-530.5b: the three tickets queued when #530 was filed (#448, #469, #449) all classify as `bug`, not null', () => {
       const queued = [
         [448, 'denylist: brace expansion can complete a flag the command text never spells'],
         [469, 'forge:triage lacks a terminal report-contract section for its {issue, verdict, outcome} return shape'],

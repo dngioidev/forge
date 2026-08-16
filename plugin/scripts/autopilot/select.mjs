@@ -93,7 +93,7 @@ export function actionableQueue(tickets, opts = {}) {
 
 // #526: the WORK_TYPES prefix among the two kinds ratebudget.mjs's KIND_COST_ESTIMATES has
 // measured evidence for. `estimateTicketCost` only knows a real per-kind number for docs/spike
-// tickets (#462, #438) — every other real ticket-type prefix (feat/fix/chore/refactor/test/
+// tickets (#462, #448) — every other real ticket-type prefix (feat/fix/chore/refactor/test/
 // perf/hotfix) still falls through to the existing recentDeltas-based estimate untouched, so
 // ticketKind deliberately does not surface them even though the regex below is built from the
 // full WORK_TYPES vocabulary (reusing lib/ticket.mjs's branch-naming prefix list instead of
@@ -175,9 +175,11 @@ export function normalize(ctx, item) {
     type,
     area: ctx.itemFieldKey(item, 'area'), // #146: null when the board has no Area field
     // #530: board type first (primary, ~100% coverage); ticketKind(title) only when type is
-    // absent (secondary/fallback — see both docblocks above). Feeds estimateTicketCost's
-    // per-kind rate-budget estimate (ratebudget.mjs).
-    kind: type ?? ticketKind(title),
+    // absent (secondary/fallback — see both docblocks above). `||`, not `??`: a set-but-blank
+    // type (theoretical — optionKey('') is falsy but not null/undefined) must fall back too,
+    // not short-circuit to kind:''. Feeds estimateTicketCost's per-kind rate-budget estimate
+    // (ratebudget.mjs).
+    kind: type || ticketKind(title),
   };
 }
 
