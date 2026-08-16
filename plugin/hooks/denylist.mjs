@@ -304,6 +304,97 @@ function beforeEndOfOptions(command, guarded) {
 }
 
 /**
+ * A single, generic brace-group scan (#448): matches ANY `{...}` pair whose
+ * content contains a comma OR `..`, covering comma lists (`{a,b}`), ranges
+ * (`{a..b}`), and step ranges (`{a..b..n}`) alike with ONE pattern that never
+ * tries to tell which of the three it found.
+ *
+ * That "never classifies which kind" is the load-bearing design decision for
+ * this whole ticket, not a simplification of convenience. An earlier
+ * implementation (written for #437/PR #445) tried to correctly EXPAND every
+ * brace form and match the result — enumerate the alternatives, generate
+ * candidate strings, match each one. It was reviewed five times and removed
+ * before merge: all eight defects found across those reviews traced back to
+ * that enumeration step (a budget/pool needed to stay bounded across a
+ * cross-product that is exponential in group count; a "every group has >= 2
+ * alternatives" assumption a single-element range broke, overflowing the
+ * stack; starvation and coverage gaps in the budget bookkeeping; and, worst,
+ * a 74-byte command whose materialised expansion reached ~188KB, driving
+ * 4.65s of quadratic backtracking in this file's own `\bgit\b…VERB` rules —
+ * on a hook with a 10s fail-open budget, #428). Full history in ticket #448.
+ *
+ * DETECTING, never enumerating, removes that entire bug surface rather than
+ * patching each instance: nothing is ever generated, stored, or iterated, so
+ * there is no budget to exhaust, no pool to starve, no cross-product to
+ * bound, and nothing for a ReDoS to run against. Cost is a single bounded
+ * regex scan — O(command length), not exponential in group count — which is
+ * also why `[^{}\s]*` (not `.*?`) is used on both sides: it forbids the scan
+ * from crossing a nested brace or whitespace boundary, so there is no
+ * catastrophic-backtracking shape here for even an adversarially repetitive
+ * input to exploit (see AC-448.2/AC-448.3's own adversarial-size and
+ * hard-latency-ceiling tests).
+ */
+const BRACE_GROUP = /\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}/;
+
+/**
+ * Does `guardedSegment` contain a BRACE_GROUP match sitting inside a token
+ * that could plausibly BE, or complete, a command-line flag (#448)?
+ *
+ * Reads the GUARDED reading of the segment — `guardedText`'s own segment,
+ * the same one `recursive-delete` already reads for its end-of-options
+ * boundary check (#454) — never the raw or canonical `text`, so a brace pair
+ * that exists only inside a quoted region (`query='mutation{a,b}'`, a commit
+ * message `-m '...{a,b}...'`, #85) is invisible here exactly as it is
+ * invisible to real bash's own brace expansion, which likewise never fires
+ * on a quoted `{`/`}` (AC-448.4, AC-448.6 — see `normalizeShellText()`'s own
+ * comment on why `{`/`}` were added to `guardedText`'s maskable set for
+ * exactly this purpose).
+ *
+ * Split on bash's own IFS — space, tab, newline (`safeRmTarget()`'s own
+ * established convention, deliberately not JS's wider `\s`; see that
+ * function's comment for why) — then per token, a token can complete a flag
+ * two ways:
+ *
+ *  1. **The token itself starts with `-` or `+`.** The dash(es)/plus are
+ *     already spelled; the brace only fills in the rest — `--forc{e,}`,
+ *     `-r{f,}`, `-{D,}`, `-{f,}`, and their range/step-range siblings
+ *     (`--forc{d..e}`, `-{e..f}`, `--f{o..o..1}rce`). This is the shape
+ *     behind every "The gap" reproduction but one.
+ *  2. **The token IS ENTIRELY the brace group** (`allowBareBrace: true`
+ *     only) — `{--force,}` — the flag's own leading dash lives INSIDE an
+ *     alternative, not outside the brace at all. Verified against real git
+ *     in the ticket body as a genuine `--force` bypass. Checking only the
+ *     token's own leading character (`{`) — never peeking at what any
+ *     alternative inside the group actually contains — keeps this a shape
+ *     check, not a step back toward classifying/resolving the group.
+ *
+ * `allowBareBrace` is per-CALL, not per-file, because shape 2 is not a free
+ * widening everywhere it could be applied. `recursive-delete`'s non-flag
+ * arguments are ordinary bare words too — `rm {file1,file2}` deletes two
+ * named files, nothing recursive or forced about it — so treating every
+ * leading-brace token as flag-adjacent there would block a plainly harmless
+ * command this ticket never asked to touch (AC-448.4). `force-push`/
+ * `hard-reset`/`env-branch-delete` have no equivalent "harmless bare list"
+ * argument shape in the region they scan, so they pass `true`;
+ * `recursive-delete` passes `false` and relies on shape 1 plus its own
+ * existing `SAFE_RM_TARGET` allowlist for everything else.
+ *
+ * Deliberately does NOT verify the hidden content could plausibly spell the
+ * SPECIFIC letter a rule cares about (`r`/`f`/`D`/`hard`/…) — `rm -{v,}`
+ * (an unrelated, non-dangerous flag) also blocks under this check. Peeking
+ * inside the group to narrow that would be a step back toward "classify
+ * what this brace could resolve to", the exact enumeration this design
+ * exists to avoid — and over-blocking is this file's own stated safe
+ * direction throughout.
+ */
+function hasFlagAdjacentBrace(guardedSegment, { allowBareBrace }) {
+  return guardedSegment.split(/[ \t\n]+/).some((tok) => {
+    if (!tok || !BRACE_GROUP.test(tok)) return false;
+    return tok[0] === '-' || tok[0] === '+' || (allowBareBrace && tok[0] === '{');
+  });
+}
+
+/**
  * Build the regex source for a long flag AND every unambiguous abbreviation of
  * it that git's parse-options accepts, e.g. abbrev('mirror', 1) yields
  * `m(?:i(?:r(?:r(?:o(?:r)?)?)?)?)?` — matching --m/--mi/--mir/--mirr/--mirro/
@@ -822,6 +913,22 @@ export function normalizeShellText(rawCommand) {
   // suppress `$(...)` expansion entirely in real bash, so masking protected
   // instances of these four characters is the correct semantic model here,
   // not merely a defensive widening.
+  //
+  // ALSO masking `{` and `}` when protected (#448): `hasFlagAdjacentBrace()`
+  // below needs the identical protected/bare distinction for exactly the
+  // same reason — bash's own brace expansion has the identical quoting rule
+  // as `$(...)`: "a correctly-formed brace expansion must contain UNQUOTED
+  // opening and closing braces, and at least one unquoted comma or a valid
+  // sequence expression" (bash manual). A quoted `{a,b}` (a commit message
+  // `-m '...{a,b}...'`, a GraphQL query `query='mutation{...}'`, #85) is
+  // inert literal data in real bash, never expansion syntax, and masking it
+  // here is what lets the brace detector tell that apart from a genuinely
+  // live, unquoted brace group glued onto a flag token (`-o'{a,b}'` reads
+  // identically to the dangerous `-o{a,b}` in the canonical `text`, and only
+  // this masking distinguishes them). Comma and `.` are deliberately NOT
+  // masked — masking just the two delimiter characters already fully
+  // prevents `BRACE_GROUP`'s literal `{`...`}` match from finding a pair
+  // inside a quoted region, so there is nothing further to protect.
   // Built with a plain UTF-16-code-unit-indexed loop (`text[i]`/`text.length`),
   // NOT `Array.from(text, ...)` (full-branch adversarial re-review, critical
   // finding): `Array.from` on a string iterates by Unicode CODE POINT, so an
@@ -842,7 +949,7 @@ export function normalizeShellText(rawCommand) {
   const guardedChars = new Array(text.length);
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    const maskable = ch === ' ' || ch === '\t' || ch === '\n' || ch === '$' || ch === '(' || ch === ')' || ch === '`';
+    const maskable = ch === ' ' || ch === '\t' || ch === '\n' || ch === '$' || ch === '(' || ch === ')' || ch === '`' || ch === '{' || ch === '}';
     guardedChars[i] = !bare[i] && maskable ? GUARD_SENTINEL : ch;
   }
   const guardedText = guardedChars.join('');
@@ -940,9 +1047,12 @@ export function normalizeShellText(rawCommand) {
 // escapes resolved, a raw NUL byte deleted) as its segment argument (#452
 // v2). Only `recursive-delete` reads a SECOND argument, `spacedText`'s
 // corresponding segment, for its own target-parsing (see its own comment
-// below), and a THIRD, `guardedText`'s corresponding segment, for its own
-// flag-boundary parsing (#454 AC-454.5 fix wave, see `beforeEndOfOptions()`)
-// — every other rule ignores the second and third arguments entirely.
+// below). The THIRD argument, `guardedText`'s corresponding segment, is read
+// by `recursive-delete` for its own flag-boundary parsing (#454 AC-454.5 fix
+// wave, see `beforeEndOfOptions()`) AND by `force-push`/`hard-reset`/
+// `env-branch-delete` for `hasFlagAdjacentBrace()`'s brace-expansion
+// detection (#448) — every rule ignores whichever of the second/third
+// arguments it has no use for.
 export const RULES = [
   {
     name: 'force-push',
@@ -965,7 +1075,13 @@ export const RULES = [
     // Short-flag collection uses the same technique as recursive-delete below:
     // the `(?:^|\s)-` anchor keeps long `--force-*` flags and mid-word dashes
     // (`feat-f`) out of the cluster so neither can spoof (or dodge) a short flag.
-    test: (c) => {
+    //
+    // 5. brace-group syntax that completes a flag the text never spells
+    //    (#448) — `--forc{e,}`, `-{f,}`, `{--force,}`, and their range/step-
+    //    range siblings all deliver a real `--force`/`-f` to git while none
+    //    of checks 1-4 above ever see the literal text they match on. See
+    //    `hasFlagAdjacentBrace()`'s own comment for the detection design.
+    test: (c, _cSpaced, cGuarded) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
       if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
       // --mirror IS abbreviable (unlike --force above): `git push --mir` really
@@ -975,6 +1091,7 @@ export const RULES = [
       // open in the very rule #429 hardened (#437, adversarial review).
       if (PUSH_MIRROR.test(c)) return true;
       if (/(?:^|\s)\+\S/.test(c)) return true;
+      if (hasFlagAdjacentBrace(cGuarded, { allowBareBrace: true })) return true;
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
@@ -998,7 +1115,30 @@ export const RULES = [
     // at each verb's own empirically-measured ambiguity boundary (see the
     // longFlag/abbrev constants above): `git push --de`, `git branch --d`, and
     // `git branch --forc` are all accepted by real git and now all match.
-    test: (c) => {
+    // brace-group syntax that completes a delete/force flag the text never
+    // spells (#448) — `git branch -{D,} main` hands the real command a live
+    // `-D` while every literal check below stays blind to it. The branch
+    // NAME itself needs no new handling here: PROTECTED_BRANCHES'
+    // `\bmain\b`-style word-boundary match already fires on a literal branch
+    // name sitting inside a comma-list brace group unchanged (`{main,foo}`'s
+    // `{`/`,` are non-word characters, so `\bmain\b` matches through them) —
+    // only the FLAG side is this ticket's gap. See `hasFlagAdjacentBrace()`'s
+    // own comment for the detection design.
+    //
+    // The `git push`-delete block below deliberately does NOT get its own
+    // brace check: `force-push` (checked first — it precedes this rule in
+    // RULES) already scans the WHOLE `git push` segment for any
+    // flag-adjacent brace, unconditionally, as one of its own OR-conditions
+    // — so a brace-hidden `-d`/`--delete` on a `git push …` line is always
+    // caught there first regardless (this file cannot tell "hides a delete
+    // flag" from "hides a force flag" without peeking inside the group,
+    // which is exactly the classification this design avoids). Adding an
+    // identical, unreachable check here would be dead code, not
+    // defense-in-depth. `git branch` has no such overlap — force-push's own
+    // guard requires the literal word "push" in the segment, which a
+    // `git branch …` command never contains — so the branch-delete block
+    // below still needs, and keeps, its own check.
+    test: (c, _cSpaced, cGuarded) => {
       if (!PROTECTED_BRANCHES.test(c)) return false;
       if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
         if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
@@ -1010,6 +1150,7 @@ export const RULES = [
         const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
         const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
         if (hasForce && hasDelete) return true;
+        if (hasFlagAdjacentBrace(cGuarded, { allowBareBrace: true })) return true;
       }
       return false;
     },
@@ -1040,7 +1181,16 @@ export const RULES = [
     // (2) splitting into two ANDed regexes drops the old requirement that
     // `--hard` appear textually AFTER `reset`, so `git --hard reset` now also
     // matches, which is strictly MORE caught, never less.
-    test: (c) => /\bgit\b[^\n]*\breset\b/.test(c) && HARD_RESET.test(c),
+    //
+    // brace-group syntax completing --hard (#448): since minLen=1 above means
+    // even a single literal "h" already unambiguously matches HARD_RESET,
+    // the ONLY way to evade it via a brace is to hide the flag's leading `h`
+    // itself — `--{hard,}` or the bare `{--hard,}` — genuinely uncaught by
+    // the abbreviation regex alone. See `hasFlagAdjacentBrace()`'s comment
+    // for the detection design; `allowBareBrace: true` since `git reset` has
+    // no "bare list of non-flag arguments" shape the way `rm`'s targets do.
+    test: (c, _cSpaced, cGuarded) => /\bgit\b[^\n]*\breset\b/.test(c) &&
+      (HARD_RESET.test(c) || hasFlagAdjacentBrace(cGuarded, { allowBareBrace: true })),
     msg: 'git reset --hard discards work irrecoverably',
   },
   {
@@ -1125,10 +1275,29 @@ export const RULES = [
       // passes `alnum: true`: git has numeric short flags (`-4`) that can
       // bundle with `-f`, `rm` has none, so widening here would buy nothing.
       const shortFlags = shortFlagCluster(flagsSegment);
+      // brace-group syntax completing -r/-f the text never spells (#448) —
+      // `rm -r{f,} /opt/danger` hands a real `-rf` to rm while shortFlags
+      // above stays blind to the bundled `f`. `flagsSegmentGuarded` is
+      // `cGuarded` truncated to the SAME length as `flagsSegment` (both are a
+      // prefix of the same underlying text/guardedText pair, which are
+      // guaranteed same-length/same-position throughout this file — see
+      // normalizeShellText()'s own comment), so no second parse is needed to
+      // derive it. `allowBareBrace: false`: unlike the other three rules,
+      // `rm`'s own non-flag arguments are ordinary bare words too
+      // (`rm {file1,file2}` deletes two named files, nothing recursive or
+      // forced about it) — treating every leading-brace TARGET as
+      // flag-adjacent would over-block a plainly harmless delete this ticket
+      // never asked to touch (AC-448.4). A single ambiguous brace-adjacent
+      // flag token is treated as though it could complete BOTH -r and -f at
+      // once (rather than guessing which), matching the ticket's own framing
+      // — "if present, the rule refuses to certify the command safe" — and
+      // avoiding a per-letter peek into the group's alternatives.
+      const flagsSegmentGuarded = cGuarded.slice(0, flagsSegment.length);
+      const hasBraceFlag = hasFlagAdjacentBrace(flagsSegmentGuarded, { allowBareBrace: false });
       // Recursive via short -r/-R OR the long --recursive; force via short -f OR
       // long --force. Both required (AC-312.1), in any order.
-      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsSegment);
-      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsSegment);
+      const recursive = /[rR]/.test(shortFlags) || /\B--recursive\b/.test(flagsSegment) || hasBraceFlag;
+      const force = /f/.test(shortFlags) || /\B--force\b/.test(flagsSegment) || hasBraceFlag;
       if (!recursive || !force) return false;
       // The `rm` slice point is found on a command-token BOUNDARY, not by
       // unanchored substring search (#454 AC.1): `cSpaced.indexOf('rm')` used
