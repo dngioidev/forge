@@ -145,13 +145,21 @@ describe('#451 — tokenize-then-judge argv model spike', () => {
     expect(index).toContain('spikes/2026-08-13-argv-tokenize-model.md');
   });
 
-  it('this is genuinely a spike: no production hook source was touched', async () => {
-    // The spike's whole premise is "design and decide, do not implement" — pin
-    // that denylist.mjs still has NO tokenizer/token-kind vocabulary wired in,
-    // so a future PR that quietly slips implementation into this ticket's
-    // branch trips this assertion rather than passing silently.
+  it('this is genuinely a spike: no production hook source was touched (superseded, #449)', async () => {
+    // The spike's whole premise was "design and decide, do not implement" —
+    // this originally pinned that denylist.mjs had NO tokenizer/token-kind
+    // vocabulary wired in, so a PR that quietly slipped implementation into
+    // the #451 SPIKE's own branch would trip this rather than pass silently.
+    // #449 is the sanctioned, separately-ticketed integration this spike's
+    // own §5 migration plan and subsumption matrix (§3) always named as a
+    // later, independent step — not a quiet slip into the spike itself — so
+    // the "no tokenizer vocabulary at all" half of this assertion no longer
+    // holds and is corrected here rather than left permanently red.
+    // `unresolved-brace` stays pinned absent: that's #448's own Phase-2-style
+    // vocabulary (brace-adjacent flag detection), which #449 does not touch
+    // or need — its scope is #449's own AC-449.1..4, not #448's.
     const src = await readFile(denylistPath, 'utf8');
-    expect(src).not.toContain('shell-tokenize');
+    expect(src).toContain('shell-tokenize');
     expect(src).not.toContain('unresolved-brace');
   });
 });

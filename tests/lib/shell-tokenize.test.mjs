@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { tokenize } from '../../plugin/scripts/lib/shell-tokenize.mjs';
+import { tokenize, isTerminatedSubstitution } from '../../plugin/scripts/lib/shell-tokenize.mjs';
 
 const TOKENIZER_PATH = fileURLToPath(new URL('../../plugin/scripts/lib/shell-tokenize.mjs', import.meta.url));
 const DENYLIST_PATH = fileURLToPath(new URL('../../plugin/hooks/denylist.mjs', import.meta.url));
@@ -343,27 +343,92 @@ describe('tokenize() — AC-457.2: bash-verified pinned cases from the spike', (
   });
 });
 
-describe('tokenize() — AC-457.3: zero behaviour change to the shipped guard', () => {
-  it('AC-457.3: plugin/hooks/denylist.mjs does not import shell-tokenize.mjs — this module is dead code, imported by nothing', () => {
+describe('tokenize() — AC-457.3: zero behaviour change to the shipped guard (until #449)', () => {
+  // #457 shipped as dead code, imported by nothing in denylist.mjs — this
+  // block originally pinned exactly that. #449 (subshellSafeShortFlagCluster,
+  // force-push/env-branch-delete/recursive-delete) is the SANCTIONED first
+  // consumer the module's own header always named as the eventual Phase 2+
+  // use ("PRIOR ART REUSED" / spike §5) — so the "imported by nothing" half
+  // of AC-457.3 is now expected to be false, updated here rather than left a
+  // stale, permanently-failing assertion. The "no reverse dependency" half
+  // below is unaffected and still holds.
+  it('AC-457.3 (superseded by #449): plugin/hooks/denylist.mjs now imports shell-tokenize.mjs — #449 is the sanctioned first consumer', () => {
     const denylistSource = readFileSync(DENYLIST_PATH, 'utf8');
-    expect(denylistSource).not.toMatch(/shell-tokenize/);
+    expect(denylistSource).toMatch(/shell-tokenize/);
   });
 
+  it('AC-457.1 still holds unchanged: the plain Token shape carries no `terminated` field even after #449 widened scanSubstitutionSpan()\'s own internal return value', () => {
+    // #449 (denylist.mjs's subshellSafeShortFlagCluster()) needs to know
+    // whether a substitution span closed, but that need is served by the
+    // isTerminatedSubstitution() export below, NOT by widening the pinned
+    // { text, kind } Token contract — re-asserted here as its own guard so a
+    // future edit to scanSubstitutionSpan() can't silently leak its richer
+    // internal shape back into tokenize()'s public one.
+    const tokens = tokenize('rm -rf "$(echo x)" dist');
+    const sub = tokens.find((t) => t.kind === 'substitution');
+    expect(sub).toBeDefined();
+    expect(Object.keys(sub).sort()).toEqual(['kind', 'text']);
+  });
+});
+
+describe('isTerminatedSubstitution() (#449)', () => {
+  // Drives the exact scanSubstitutionSpan() extension #449 added — re-runs
+  // the SAME primitive the AC-457.2 block above already bash-verified, just
+  // asking its other question. Every case here is a substitution token's own
+  // `text` exactly as tokenize() would emit it (starting at `$(` or a
+  // backtick), matching the AC-449.3 probe cases denylist.test.mjs exercises
+  // end-to-end.
+  it('a plain, well-formed $(...) span is terminated', () => {
+    expect(isTerminatedSubstitution('$(echo x)')).toBe(true);
+  });
+
+  it('a plain, well-formed backtick span is terminated', () => {
+    expect(isTerminatedSubstitution('`echo x`')).toBe(true);
+  });
+
+  it('an unterminated $( (never closes) is NOT terminated', () => {
+    expect(isTerminatedSubstitution('$(echo x')).toBe(false);
+  });
+
+  it('a nested $( $( ) ) span is terminated only once BOTH levels close (probe4 case 1)', () => {
+    expect(isTerminatedSubstitution('$(echo "a$(echo -n b)c")')).toBe(true);
+    // the same text with the OUTER close removed is genuinely unterminated —
+    // the inner span closing does not fool the outer level into thinking IT
+    // closed too.
+    expect(isTerminatedSubstitution('$(echo "a$(echo -n b)c"')).toBe(false);
+  });
+
+  it('a literal ) inside a quoted string inside the span does not terminate it early (probe4 case 2)', () => {
+    expect(isTerminatedSubstitution(String.raw`$(echo ')')`)).toBe(true);
+  });
+
+  it('a mixed $()/backtick nested form terminates only when both levels close', () => {
+    expect(isTerminatedSubstitution('$(echo `echo x`)')).toBe(true);
+    expect(isTerminatedSubstitution('`echo $(echo x)`')).toBe(true);
+  });
+});
+
+describe('tokenize() — AC-457.3, remaining half: no reverse dependency', () => {
   it('AC-457.3: shell-tokenize.mjs does not import from denylist.mjs (no reverse dependency either — the module comment may still reference it by name for context)', () => {
     const tokenizerSource = readFileSync(TOKENIZER_PATH, 'utf8');
     expect(tokenizerSource).not.toMatch(/(?:import|from|require)\s*\(?\s*['"][^'"]*denylist\.mjs['"]/);
   });
 
-  it('AC-457.3: check()/handle() in denylist.mjs are unchanged by this ticket — the full existing pinned corpus (AC-429.*, AC-437.*, AC-446.*, AC-450.*, AC-454.*, AC-456 absorption) is exercised unmodified by tests/hooks/denylist.test.mjs, which this PR does not edit', async () => {
-    // This is a structural assertion, not a re-run of that suite (vitest
-    // already runs it as its own file in the same `pnpm verify` pass) — it
-    // exists so a reviewer sees the claim stated as a test, not only as PR
-    // body prose. The single authoritative proof is: `git diff main --
-    // plugin/hooks/denylist.mjs` is empty, verified at ship time.
+  it('AC-457.3 (updated by #449): normalizeShellText()/shortFlagCluster()/beforeEndOfOptions() themselves are UNCHANGED in shape — only NEW code (subshellSafeShortFlagCluster() and its own new import) was added around them', async () => {
+    // #449 does edit plugin/hooks/denylist.mjs (see the block above — that is
+    // the whole point of this ticket), so the ORIGINAL claim here ("git diff
+    // main -- plugin/hooks/denylist.mjs is empty") is no longer true and is
+    // corrected rather than left stale. What DOES still hold, and is worth
+    // pinning as a structural fact rather than left to PR-body prose alone:
+    // the three pre-existing functions this module's own header names as
+    // "the logic this eventually replaces" keep their own signatures/names
+    // unmodified — #449 is additive (a new helper + a 4th, optional
+    // rule.test() argument), not a rewrite of any of the three.
     const denylistSource = readFileSync(DENYLIST_PATH, 'utf8');
     expect(denylistSource).toContain('export function normalizeShellText');
-    expect(denylistSource).toContain('function shortFlagCluster');
-    expect(denylistSource).toContain('function beforeEndOfOptions');
+    expect(denylistSource).toContain('function shortFlagCluster(command');
+    expect(denylistSource).toContain('function beforeEndOfOptions(command, guarded)');
+    expect(denylistSource).toContain('function subshellSafeShortFlagCluster');
   });
 });
 

@@ -423,7 +423,13 @@ function canonicalize(rawCommand) {
  *
  * An unterminated span (the stack never empties before end of input) runs to
  * end-of-string — a defined, safe outcome per the spike's own requirement,
- * rather than an unbounded or undefined one.
+ * rather than an unbounded or undefined one. Returns `{ end, terminated }`
+ * rather than a bare index (#449) so a caller can tell "closed properly" from
+ * "ran off the end of the input still open" — `tokenizeCanonical()` below
+ * only ever reads `end` (the flat `Token` shape has no field for this, and
+ * `tokenize()`'s own AC-457.1-pinned contract is untouched by this addition),
+ * but #449's `isTerminatedSubstitution()` export reads `terminated`, which
+ * this function already computed and previously discarded.
  */
 function scanSubstitutionSpan(text, synBare, openIndex, kind) {
   const n = text.length;
@@ -443,8 +449,9 @@ function scanSubstitutionSpan(text, synBare, openIndex, kind) {
     if (synBare[i] && text[i] === '`') { stack.push('backtick'); i++; continue; }
     i++;
   }
-  return i; // stack empty -> just past the outermost frame's own close;
-  //          loop exhausted with stack non-empty -> unterminated, i === n
+  // stack empty -> just past the outermost frame's own close, terminated;
+  // loop exhausted with stack non-empty -> unterminated, i === n.
+  return { end: i, terminated: stack.length === 0 };
 }
 
 /**
@@ -469,7 +476,7 @@ function scanRun(text, wsBare, synBare, start) {
     if (synBare[i] && text[i] === '$' && synBare[i + 1] && text[i + 1] === '(') {
       flushWord(i);
       const spanStart = i;
-      i = scanSubstitutionSpan(text, synBare, i, 'paren');
+      i = scanSubstitutionSpan(text, synBare, i, 'paren').end;
       pieces.push({ text: text.slice(spanStart, i), kind: 'substitution' });
       wordStart = i;
       continue;
@@ -477,7 +484,7 @@ function scanRun(text, wsBare, synBare, start) {
     if (synBare[i] && text[i] === '`') {
       flushWord(i);
       const spanStart = i;
-      i = scanSubstitutionSpan(text, synBare, i, 'backtick');
+      i = scanSubstitutionSpan(text, synBare, i, 'backtick').end;
       pieces.push({ text: text.slice(spanStart, i), kind: 'substitution' });
       wordStart = i;
       continue;
@@ -566,4 +573,31 @@ function tokenizeCanonical(text, wsBare, synBare) {
 export function tokenize(command) {
   const { text, wsBare, synBare } = canonicalize(command);
   return tokenizeCanonical(text, wsBare, synBare);
+}
+
+/**
+ * Did a `substitution`-kind token's own extracted text (exactly as
+ * `tokenize()` emits it — starting at `$(` or a backtick) actually CLOSE
+ * before the text ends, rather than running off the end still open (#449)?
+ *
+ * A substitution token's own `text` is self-contained: `scanSubstitutionSpan()`
+ * always starts scanning a span at its own opening character with a FRESH
+ * stack, so re-canonicalising and re-scanning just that extracted text, from
+ * its own start, reproduces exactly the same terminated/unterminated verdict
+ * `tokenize()` computed internally while building it — this is not a second,
+ * independently-written scanner re-litigating the six lessons the original
+ * one already encodes; it is the SAME `canonicalize()`/`scanSubstitutionSpan()`
+ * pair, asked the one question `tokenize()` itself already answers and then
+ * discards, because the flat `Token` shape (`{ text, kind }`, AC-457.1) has
+ * no field for it and Phase 1 deliberately did not widen that pinned contract
+ * for a Phase 2+ consumer that did not exist yet.
+ *
+ * @param {string} spanText - a `substitution` token's own `text`, as
+ *   `tokenize()` produced it (must start with `$(` or `` ` ``).
+ * @returns {boolean}
+ */
+export function isTerminatedSubstitution(spanText) {
+  const { text, synBare } = canonicalize(spanText);
+  const kind = text[0] === '`' ? 'backtick' : 'paren';
+  return scanSubstitutionSpan(text, synBare, 0, kind).terminated;
 }

@@ -2098,6 +2098,161 @@ describe('brace expansion (#448, AC-448.5) — check() stays total', () => {
   });
 });
 
+describe('shortFlagCluster() subshell awareness (#449, AC-449.1/AC-449.2)', () => {
+  // Every case in this block was verified BEFORE/AFTER against this working
+  // tree directly (not asserted from memory, per AC-449.3): `git stash` back
+  // to pre-#449 `main` reproduces `blocked:true` for every "false positive"
+  // case below (confirming the bug existed) and `blocked:true` for every
+  // "true positive"/"unterminated" case (confirming the fix doesn't touch
+  // them); this branch's tip reproduces `blocked:false` for the false
+  // positives only. See `docs/spikes/2026-08-13-argv-tokenize-model.md`'s
+  // `probe4` for the same nested/quoted-paren/backtick boundary shapes,
+  // bash-verified there against real bash argv.
+  //
+  // AC-449.1 — a -X-shaped token living entirely inside a well-formed
+  // $(...) /backtick span no longer contributes to the cluster, across all
+  // three affected rules and their four call sites.
+  it('AC-449.1: recursive-delete no longer flags a -rf that belongs to an INNER command inside $(...)', () => {
+    // `cat` has no -r/-f of its own; the point is the LITERAL TEXT "-rf"
+    // sits inside the span as cat's own (nonsense) argument, and real bash
+    // hands rm only cat's OUTPUT plus the second argument — never "-rf"
+    // itself. node_modules/x is a safe target so no other rule/branch can
+    // mask the result.
+    expect(check('rm "$(cat -rf backup.tar)" node_modules/x').blocked).toBe(false);
+  });
+
+  it('AC-449.1: force-push no longer flags a -f that belongs to an INNER command inside $(...)', () => {
+    expect(check('git push $(cat -f decoy.txt) origin main').blocked).toBe(false);
+  });
+
+  it('AC-449.1: env-branch-delete no longer flags a -D (git branch) that belongs to an INNER command inside $(...)', () => {
+    expect(check('git branch $(grep -D pattern file.txt) main').blocked).toBe(false);
+  });
+
+  it('AC-449.1: env-branch-delete no longer flags a -d (git push --delete) that belongs to an INNER command inside $(...)', () => {
+    expect(check('git push $(cat -d decoy.txt) origin main').blocked).toBe(false);
+  });
+
+  // AC-449.1's own named boundary cases — nested $(...), a literal `)`
+  // inside a quoted string inside the span, backtick spans, and mixed
+  // $()/backtick forms — each re-run against all three rules to confirm a
+  // REAL flag sitting OUTSIDE the span still blocks (this is simultaneously
+  // AC-449.1 coverage of the hard termination cases AND AC-449.4/AC-449.2
+  // regression coverage: getting termination wrong here would either leak a
+  // decoy flag in, or swallow a real one out — see the ticket body's own
+  // framing of this exact failure mode).
+  it('AC-449.1: a nested $( $( ) ) span does not hide a real flag OUTSIDE it', () => {
+    expect(check('rm -rf "$(echo "a$(echo -n b)c")" /var/lib/important-data')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('git push $(echo "a$(echo -n b)c") -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-449.1: a literal ) inside a quoted string inside the span does not terminate it early and does not hide a real flag OUTSIDE it', () => {
+    expect(check('rm "$(echo \')\')" -rf /var/lib/important-data')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('git push "$(echo \')\')" -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-449.1: a backtick span does not hide a real flag OUTSIDE it', () => {
+    expect(check('rm `echo harmless` -rf /var/lib/important-data')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('git push `echo harmless` -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-449.1: a mixed $()/backtick nested form does not hide a real flag OUTSIDE it', () => {
+    expect(check('rm "$(echo `echo x`)" -rf /var/lib/important-data')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('git push "$(echo `echo x`)" -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-449.1: real -D / bundled -fd outside a span still blocks env-branch-delete (git branch)', () => {
+    expect(check('git branch $(echo harmless) -D main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+    expect(check('git branch $(echo harmless) -fd main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+  });
+
+  // AC-449.2 — an unterminated $( must fail toward the existing
+  // over-blocking behaviour: the ambiguous remainder of the command must
+  // stay IN the flag-cluster scan, never be silently excluded as though it
+  // were a well-formed opaque span. Each case's $( never closes, and each
+  // still blocks exactly as it did before #449 (verified: pre-#449 `main`
+  // also blocks all three — this ticket does not change unterminated-span
+  // behaviour, only well-formed-span behaviour).
+  it('AC-449.2: an unterminated $( still blocks recursive-delete (fails toward over-blocking)', () => {
+    expect(check('rm "$(echo foo -rf /var/lib/important-data')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  it('AC-449.2: an unterminated $( still blocks force-push (fails toward over-blocking)', () => {
+    expect(check('git push "$(echo foo -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  // AC-449.3's own bash-verification discipline, restated as a pinned
+  // structural fact rather than left implicit: a DOUBLE-quoted $(...) is
+  // STILL live substitution syntax in real bash, so the fix must use the
+  // RAW segment's own quote characters, not denylist.mjs's already-dequoted
+  // `guardedText` reading — verified directly against normalizeShellText():
+  // guardedText for the double- and single-quoted spellings below is
+  // IDENTICAL (`cat-rfbackup.tar`), which is exactly why the fix needed
+  // tokenize() on the RAW segment rather than any transform of `guardedText`
+  // (see subshellSafeShortFlagCluster()'s own comment). A SINGLE-quoted
+  // `'$(...)'\`` is a DIFFERENT case, correctly NOT closed by AC-449.1: real
+  // bash treats it as fully inert literal data (never evaluated as a
+  // substitution at all), so it is not "a $(...) span" in the sense
+  // AC-449.1 means, and — like every other inert-quoted-text case this
+  // file's own AC-437.5 already established — a flag-shaped substring
+  // inside it is conservatively over-blocked, unchanged before and after
+  // this ticket (pre-#449 `main` blocks it too, same as this branch).
+  it('AC-449.3: the fix applies to a LIVE double-quoted span; an INERT single-quoted one keeps its pre-existing (safe, over-blocking) behaviour', () => {
+    expect(check('rm "$(cat -rf backup.tar)" node_modules/x').blocked).toBe(false);
+    expect(check("rm '$(cat -rf backup.tar)' node_modules/x")).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-449.4 — no change to existing true-positive coverage. The single
+  // authoritative proof is the full pre-existing suite staying green
+  // (verified at ship time via `pnpm verify`); this test additionally pins,
+  // as an explicit assertion rather than only PR-body prose, that every
+  // rule this ticket touches still catches its own OWN pre-#449 pinned
+  // reproduction with no `$(...)`/backtick involved at all.
+  it('AC-449.4: ordinary (no-subshell) true positives for all three touched rules are unchanged', () => {
+    expect(check('git push -f origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git branch -D main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+    expect(check('git push -d origin main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+    expect(check('rm -rf /var/lib/important-data')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // Fix wave 1 (full-branch adversarial REVIEWER finding) — see
+  // subshellSafeShortFlagCluster()'s own comment for the full mechanism. A
+  // real ANSI-C-decoded `-f` (`$'-f'`, AC-437.5) sitting BESIDE a same-letter
+  // DECOY `-f` inside an otherwise-maskable subshell used to collide under a
+  // character-SET-based intersection, dropping the real flag. Verified:
+  // pre-fix-wave-1 code on this branch returned `blocked:false` for this
+  // exact command; `main` (pre-#449 entirely) and this branch's current tip
+  // both block it.
+  it('fix wave 1: a real ANSI-C-decoded flag beside a same-letter subshell decoy still blocks (not a character-set collision)', () => {
+    expect(check("git push $'-f' \"$(echo -f)\" origin main")).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  // Fix wave 2 (full-branch adversarial SECURITY finding) — see check()'s
+  // own comment on `singleSegment`/`rawWhole` for the full mechanism. A
+  // multi-segment command combining a quoted-separator raw-only split with
+  // an empty-quote-glued `&&` text-only split used to make `segsRaw.length
+  // === segs.length` hold while the segments themselves were drawn from
+  // UNRELATED parts of the command, letting a real, undisguised `git push
+  // -f origin main` segment get masked using a decoy raw segment from
+  // elsewhere in the line. Verified: pre-fix-wave-2 code on this branch
+  // returned `blocked:false` for this exact command; `main` (which has no
+  // raw-segment concept at all) and this branch's current tip both block
+  // it. This is also, independently, AC-449.2 coverage: a multi-segment
+  // command now always falls back to the OLD unmasked scan for every rule,
+  // by design (fix wave 2's disclosed narrowing).
+  it('fix wave 2: a real flag in one segment is not dropped via a misaligned raw segment borrowed from a DIFFERENT segment', () => {
+    expect(check('A"p0;q0" ; noop $(echo -f) end ; git push -f origin main&""&Z')).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('fix wave 2\'s disclosed narrowing: a genuine subshell false positive INSIDE a multi-segment command is not closed (falls back to old, safe, over-blocking behaviour)', () => {
+    // Same false-positive shape as the AC-449.1 recursive-delete case above,
+    // but now chained after an unrelated harmless segment — `singleSegment`
+    // is false here (two segments), so no raw view is trusted at all, and
+    // this correctly stays over-blocked exactly as it was before #449.
+    expect(check('echo hi ; rm "$(cat -rf backup.tar)" node_modules/x')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
 describe('shared escalate message (#321, AC-321.1)', () => {
   const payload = (cmd) => ({ tool_name: 'Bash', tool_input: { command: cmd }, cwd: '/repo' });
 

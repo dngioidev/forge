@@ -163,9 +163,168 @@ const GUARD_SENTINEL = '\x01';
  * Extracted (#437 AC.4) from force-push and recursive-delete, which had each
  * hand-rolled this same regex separately; env-branch-delete now reuses it too.
  */
-function shortFlagCluster(command, { alnum = false } = {}) {
+/** Every individual `(?:^|\s)-(charClass+)` match, in order — see shortFlagCluster() below. */
+function shortFlagMatches(command, { alnum = false } = {}) {
   const charClass = alnum ? '[a-zA-Z0-9]' : '[a-zA-Z]';
-  return (command.match(new RegExp(`(?:^|\\s)-(${charClass}+)`, 'g')) || []).join('');
+  return command.match(new RegExp(`(?:^|\\s)-(${charClass}+)`, 'g')) || [];
+}
+
+function shortFlagCluster(command, opts) {
+  return shortFlagMatches(command, opts).join('');
+}
+
+/**
+ * (#449) Given a segment's own RAW (pre-dequote) text, walks #457's
+ * `tokenize()` stream (`../scripts/lib/shell-tokenize.mjs`) ONCE and returns
+ * two reconstructed strings built from the SAME token walk: `unmasked` (every
+ * token's own `text`, concatenated in order — a plain, faithful dequoted
+ * rendering with nothing removed) and `masked` (identical, except every
+ * PROPERLY-TERMINATED `$(...)`/backtick span is replaced by a single space —
+ * never a letter or digit, so it can neither spell nor spoof a flag, and
+ * never a fusion risk either, since the span becomes exactly one boundary
+ * character regardless of its own internal length). `subshellSafeShortFlagCluster()`
+ * below diffs the two to isolate exactly what masking removed.
+ *
+ * MUST be fed the RAW segment, never `text`'s already-dequoted reading:
+ * `tokenize()`'s own `canonicalize()` needs the REAL quote characters to
+ * tell a double-quoted `$(...)` (still LIVE substitution syntax in real
+ * bash) apart from a single-quoted one (fully inert data) — a distinction
+ * `normalizeShellText()`'s single flat `bare` flag does not make (verified:
+ * `rm "$(cat -rf x)" y` and `rm '$(cat -rf x)' y` produce IDENTICAL
+ * `guardedText`, `cat-rfx`, even though only the first one's `$(...)` is
+ * live syntax in real bash), so `guardedText`/`GUARD_SENTINEL` cannot
+ * substitute for this input the way they do for `beforeEndOfOptions()`.
+ *
+ * AC-449.2: an UNTERMINATED span (`tokenize()` ran it to the end of the
+ * segment without closing, `isTerminatedSubstitution()` false) is left
+ * COMPLETELY UNMASKED — its raw text stays in the returned surface, so the
+ * ambiguous case can only ever over-block, never silently drop a genuine
+ * flag.
+ *
+ * KNOWN, ACCEPTED, PRE-EXISTING RESIDUAL GAP (unchanged by this ticket): a
+ * `$(...)`/backtick span embedded inside an env-assignment PREFIX's own
+ * value (`FOO=$(cat -f x) rm harmless`) is not masked, because `tokenize()`
+ * captures an assignment's value WHOLE as one `assignment` token (by
+ * design, per that module's own contract) rather than as a sibling
+ * `substitution` token this function walks. `shortFlagCluster()` already
+ * had this exact gap before #449 (it scanned the raw text of an assignment
+ * value identically to everything else); this function does not widen or
+ * narrow it, and it is not one of AC-449.1's named boundary cases.
+ */
+function subshellSafeSurfaces(rawSegment) {
+  const tokens = tokenize(rawSegment);
+  let unmasked = '';
+  let masked = '';
+  for (const t of tokens) {
+    unmasked += t.text;
+    masked += (t.kind === 'substitution' && isTerminatedSubstitution(t.text)) ? ' ' : t.text;
+  }
+  return { unmasked, masked };
+}
+
+/**
+ * Drop-in subshell-aware companion to a `shortFlagCluster(textSegment, opts)`
+ * call site (#449). Computes the OLD match list from `textSegment` exactly
+ * as before (the `c`-space reading `normalizeShellText()` already
+ * produces), and — when a raw segment is available — TWO more match lists
+ * from `subshellSafeSurfaces(rawSegment)`: `unmaskedMatches` (tokenize()'s
+ * own dequoted reading, nothing replaced) and `maskedMatches` (the same
+ * reading with every terminated substitution span replaced). Only WHOLE
+ * MATCHED RUNS present in all three survive, matched up BY OCCURRENCE
+ * (array position), not merely by which characters appear somewhere —
+ * fix-wave 1 below explains why that distinction is load-bearing.
+ *
+ * ## Fix wave 1: full-branch adversarial REVIEWER finding, closed
+ *
+ * The first version of this function compared CHARACTER SETS
+ * (`new Set(oldCluster)` vs. `new Set(unmaskedCluster)`), not match arrays.
+ * `forge:reviewer`, on the full branch diff before shipping, found this
+ * conflates "the same letter happens to appear somewhere in both" with "the
+ * same OCCURRENCE of that letter is present in both" — a real, critical
+ * bypass. `tokenize()` deliberately does NOT decode `$'...'`/`$"..."`
+ * ANSI-C/locale escapes (its own NON-GOALS), while `normalizeShellText()`
+ * does (AC-437.5): `git push $'-f' "$(echo -f)" origin main` decodes to a
+ * REAL, bare `-f` in `textSegment`/`oldMatches` (one occurrence, from the
+ * ANSI-C literal) PLUS a DECOY `-f` inside the double-quoted subshell
+ * (`echo`'s own argument, correctly maskable). The set-based version saw
+ * `{f}` on both the old and unmasked sides — TRUE, but only because the
+ * decoy's `f` and the real one's `f` are the same CHARACTER, not the same
+ * OCCURRENCE — judged them "in agreement", and then masked the real flag
+ * away right alongside the decoy: verified, `main` blocks this command
+ * (force-push); the set-based version of this function did not.
+ *
+ * **Fix:** compare and intersect whole MATCHED-RUN ARRAYS (`" -f"`,
+ * `" -rf"`, etc — each array element is one `(?:^|\s)-(charClass+)` match
+ * in its original left-to-right order), never individual characters. The
+ * gate below (`sameSequence`) requires `oldMatches` and `unmaskedMatches`
+ * to be the EXACT SAME SEQUENCE, element for element — for the ANSI-C
+ * example above that is now FALSE (`oldMatches` has 2 entries, one of them
+ * from a source `unmaskedMatches` can never see; `unmaskedMatches` has only
+ * 1), so this function now correctly falls back to `oldMatches` unchanged,
+ * the safe direction, rather than attempt a delta it cannot trust.
+ *
+ * Once `sameSequence` holds, `maskedMatches` is PROVABLY a (order-preserving)
+ * sub-list of `unmaskedMatches` — masking only ever replaces a whole
+ * substitution token's contribution with nothing, it can never edit,
+ * split, or reorder a match — so a single left-to-right lockstep walk
+ * (`survivingIdx` below) identifies exactly which POSITIONS in
+ * `unmaskedMatches` survived masking, and only those same positions are
+ * kept from `oldMatches` (which, by `sameSequence`, is elementwise
+ * identical to `unmaskedMatches`, so the position correspondence is exact,
+ * not coincidental). Two textually-identical matches at different
+ * positions cannot be told apart by this walk, but that ambiguity is
+ * provably inert: whichever of two IDENTICAL strings gets marked
+ * "surviving" produces the same output text either way.
+ *
+ * This design is what makes the whole function safe without ever needing
+ * to reconcile character OFFSETS between the raw (quoted) and dequoted
+ * `text` character spaces:
+ *  - Masking can only ever REMOVE matches relative to `unmaskedMatches` (a
+ *    span is neutralised to one space, which cannot itself start a new
+ *    `-X` match), so once `sameSequence` has confirmed tokenize() and
+ *    `normalizeShellText()` agree on this input occurrence-for-occurrence,
+ *    the result can never drop a match either dequoder actually found
+ *    outside a masked span — AC-449.4 (no regression to existing
+ *    true-positive coverage) holds by construction, not by re-testing
+ *    every case.
+ *  - Whatever `textSegment` already correctly EXCLUDES for its own reasons
+ *    (recursive-delete's own `--`-truncated `flagsSegment`, forged through
+ *    #454's fix-wave-6 "trustworthy" safety net) stays excluded regardless
+ *    of what the raw-segment scan finds, because the final result can only
+ *    ever narrow `oldMatches`, never add to it — so this function needs no
+ *    independent `--`/end-of-options awareness of its own, and cannot
+ *    reopen a bypass that safety net was built to close.
+ *
+ * Falls back to the plain old cluster whenever `rawSegment` is unavailable
+ * (`undefined` — see `check()`'s own comment on `segsRaw`/`singleSegment`)
+ * or `tokenize()` itself throws on it: `check()` must never throw, so a
+ * tokenizer failure degrades to the OLD behaviour (unmasked, safe by
+ * over-blocking) rather than escaping uncaught — the same fail-safe posture
+ * `normalizeShellText()`'s own try/catch in `check()` already establishes.
+ */
+function subshellSafeShortFlagCluster(rawSegment, textSegment, opts) {
+  const oldMatches = shortFlagMatches(textSegment, opts);
+  if (rawSegment === undefined) return oldMatches.join('');
+  let unmasked, masked;
+  try {
+    ({ unmasked, masked } = subshellSafeSurfaces(rawSegment));
+  } catch {
+    return oldMatches.join('');
+  }
+  const unmaskedMatches = shortFlagMatches(unmasked, opts);
+  const sameSequence = oldMatches.length === unmaskedMatches.length
+    && oldMatches.every((m, i) => m === unmaskedMatches[i]);
+  if (!sameSequence) return oldMatches.join('');
+  const maskedMatches = shortFlagMatches(masked, opts);
+  const survivingIdx = new Set();
+  let mi = 0;
+  for (let i = 0; i < unmaskedMatches.length; i++) {
+    if (mi < maskedMatches.length && maskedMatches[mi] === unmaskedMatches[i]) {
+      survivingIdx.add(i);
+      mi++;
+    }
+  }
+  return oldMatches.filter((_, i) => survivingIdx.has(i)).join('');
 }
 
 /**
@@ -1148,7 +1307,7 @@ export const RULES = [
     //    range siblings all deliver a real `--force`/`-f` to git while none
     //    of checks 1-4 above ever see the literal text they match on. See
     //    `hasFlagAdjacentBrace()`'s own comment for the detection design.
-    test: (c, _cSpaced, cGuarded) => {
+    test: (c, _cSpaced, cGuarded, cRaw) => {
       if (!/\bgit\b[^\n]*\bpush\b/.test(c)) return false;
       if (/\s--force\b(?!-with-lease|-if-includes)/.test(c)) return true;
       // --mirror IS abbreviable (unlike --force above): `git push --mir` really
@@ -1162,7 +1321,12 @@ export const RULES = [
       // Alphanumeric, not alpha-only: `git push -4f` bundles the IPv4 flag with
       // -f and really does force-update (verified against live git), but an
       // [a-zA-Z]-only cluster scan misses it because the digit breaks the run.
-      return /f/.test(shortFlagCluster(c, { alnum: true }));
+      // subshellSafeShortFlagCluster (#449): a -f-shaped token that lives
+      // entirely inside a $(...)/backtick span (e.g. `git push $(echo -f)
+      // origin main`, where -f is an argument to the INNER echo, not a flag
+      // to the outer push) no longer contributes — see that helper's own
+      // comment for why intersecting with the plain scan makes this safe.
+      return /f/.test(subshellSafeShortFlagCluster(cRaw, c, { alnum: true }));
     },
     msg: 'git push force-update (--force, bundled -f, --mirror, or a +refspec) rewrites published history',
   },
@@ -1205,14 +1369,16 @@ export const RULES = [
     // guard requires the literal word "push" in the segment, which a
     // `git branch …` command never contains — so the branch-delete block
     // below still needs, and keeps, its own check.
-    test: (c, _cSpaced, cGuarded) => {
+    test: (c, _cSpaced, cGuarded, cRaw) => {
       if (!PROTECTED_BRANCHES.test(c)) return false;
+      // subshellSafeShortFlagCluster (#449): same subshell-boundary
+      // narrowing as force-push above — see that rule's comment.
       if (/\bgit\b[^\n]*\bpush\b/.test(c)) {
         if (PUSH_DELETE.test(c) || /:/.test(c)) return true;
-        if (/d/.test(shortFlagCluster(c, { alnum: true }))) return true;
+        if (/d/.test(subshellSafeShortFlagCluster(cRaw, c, { alnum: true }))) return true;
       }
       if (/\bgit branch\b/.test(c)) {
-        const cluster = shortFlagCluster(c, { alnum: true });
+        const cluster = subshellSafeShortFlagCluster(cRaw, c, { alnum: true });
         if (/D/.test(cluster)) return true; // -D, incl. bundled (-Dq / -qD), IS delete+force
         const hasForce = /f/.test(cluster) || BRANCH_FORCE.test(c);
         const hasDelete = /d/.test(cluster) || BRANCH_DELETE.test(c);
@@ -1298,7 +1464,7 @@ export const RULES = [
     // `cGuarded` — that SAME segment's guardedText reading — drives the
     // end-of-options BOUNDARY check only, so a quoted decoy can't fake a
     // real `--` (see `beforeEndOfOptions()`'s own comment).
-    test: (c, cSpaced, cGuarded) => {
+    test: (c, cSpaced, cGuarded, cRaw) => {
       if (!/\brm\b/.test(c)) return false;
       // Flag detection must stop at a bare `--` (POSIX end-of-options, #454
       // AC.5): every token after it is a filename, never a flag, so it must
@@ -1340,7 +1506,13 @@ export const RULES = [
       // helper. Deliberately alpha-only (default) where force-push above
       // passes `alnum: true`: git has numeric short flags (`-4`) that can
       // bundle with `-f`, `rm` has none, so widening here would buy nothing.
-      const shortFlags = shortFlagCluster(flagsSegment);
+      // subshellSafeShortFlagCluster (#449): `flagsSegment` is passed as the
+      // OLD/fallback text unchanged (still the `--`-truncated, trustworthy-
+      // gated value computed above — untouched by this ticket), while `cRaw`
+      // (the segment's own full RAW text) drives the subshell-boundary
+      // narrowing via intersection — see that helper's own comment for why
+      // this needs no independent `--` awareness of its own to stay safe.
+      const shortFlags = subshellSafeShortFlagCluster(cRaw, flagsSegment);
       // brace-group syntax completing -r/-f the text never spells (#448) —
       // `rm -r{f,} /opt/danger` and `rm {,-}rf /opt/danger` both hand a real
       // `-rf` to rm while shortFlags above stays blind to it.
@@ -1433,6 +1605,10 @@ import { splitSegments as segments } from '../scripts/lib/shell-split.mjs';
 // The escalate message is single-sourced (#321) so this hook and the agy deny shim
 // cannot drift the wording again; both import escalateMessage() with zero side effects.
 import { escalateMessage } from '../scripts/lib/escalate-msg.mjs';
+// #449: subshellSafeShortFlagCluster()'s hard part (depth-/quote-aware
+// $(...)/backtick span termination) is entirely #457's, reused rather than
+// re-derived — see that function's own comment.
+import { tokenize, isTerminatedSubstitution } from '../scripts/lib/shell-tokenize.mjs';
 
 export function check(command) {
   if (typeof command !== 'string' || command.length === 0) return { blocked: false };
@@ -1471,6 +1647,59 @@ export function check(command) {
   // `?? seg` fallbacks below are therefore defensive only, never load-bearing.
   const segsSpaced = segments(spacedText);
   const segsGuarded = segments(guardedText);
+  // (#449) Raw (pre-dequote) view, read ONLY by
+  // `subshellSafeShortFlagCluster()` — `tokenize()` needs the segment's REAL
+  // quote characters to tell a live `$(...)` apart from an inert one (see
+  // that function's own comment for why `guardedText` can't substitute).
+  //
+  // ## Fix wave 2: full-branch adversarial SECURITY finding, closed
+  //
+  // An EARLIER version of this computed `segsRaw = segments(command)` (the
+  // raw command, independently re-split the same naive way every other view
+  // is) and paired `segsRaw[i]` with `segs[i]` whenever the two arrays
+  // merely had the SAME LENGTH. `forge:security`, on the full branch diff
+  // before shipping, found that length equality does NOT imply positional
+  // correspondence, and built a concrete exploit: a quoted separator
+  // (`"p;q"`) creates a split point `segments(command)` sees but
+  // `segments(text)` doesn't (the quote neutralises it in `text`), while an
+  // empty-quote pair straddling two otherwise-non-adjacent `&` characters
+  // (`&""&`) creates the OPPOSITE asymmetry — `command`'s raw split never
+  // sees `&&` (the quote characters keep the two `&`s apart literally), but
+  // `text` does (the empty quotes vanish, gluing the two bare `&`s into a
+  // real `&&` operator `text` alone has). Balancing one of each lets the
+  // TOTAL segment count match while the segments THEMSELVES are drawn from
+  // unrelated parts of the command — verified:
+  // `A"p0;q0" ; noop $(echo -f) end ; git push -f origin main&""&Z` gives
+  // `segsRaw.length === segs.length` (both 4) while `segsRaw[2]` (`noop
+  // $(echo -f) end`) and `segs[2]` (`git push -f origin main`) are
+  // completely different sub-commands — feeding `subshellSafeShortFlagCluster()`
+  // a decoy raw segment whose OWN masked `-f` coincidentally matched the
+  // real one's letter, dropping a genuine, undisguised `git push -f` from
+  // detection. `main` blocks this; the length-only-guarded version of this
+  // function did not — a live force-push bypass introduced by this ticket's
+  // own new code, not a pre-existing gap.
+  //
+  // **Fix:** stop trying to independently re-segment `command` and pair
+  // indices at all. Instead, only ever trust a raw view when the WHOLE
+  // command is provably ONE segment on BOTH sides — `segments(command)` and
+  // `segments(text)` each return exactly one entry. With exactly one entry
+  // on each side there is no index to mis-pair: that single entry
+  // necessarily spans the ENTIRE (trimmed) command on both views, by
+  // construction, not by a coincidental count match — `text` is DERIVED
+  // FROM `command` via one linear dequoting pass, so "the whole raw
+  // command" and "the whole dequoted command" denote the same underlying
+  // text on any input with no real top-level separator at all. This closes
+  // the exploit class categorically (no index-pairing mechanism survives to
+  // attack) at the cost of a real, disclosed narrowing: a MULTI-segment
+  // command (containing a genuine `;`/`|`/`&`/newline) never gets the new
+  // subshell-masking, and falls back to the OLD, unmasked, already-safe
+  // (over-blocking) behaviour for every rule in this command — consistent
+  // with AC-449.2's own "when in doubt, over-block" direction, and every
+  // AC-449.1 named boundary case (nested/quoted-paren/backtick/mixed/
+  // unterminated) is itself single-segment, so this narrowing does not
+  // affect this ticket's own required closures.
+  const rawWhole = command.trim();
+  const singleSegment = segments(command).length === 1 && segs.length === 1 && segs[0] === text.trim();
   for (const rule of RULES) {
     // scope:'full' rules test the whole command (pipe-to-shell hides in the pipe
     // that segments() splits on); all others test each split sub-command. Every
@@ -1480,10 +1709,14 @@ export function check(command) {
     // second argument (its own target parsing, see its own comment); the third
     // is read by `recursive-delete` (flag-boundary parsing) AND by
     // `force-push`/`hard-reset`/`env-branch-delete` (#448's
-    // `hasFlagAdjacentBrace()` brace-expansion detection).
+    // `hasFlagAdjacentBrace()` brace-expansion detection). The fourth is the
+    // WHOLE raw command (or `undefined` unless the command is provably a
+    // single segment on both the raw and dequoted views, #449 fix-wave 2),
+    // read by `force-push`/`env-branch-delete`/`recursive-delete` for
+    // `subshellSafeShortFlagCluster()`'s subshell-boundary narrowing.
     const hit = rule.scope === 'full'
       ? rule.test(text, spacedText, guardedText)
-      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg, segsGuarded[i] ?? seg));
+      : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg, segsGuarded[i] ?? seg, singleSegment ? rawWhole : undefined));
     if (hit) return { blocked: true, rule: rule.name, msg: rule.msg };
   }
   return { blocked: false };
