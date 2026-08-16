@@ -789,12 +789,13 @@ describe('autopilot return-then-resume watchdog (#319, AC-319.1/AC-319.2) — aw
       expect(dec.action, outcome).toBe('continue');
       expect(dec.outcome, outcome).toBe(outcome); // record the outcome the subagent already reported
     }
-    // #464: an absent/unknown outcome is NOT a resolved state — it is the second stall shape
-    // (§ AC-464 below), never a silent `continue`/`outcome: null`. This assertion used to expect
-    // `continue` here; that was the exact gap #464 fixes, so the expectation flips.
+    // #464/#522: an absent/unknown outcome is NOT a resolved state — it is one of the non-conforming
+    // stall shapes (§ AC-464/AC-522 below), never a silent `continue`/`outcome: null`. This assertion
+    // used to expect `continue` here; that was the exact gap #464 fixes, so the expectation flips.
+    // No `pr` is supplied here, so per #522 this is the unrecoverable shape — escalate, not respawn.
     const noReport = resolveReturnedTicket({});
-    expect(noReport.action).toBe('respawn');
-    expect(noReport.outcome).toBe(NONCONFORMING_OUTCOME);
+    expect(noReport.action).toBe('escalate');
+    expect(noReport.outcome).toBe('escalated');
   });
 
   it("AC-319.1: the watchdog's merge action actually drives runMerge to a squash-merge on a green bar", async () => {
@@ -837,27 +838,29 @@ describe('autopilot return-then-resume watchdog (#319, AC-319.1/AC-319.2) — aw
   });
 });
 
-describe('autopilot watchdog — stalled-before-PR: the second return-then-resume shape (#464, epic #183)', () => {
+describe('autopilot watchdog — stalled-before-PR, recoverable (PR already open) (#464, epic #183)', () => {
   // The 2026-08-11/13 run: a delivery subagent spawns a reviewer/security subagent, then RETURNS
-  // before opening a PR (or with one still awaiting review), with a terminal report that is not the
+  // with a PR still open awaiting review, with a terminal report that is not the
   // {issue, outcome, pr, ciGreen, ...} contract at all — free text like "Waiting on the reviewer's
   // re-confirmation." resolveReturnedTicket has no `awaiting-merge` outcome to match, so before this
   // fix it fell through as `action: continue, outcome: null` — recorded as if resolved. That must
-  // become a distinct, actionable, non-silent state instead (AC.1/AC.2).
+  // become a distinct, actionable, non-silent state instead (AC.1/AC.2). #522 later split this shape
+  // from the no-PR shape below — this describe block covers ONLY the with-PR (recoverable) cases,
+  // which keep #464's original `respawn`/`stalled-before-pr` classification unchanged.
 
-  it('AC-464.1: a missing outcome with no PR classifies as stalled-before-pr, never continue/outcome:null', () => {
-    const dec = resolveReturnedTicket({ outcome: undefined, pr: null });
+  it('AC-464.1: a non-conforming outcome WITH a PR already open classifies as stalled-before-pr, never continue/outcome:null', () => {
+    const dec = resolveReturnedTicket({ outcome: undefined, pr: 4321 });
     expect(dec.action).toBe('respawn');
     expect(dec.action).not.toBe('continue');
     expect(dec.outcome).toBe('stalled-before-pr');
     expect(dec.outcome).not.toBeNull();
-    expect(dec.pr).toBeNull();
+    expect(dec.pr).toBe(4321);
     expect(dec.reason).toMatch(/non-conforming|stalled/i);
   });
 
-  it('AC-464.1: an unrecognised free-text outcome (not one of the known resolved states) is likewise classified, never recorded as a terminal outcome', () => {
+  it('AC-464.1: an unrecognised free-text outcome WITH a PR already open is likewise classified, never recorded as a terminal outcome', () => {
     for (const outcome of ["Waiting on the reviewer's re-confirmation", "I'm waiting on both re-review verdicts for the final tip.", 'garbled', '']) {
-      const dec = resolveReturnedTicket({ outcome, pr: null });
+      const dec = resolveReturnedTicket({ outcome, pr: 42 });
       expect(dec.action, outcome).toBe('respawn');
       expect(dec.outcome, outcome).toBe(NONCONFORMING_OUTCOME);
       expect(dec.outcome, outcome).not.toBe(outcome); // the free text itself is never recorded as the outcome
@@ -865,7 +868,7 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
   });
 
   it('AC-464.2: stalled-before-pr (action:respawn) is a distinct action from awaiting-merge (action:merge/escalate) — different recoveries', () => {
-    const stalled = resolveReturnedTicket({ outcome: undefined, pr: null });
+    const stalled = resolveReturnedTicket({ outcome: undefined, pr: 4321 });
     const awaitingMerge = resolveReturnedTicket({ outcome: STALL_OUTCOME, pr: 42, ciGreen: true, mergeMode: 'auto-merge' });
     expect(stalled.action).toBe('respawn');
     expect(awaitingMerge.action).toBe('merge');
@@ -874,9 +877,7 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
     expect(stalled.action).not.toBe('resume');
   });
 
-  it('AC-464.2: pr is carried through when the stalled subagent already had one open (vs null when it never reached a PR)', () => {
-    const noPr = resolveReturnedTicket({ outcome: undefined, pr: null });
-    expect(noPr.pr).toBeNull();
+  it('AC-464.2: pr is carried through unchanged when the stalled subagent already had one open', () => {
     const withPr = resolveReturnedTicket({ outcome: undefined, pr: 4321 });
     expect(withPr.pr).toBe(4321);
     expect(withPr.action).toBe('respawn');
@@ -890,39 +891,113 @@ describe('autopilot watchdog — stalled-before-PR: the second return-then-resum
     expect(a).toEqual(b);
   });
 
-  // AC.4: pin the four observed instances from the 2026-08-11/13 run verbatim.
-  describe('AC-464.4: the four observed instances', () => {
-    it('#429: branch pushed at 4631286, no PR, awaiting reviewer re-confirmation', () => {
-      const dec = resolveReturnedTicket({ outcome: "Waiting on the reviewer's re-confirmation.", pr: null });
-      expect(dec.action).toBe('respawn');
-      expect(dec.outcome).toBe('stalled-before-pr');
+  it('#464: PR open, awaiting reviewer (compounded by a session-limit kill) — recoverable, respawn', () => {
+    const dec = resolveReturnedTicket({ outcome: 'Killed mid-flight awaiting reviewer re-confirmation', pr: 437 });
+    expect(dec.action).toBe('respawn');
+    expect(dec.outcome).toBe('stalled-before-pr');
+    expect(dec.pr).toBe(437); // a PR already exists — resume should not re-open a duplicate one
+  });
+
+  it('#522: a non-conforming report WITH a PR already open that the caller observes is green + authorized hands straight to the merge bar, not a respawn', () => {
+    // AC.3's "hand to the merge bar" path for the recoverable shape: even though the outcome text
+    // itself is garbage, the loop's own observed ciGreen/mergeMode already say this is mergeable —
+    // runMerge re-verifies everything itself, so there is no reason to wait on a resume.
+    const dec = resolveReturnedTicket({ outcome: 'Still waiting on the full verify suite to finish.', pr: 900, ciGreen: true, mergeMode: 'auto-merge' });
+    expect(dec.action).toBe('merge');
+    expect(dec.pr).toBe(900);
+    expect(dec.outcome).toBe('merged');
+    expect(dec.reason).toMatch(/already observed green/i);
+  });
+
+  it('#522: a non-conforming report WITH a PR that is NOT (yet) known green stays on the resume protocol, not the merge bar', () => {
+    const notGreen = resolveReturnedTicket({ outcome: 'Still waiting on the full verify suite to finish.', pr: 900, ciGreen: false, mergeMode: 'auto-merge' });
+    expect(notGreen.action).toBe('respawn');
+    expect(notGreen.outcome).toBe('stalled-before-pr');
+    const noAuthority = resolveReturnedTicket({ outcome: 'Still waiting on the full verify suite to finish.', pr: 900, ciGreen: true, mergeMode: 'pr-only' });
+    expect(noAuthority.action).toBe('respawn');
+    expect(noAuthority.outcome).toBe('stalled-before-pr');
+  });
+});
+
+describe('autopilot watchdog — malformed/absent report, unrecoverable (no PR) (#522, epic #183)', () => {
+  // Observed delivering #517, 2026-08-16: 3 of 4 delivery attempts stalled on a subagent RETURN
+  // that is not the {issue, outcome, pr, ciGreen, ...} contract at all, with NO PR yet open — the
+  // subagent may have died mid-edit on the shared working tree, uncommitted. #464's respawn
+  // classification treated this identically to the with-PR shape (§ #464 above) and auto-retried;
+  // this ticket's own secondary finding is that blind auto-retry onto an unknown working-tree state
+  // is how two uncommitted security-critical fixes nearly got discarded as "abandoned" work. AC.2/
+  // AC.3: the no-PR shape must instead escalate — visible, fail-closed, gated on a human/orchestrator
+  // actually inspecting the tree before anything touches it again.
+
+  it('AC-522.1: a missing outcome with no PR is an explicit named action (escalate), never a silent fall-through', () => {
+    const dec = resolveReturnedTicket({ outcome: undefined, pr: null });
+    expect(dec.action).toBe('escalate');
+    expect(dec.action).not.toBe('continue');
+    expect(dec.action).not.toBe('respawn'); // #522: no longer blindly respawned — see #464 block above for the with-PR case
+    expect(dec.outcome).toBe('escalated');
+    expect(dec.outcome).not.toBeNull();
+    expect(dec.pr).toBeNull();
+    expect(dec.reason).toMatch(/non-conforming|no PR/i);
+  });
+
+  it('AC-522.4: null and empty-string outcomes with no PR classify identically to undefined — escalated, never recorded as resolved', () => {
+    for (const outcome of [null, '']) {
+      const dec = resolveReturnedTicket({ outcome, pr: null });
+      expect(dec.action, String(outcome)).toBe('escalate');
+      expect(dec.outcome, String(outcome)).toBe('escalated');
+      expect(dec.outcome, String(outcome)).not.toBe(outcome);
+    }
+  });
+
+  it('AC-522.2: never recorded as a terminal success — action is never continue, and the malformed text itself is never recorded as the outcome, for any malformed no-PR report', () => {
+    for (const outcome of [undefined, null, '', 'garbled', "Waiting on the reviewer's re-confirmation"]) {
+      const dec = resolveReturnedTicket({ outcome, pr: null });
+      expect(dec.action, String(outcome)).not.toBe('continue');
+      // 'escalated' IS in RESOLVED_OUTCOMES (it's a legitimate, visible, non-terminal-success park) —
+      // what must never happen is the malformed text itself being recorded as if it were the outcome.
+      expect(dec.outcome, String(outcome)).toBe('escalated');
+      expect(dec.outcome, String(outcome)).not.toBe(outcome);
+    }
+  });
+
+  it('AC-522.3: distinguishes recoverable (PR exists → respawn) from unrecoverable (no PR → escalate) using only caller-observed state, never IO', () => {
+    const recoverable = resolveReturnedTicket({ outcome: 'Still waiting on the full verify suite to finish.', pr: 900 });
+    const unrecoverable = resolveReturnedTicket({ outcome: 'Still waiting on the full verify suite to finish.', pr: null });
+    expect(recoverable.action).toBe('respawn');
+    expect(unrecoverable.action).toBe('escalate');
+    expect(recoverable.action).not.toBe(unrecoverable.action);
+  });
+
+  it('resolveReturnedTicket stays pure for the no-PR malformed shape too — same input, same output, no IO', () => {
+    const input = { outcome: 'Still waiting on the full verify suite to finish.', pr: null };
+    expect(resolveReturnedTicket(input)).toEqual(resolveReturnedTicket({ ...input }));
+  });
+
+  // AC.4: pin the three returns observed verbatim delivering #517 (2026-08-16), plus the
+  // undefined/null/'' outcomes already covered above.
+  describe('AC-522.4: the three observed instances (verbatim, #517)', () => {
+    it("attempt 1: \"I'll wait for the resumed implementer agent to report the final results.\"", () => {
+      const dec = resolveReturnedTicket({ outcome: "I'll wait for the resumed implementer agent to report the final results.", pr: null });
+      expect(dec.action).toBe('escalate');
+      expect(dec.outcome).toBe('escalated');
       expect(dec.pr).toBeNull();
+      expect(dec.action).not.toBe('continue');
     });
 
-    it('#437: branch pushed, PR open, awaiting reviewer (compounded by a session-limit kill)', () => {
-      const dec = resolveReturnedTicket({ outcome: 'Killed mid-flight awaiting reviewer re-confirmation', pr: 437 });
-      expect(dec.action).toBe('respawn');
-      expect(dec.outcome).toBe('stalled-before-pr');
-      expect(dec.pr).toBe(437); // a PR already exists — resume should not re-open a duplicate one
+    it('attempt 2: "Full test suite is running in the background (task bfxd27mnn). I\'ll proceed once it completes."', () => {
+      const dec = resolveReturnedTicket({ outcome: "Full test suite is running in the background (task bfxd27mnn). I'll proceed once it completes.", pr: null });
+      expect(dec.action).toBe('escalate');
+      expect(dec.outcome).toBe('escalated');
+      expect(dec.pr).toBeNull();
+      expect(dec.action).not.toBe('continue');
     });
 
-    it('#446: branch pushed at 1e41745, no PR, awaiting an escalation answer', () => {
-      const dec = resolveReturnedTicket({ outcome: 'Awaiting the escalation answer before proceeding.', pr: null });
-      expect(dec.action).toBe('respawn');
-      expect(dec.outcome).toBe('stalled-before-pr');
+    it('attempt 3: "Still waiting on the full verify suite to finish."', () => {
+      const dec = resolveReturnedTicket({ outcome: 'Still waiting on the full verify suite to finish.', pr: null });
+      expect(dec.action).toBe('escalate');
+      expect(dec.outcome).toBe('escalated');
       expect(dec.pr).toBeNull();
-    });
-
-    it('#460: branch pushed at a0df69d, no PR, awaiting BOTH re-review verdicts the orchestrator already holds', () => {
-      // The distinguishing wrinkle: the orchestrator was already holding both verdicts when the
-      // subagent returned to wait for them — this ticket only needs the watchdog to surface the
-      // stall as actionable, not to relay the held verdicts automatically (that is #474, out of
-      // scope here).
-      const dec = resolveReturnedTicket({ outcome: "I'm waiting on both re-review verdicts for the final tip.", pr: null });
-      expect(dec.action).toBe('respawn');
-      expect(dec.outcome).toBe('stalled-before-pr');
-      expect(dec.pr).toBeNull();
-      expect(dec.action).not.toBe('continue'); // never silently parked despite the orchestrator holding the answer
+      expect(dec.action).not.toBe('continue');
     });
   });
 });
