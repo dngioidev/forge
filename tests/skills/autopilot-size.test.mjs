@@ -33,8 +33,14 @@ describe('forge:autopilot skill size (#467)', () => {
 
   it('AC-467.2: SKILL.md links to both reference docs, and every mandatory-procedure section stays inline (not reduced to a pointer)', async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
-    expect(s).toMatch(/plugin\/skills\/autopilot\/reference\/driver-scripts\.md/);
-    expect(s).toMatch(/plugin\/skills\/autopilot\/reference\/monitor-notifications\.md/);
+    // #467 reviewer round 1: a hardcoded `plugin/`-prefixed path doesn't resolve
+    // for a real plugin install (cwd is the TARGET repo, not this checkout) or
+    // for the agy-emitted package (emit.mjs strips the plugin/ prefix on copy).
+    // The file's own established convention is ${CLAUDE_PLUGIN_ROOT}-prefixed
+    // (e.g. line ~132's perms.mjs invocation) — pin that convention here too.
+    expect(s).not.toMatch(/[`(]plugin\/skills\/autopilot\/reference\//);
+    expect(s).toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/autopilot\/reference\/driver-scripts\.md/);
+    expect(s).toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/autopilot\/reference\/monitor-notifications\.md/);
     // the ticket's own "do NOT move" list — each still has its full procedural body inline,
     // not just a heading. Spot-check a load-bearing sentence from each, not just the title.
     expect(s).toMatch(/mergeAuthPreflight\(\{\s*authorized,\s*config\s*\}\)/); // Merge-authorization preflight
@@ -60,6 +66,13 @@ describe('forge:autopilot skill size (#467)', () => {
     // driver-scripts full per-script rationale: moved, not deleted
     expect(skill).not.toMatch(/reducing the 3 idle CI-status pollers/);
     expect(driverRef).toMatch(/reducing the 3 idle CI-status pollers/);
+    // #467 reviewer round 1 found these three sentences dropped from BOTH files
+    // (silently deleted, not relocated) — regression-pin each into the reference
+    // doc so a future edit can't drop them again without a red test.
+    expect(monitorRef).toMatch(/the recovery itself \(§ Auto-merge item 4\) still runs inside the delivery subagent's own merge-bar check/);
+    expect(monitorRef).toMatch(/where it runs the full gate pipeline again/);
+    expect(monitorRef).toMatch(/mirroring `ci-watch\.mjs`'s `writeCiWatchState` never-fail-the-caller contract/);
+    expect(monitorRef).toMatch(/Staleness keys on `lastArtifactAt`/);
   });
 
   it('AC-467.4: every tests/skills/autopilot.test.mjs assertion still targets content actually present in SKILL.md', async () => {
