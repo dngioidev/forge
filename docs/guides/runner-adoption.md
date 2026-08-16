@@ -4,6 +4,8 @@ How to give a **private** repo free CI on a local self-hosted GitHub Actions run
 
 > **Private repos only.** A self-hosted runner must never process fork/public-repo PRs — forks can run untrusted code on your machine (GitHub's documented fork-PR RCE). `forge:init --runner` **refuses on a public repo**, and `forge:doctor` fails if the feature is on while the repo is public. When a repo goes public, remove the runner.
 
+> **This repo is hosted-only since [#426](https://github.com/dngioidev/forge/issues/426) (2026-08-16, #462 annotation).** `dngioidev/forge` went public, so `.claude/forge.json` `runner.enabled` was flipped to `false` and CI now runs entirely on GitHub-hosted runners — see `.github/workflows/verify.yml`'s header comment (`:1-11`), which explains the swap-back. This guide's runbook remains the adoption path for **private repos and private forks** that want the $0 self-hosted opt-in; it does not describe this repo's current CI.
+
 ## When to use it
 
 - The repo is **private** and hitting the monthly Actions-minute cap, or the Windows leg's 2× billing dominates cost.
