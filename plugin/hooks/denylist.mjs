@@ -1477,8 +1477,10 @@ export function check(command) {
     // rule's test() gets `text`'s segment as its first argument, the
     // corresponding `spacedText` segment as its second, and the corresponding
     // `guardedText` segment as its third — only `recursive-delete` reads the
-    // second or third at all (its own target/flag-boundary parsing, see its
-    // own comment).
+    // second argument (its own target parsing, see its own comment); the third
+    // is read by `recursive-delete` (flag-boundary parsing) AND by
+    // `force-push`/`hard-reset`/`env-branch-delete` (#448's
+    // `hasFlagAdjacentBrace()` brace-expansion detection).
     const hit = rule.scope === 'full'
       ? rule.test(text, spacedText, guardedText)
       : segs.some((seg, i) => rule.test(seg, segsSpaced[i] ?? seg, segsGuarded[i] ?? seg));
