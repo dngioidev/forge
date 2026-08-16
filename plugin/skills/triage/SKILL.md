@@ -24,3 +24,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/board/create.mjs" --title "…" --body "…"
 6. Report the ticket link + one-line summary of type/priority/size reasoning.
 
 Vague reports: ask at most one clarifying round; otherwise ticket what is known, mark the gaps in the body, and let investigate fill them.
+
+## Report contract
+
+When run as a spawned subagent (`autopilot/SKILL.md` § Orchestration, `action: triage`), end with the terminal JSON the orchestrator consumes: `{"issue":<n>,"verdict":"pass|fail","outcome":"ready|escalated"}`.
+
+`verdict` and `outcome` are not independent axes for triage — only two pairings occur:
+
+- **`verdict:"pass"` → `outcome:"ready"`** — the ticket is now correctly typed with acceptance criteria and board placement, confirmed deliverable. The orchestrator records it via `ledger.mjs` `applyOutcome` with `stage:"triage"` and the ticket re-enters the autopilot queue as `deliver` on the next iteration — the same re-entry mechanics `autopilot/SKILL.md` documents for `shape`'s `outcome:"ready"`.
+- **`verdict:"fail"` → `outcome:"escalated"`** — the ask or acceptance criteria can't be pinned down without a product decision. Escalate-and-skip via the auto-triage front door (`autopilot/SKILL.md` § Auto-triage front door): the ticket is parked, the loop moves to the next one.
+
+There is no `verdict:"pass"` paired with `outcome:"escalated"`, nor `verdict:"fail"` paired with `outcome:"ready"` — a passing triage is always ready, and an escalation is always a fail.
