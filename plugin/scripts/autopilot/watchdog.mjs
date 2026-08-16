@@ -116,6 +116,19 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
  * @param {boolean} [report.ciGreen]        did the subagent observe CI green in-run?
  * @param {string|null} [report.mergeMode]  the run's effective merge mode
  *   (`auto-merge`|`pr-only`) as recorded by the preflight in run.json.
+ *
+ *   `pr`/`ciGreen`/`mergeMode` MUST be sourced from the orchestrator's own
+ *   independently-observed state (run.json's recorded `mergeMode`, a real
+ *   `gh pr view`/CI-monitor transition for `ciGreen`) — never parsed out of
+ *   the subagent's free-text report body, even for a malformed report where
+ *   the report itself has no structured fields to draw them from. This
+ *   function trusts its caller completely and performs no verification of
+ *   its own; the only reason a malformed report can't forge its way to a
+ *   `merge` action is that `runMerge` independently re-checks CI and
+ *   requires its own separately-held `signals` before actually merging (see
+ *   the file-level comment) — that safety net lives entirely outside this
+ *   function, so callers must not weaken it by trusting subagent-supplied
+ *   values here.
  * @returns {{ action:'merge'|'escalate'|'respawn'|'continue', pr?:(number|null), outcome:(string|null), reason:string }}
  *   `merge`    → funnel `pr` through `runMerge` (the tested bar re-checks CI).
  *   `escalate` → surface visibly; `outcome` is the state the loop records —
