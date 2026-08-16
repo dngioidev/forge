@@ -1,6 +1,6 @@
 # Plan: #515 - spike: which brace-expansion guard direction closes #448's bypass class soundly
 
-**Ticket:** #515 (board #8, parent #182, spike for #448) - **Kind:** spike - **Base:** main - **Branch:** spike/515-brace-guard-direction
+**Ticket:** #515 (board #8, parent #182, spike for #448) - **Kind:** spike - **Base:** main - **Exploration branch:** spike/515-brace-guard-direction (throwaway, never merges) - **Delivery branch (this doc's own PR):** docs/515-brace-guard-direction-findings
 
 `esc-448-msrs9z1u` named three candidate directions for closing the live, real-bash-verified brace-expansion bypass in `plugin/hooks/denylist.mjs`'s `tokenHasBraceGroup()` without reintroducing the round-1 false positive (`git push origin {main,develop}`). The owner answered "spike needed" rather than picking one directly. This spike prototypes and bash-verifies all three; it does not implement a fix — `plugin/hooks/denylist.mjs` is untouched by this branch.
 

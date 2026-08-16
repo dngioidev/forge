@@ -37,10 +37,10 @@ describe('#515 — brace-expansion guard direction spike (for #448)', () => {
 
   it('AC-515.2: direction 1 and direction 2-detect-only false-positive costs are stated per-direction', async () => {
     const doc = await readFile(spikePath, 'utf8');
-    // direction 1 has two known-wrong verdicts
-    expect(doc).toMatch(/\*\*1 — no pairing\*\*[\s\S]{0,400}2 of 4 wrong/);
+    // direction 1 gets both known-safe cases wrong
+    expect(doc).toMatch(/\*\*1 — no pairing\*\*[\s\S]{0,400}2 of 2 wrong/);
     // direction 2 detect-only has one fewer
-    expect(doc).toMatch(/\*\*2 \(detect-only\)\*\*[\s\S]{0,400}1 of 4 wrong/);
+    expect(doc).toMatch(/\*\*2 \(detect-only\)\*\*[\s\S]{0,400}1 of 2 wrong/);
     expect(doc).toMatch(/[Ss]trictly dominates direction 1/);
   });
 
