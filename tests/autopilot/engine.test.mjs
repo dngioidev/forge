@@ -13,7 +13,7 @@ import {
   applyBudgetReading, recentBudgetDeltas, recordBudgetReading, MAX_BUDGET_READINGS,
 } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
-import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME } from '../../plugin/scripts/autopilot/watchdog.mjs';
+import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME, matchHeldVerdicts } from '../../plugin/scripts/autopilot/watchdog.mjs';
 import { toType, fileWork, KIND_TO_TYPE } from '../../plugin/scripts/autopilot/newwork.mjs';
 import { isShaped, DEFAULT_AC_HEADINGS } from '../../plugin/scripts/autopilot/readiness.mjs';
 import { ALLOW, permsBlock } from '../../plugin/scripts/autopilot/perms.mjs';
@@ -1001,6 +1001,244 @@ describe('autopilot watchdog — malformed/absent report, unrecoverable (no PR) 
       expect(dec.pr).toBeNull();
       expect(dec.action).not.toBe('continue');
     });
+  });
+});
+
+describe('autopilot watchdog — matchHeldVerdicts: relay a held verdict to a stalled subagent (#474, epic #183)', () => {
+  // #464's own #460 example, and this run's #469/#472, all stalled BEFORE a PR existed — exactly
+  // resolveReturnedTicket's no-PR branch, which #522 deliberately hard-escalates (its concern is a
+  // BLIND RESPAWN of a fresh subagent onto an unobservable working tree). SendMessage is a different
+  // mechanism — it resumes the SAME already-running subagent from its own transcript — so a confident
+  // match between "what the report says it's waiting on" and "verdicts the loop already holds" can act
+  // ahead of, and independent of, resolveReturnedTicket's pr-based branch, without ever weakening #522's
+  // escalate-on-ambiguity default. matchHeldVerdicts is that pure match step; it never calls
+  // resolveReturnedTicket and resolveReturnedTicket is never modified by this ticket (regression-pinned
+  // by the two describe blocks above staying green, untouched).
+
+  it('AC-474.1/AC-474.3 / #460 shape: a report implying BOTH verdicts, with both held for the same issue, relays both', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 460, outcome: "I'm waiting on both re-review verdicts for the final tip." },
+      [
+        { issue: 460, role: 'reviewer', verdict: 'pass', summary: 'reviewer: pass, zero findings' },
+        { issue: 460, role: 'security', verdict: 'pass', summary: 'security: pass, zero findings' },
+      ],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts).toHaveLength(2);
+    expect(dec.verdicts.map((v) => v.role).sort()).toEqual(['reviewer', 'security']);
+    expect(dec.reason).toMatch(/relay|held/i);
+  });
+
+  it('AC-474.1/AC-474.3 / #469 shape (verbatim): reviewer resolved inline, only security named as outstanding, only security held — relays just security', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 469, outcome: "Reviewer passed clean. Now waiting for the security agent's completion notification before proceeding to ship." },
+      [{ issue: 469, role: 'security', verdict: 'pass', summary: 'security: pass, zero findings' }],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts).toHaveLength(1);
+    expect(dec.verdicts[0].role).toBe('security');
+  });
+
+  it('AC-474.1/AC-474.3 / #472 shape (verbatim): no role individually named, "both agents" implied, both held — relays both', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 472, outcome: "I'll wait for the notification when both agents finish; no further action needed from me right now." },
+      [
+        { issue: 472, role: 'reviewer', verdict: 'pass', summary: 'reviewer: pass' },
+        { issue: 472, role: 'security', verdict: 'pass', summary: 'security: pass, zero findings; non-blocking note on an uncommitted comment fix' },
+      ],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts.map((v) => v.role).sort()).toEqual(['reviewer', 'security']);
+  });
+
+  it('AC-474.2: no held verdicts at all — defers, never guesses', () => {
+    const dec = matchHeldVerdicts({ issue: 469, outcome: 'Waiting for the security agent to finish.' }, []);
+    expect(dec.action).toBe('defer');
+    expect(dec.action).not.toBe('relay');
+    expect(dec.reason).toMatch(/no held verdict|none held/i);
+  });
+
+  it('AC-474.2: "both" named but only ONE role held — partial match still defers, never a partial relay', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 472, outcome: "I'll wait for the notification when both agents finish." },
+      [{ issue: 472, role: 'reviewer', verdict: 'pass' }],
+    );
+    expect(dec.action).toBe('defer');
+    expect(dec.reason).toMatch(/security/i);
+  });
+
+  it('AC-474.2: held verdict exists but for a DIFFERENT issue — never cross-wires tickets', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 469, outcome: "Waiting for the security agent's completion notification." },
+      [{ issue: 999, role: 'security', verdict: 'pass' }],
+    );
+    expect(dec.action).toBe('defer');
+  });
+
+  it('AC-474.2: free text names no recognisable role — cannot match, defers', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 517, outcome: 'Still waiting on the full verify suite to finish.' },
+      [
+        { issue: 517, role: 'reviewer', verdict: 'pass' },
+        { issue: 517, role: 'security', verdict: 'pass' },
+      ],
+    );
+    expect(dec.action).toBe('defer');
+  });
+
+  it('AC-474.2: an already-resolved outcome defers immediately via the early-return branch, not merely because no role words happen to appear', () => {
+    const resolved = matchHeldVerdicts({ issue: 1, outcome: 'merged' }, [{ issue: 1, role: 'security', verdict: 'fail' }]);
+    expect(resolved.action).toBe('defer');
+    // the reason string itself pins WHICH branch fired — "resolved/awaiting-merge state" only ever comes from
+    // the early-return guard, never from the "no recognisable role" fallback (a different reason string) —
+    // so this genuinely distinguishes the early-return path from a same-result-different-cause coincidence.
+    expect(resolved.reason).toMatch(/resolved\/awaiting-merge state/i);
+    // every RESOLVED_OUTCOMES value defers the same way, via the same branch
+    for (const outcome of RESOLVED_OUTCOMES) {
+      const dec = matchHeldVerdicts({ issue: 1, outcome }, []);
+      expect(dec.action, outcome).toBe('defer');
+      expect(dec.reason, outcome).toMatch(/resolved\/awaiting-merge state/i);
+    }
+  });
+
+  it('AC-474.2: the awaiting-merge sentinel defers untouched via the same early-return branch — resolveReturnedTicket alone handles it', () => {
+    const dec = matchHeldVerdicts({ issue: 1, outcome: STALL_OUTCOME }, [{ issue: 1, role: 'reviewer', verdict: 'pass' }]);
+    expect(dec.action).toBe('defer');
+    expect(dec.reason).toMatch(/resolved\/awaiting-merge state/i);
+  });
+
+  describe('AC-474.2 fix-wave: adversarial phrasings both forge:reviewer and forge:security independently reproduced as false relays — now pinned as regressions', () => {
+    it('a negated clause ("Not waiting on X, just Y") never contributes any role, even though both role words are present', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 3, outcome: 'Not waiting on the reviewer, just security.' },
+        [{ issue: 3, role: 'reviewer', verdict: 'pass' }, { issue: 3, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('a "no need to wait" disclaimer never contributes a role, even when both role words are present in the same clause', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 4, outcome: 'No need to wait on the security or reviewer sign-off anymore, that part is already handled separately.' },
+        [{ issue: 4, role: 'reviewer', verdict: 'pass' }, { issue: 4, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('bare "review" (not "reviewer") inside an unrelated compound phrase never triggers the reviewer role', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 5, outcome: 'Still waiting on the security review to complete before I can proceed.' },
+        [{ issue: 5, role: 'security', verdict: 'pass' }], // reviewer deliberately NOT held — a false reviewer match would defer here
+      );
+      expect(dec.action).toBe('relay'); // security IS correctly named (via the security-review co-occurrence)
+      expect(dec.verdicts.map((v) => v.role)).toEqual(['security']); // and reviewer was never falsely required
+    });
+
+    it('bare "security" with no forge-review-vocabulary anchor nearby never triggers the security role (domain-ambiguous term)', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 6, outcome: 'Deployment is waiting on the security group ingress rule to finish propagating.' },
+        [{ issue: 6, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('bare "review" in "waiting to review the logs myself" never triggers the reviewer role', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 7, outcome: 'I am waiting to review the deployment logs myself, not blocked on anything external.' },
+        [{ issue: 7, role: 'reviewer', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('a comma-joined rephrasing of the #469 shape ("Reviewer passed clean, now waiting for the security agent…") still relays only security', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 8, outcome: 'Reviewer passed clean, now waiting for the security agent to finish.' },
+        [{ issue: 8, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('relay');
+      expect(dec.verdicts.map((v) => v.role)).toEqual(['security']);
+    });
+  });
+
+  describe('AC-474.2 fix-wave round 2: completion/mootness phrasing ("the wait is over") — forge:security reproduced 8 false relays against round-1 code', () => {
+    // Round 1's NEGATION_RE only covered grammatical negation (not/n't/no need/...). forge:security's
+    // second pass found the wait itself can be described as CONCLUDED without any grammatical negation
+    // at all — "the wait is over", "done waiting", "nothing left to wait for", etc. — and round 1's
+    // parser still relayed on every one of these. Each string below is verbatim from that finding.
+    const held = (issue, role) => [{ issue, role, verdict: 'pass' }];
+
+    it.each([
+      [21, "Waiting is unnecessary for the security agent's sign-off at this point; already resolved via Slack.", 'security'],
+      [22, "The wait on the security agent's clearance is over.", 'security'],
+      [23, "We are done waiting on the reviewer's sign-off, it already came through separately.", 'reviewer'],
+      [24, "Formerly waiting on the reviewer's confirmation, but that's moot now since it was handled out of band.", 'reviewer'],
+      [25, "There is nothing left to wait for regarding the security agent's clearance.", 'security'],
+      [26, "Stopped waiting on the reviewer's confirmation once it was clear the PR was closed.", 'reviewer'],
+      [27, 'Used to be waiting on the security agent\'s clearance, however that requirement was waived.', 'security'],
+      [28, "Hardly waiting on the reviewer's sign-off anymore since it's essentially done.", 'reviewer'],
+    ])('issue #%i: %s → defers (never a false relay for a concluded/moot wait)', (issue, outcome, role) => {
+      const dec = matchHeldVerdicts({ issue, outcome }, held(issue, role));
+      expect(dec.action, outcome).toBe('defer');
+    });
+  });
+
+  describe('AC-474.2 fix-wave round 3: a negation cue joined via comma + conjunction ("X, but not anymore") defeats same-clause detection — forge:security structural finding', () => {
+    const held = (issue, role) => [{ issue, role, verdict: 'pass' }];
+
+    it.each([
+      [31, "I was waiting on the security agent, but that's done now.", 'security'],
+      [32, "I was waiting on the reviewer, but that's over now.", 'reviewer'],
+      [33, 'Waiting on the reviewer, but not anymore.', 'reviewer'],
+      [34, "Waiting on the security agent's clearance, however that requirement was waived.", 'security'],
+    ])('issue #%i: %s → defers (the trailing conjunction clause carries the negation)', (issue, outcome, role) => {
+      const dec = matchHeldVerdicts({ issue, outcome }, held(issue, role));
+      expect(dec.action, outcome).toBe('defer');
+    });
+
+    it('documented scope boundary: "or" is deliberately NOT a recognised trailing conjunction, and only ONE segment of lookahead is attempted — a negation two clauses away is missed', () => {
+      // TRAILING_NEGATION_RE only recognises but/however/except/though/yet, and parseAwaitedRoles only
+      // ever looks one segment ahead. "Waiting on the security agent, or so I thought, turns out that's
+      // done." negates the wait, but two clauses removed via "or" — not caught, and disclosed as a known
+      // scope limit rather than chased further (#474 round-3 review; "or" is also common in legitimate,
+      // non-negating phrasing like "reviewer or security, whichever finishes first", so it isn't a safe
+      // general trailing-conjunction cue).
+      const dec = matchHeldVerdicts(
+        { issue: 35, outcome: "Waiting on the security agent, or so I thought, turns out that's done." },
+        held(35, 'security'),
+      );
+      expect(dec.action).toBe('relay'); // known miss, not a regression — documents the boundary, doesn't hide it
+    });
+
+    it('guard: "waiting for X to complete" is NOT treated as a negation cue — an ongoing wait described via the awaited thing\'s own completion still relays correctly', () => {
+      // Pins the round-3 design decision NOT to add complete/finished/resolved/closed to NEGATION_RE
+      // (see the JSDoc "Honest limit" — over-catching risk) by proving the single most common phrasing
+      // this would have broken still works.
+      const dec = matchHeldVerdicts(
+        { issue: 36, outcome: 'Waiting for the security review to complete before I can proceed.' },
+        held(36, 'security'),
+      );
+      expect(dec.action).toBe('relay');
+      expect(dec.verdicts.map((v) => v.role)).toEqual(['security']);
+    });
+  });
+
+  it('AC-474.4: matchHeldVerdicts stays pure — same input always yields the same output, no IO', () => {
+    const report = { issue: 472, outcome: "I'll wait for the notification when both agents finish." };
+    const held = [
+      { issue: 472, role: 'reviewer', verdict: 'pass' },
+      { issue: 472, role: 'security', verdict: 'pass' },
+    ];
+    const a = matchHeldVerdicts(report, held);
+    const b = matchHeldVerdicts({ ...report }, held.map((v) => ({ ...v })));
+    expect(a).toEqual(b);
+  });
+
+  it('AC-474.4: a matched security-only verdict that FAILED is still relayed (relay is agnostic to pass/fail — the subagent needs to know either way)', () => {
+    const dec = matchHeldVerdicts(
+      { issue: 469, outcome: "Waiting for the security agent's completion notification." },
+      [{ issue: 469, role: 'security', verdict: 'fail', summary: 'security: 1 critical finding' }],
+    );
+    expect(dec.action).toBe('relay');
+    expect(dec.verdicts[0].verdict).toBe('fail');
   });
 });
 

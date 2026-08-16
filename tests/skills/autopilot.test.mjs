@@ -287,6 +287,21 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/working[- ]tree/i);
   });
 
+  it('AC-474.4: § Return-then-resume watchdog documents matchHeldVerdicts relaying a held verdict, running before respawn/escalate', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/#474/);
+    expect(s).toMatch(/matchHeldVerdicts/);
+    // the SendMessage relay + resume mechanism itself, named
+    expect(s).toMatch(/SendMessage/);
+    // the two live examples cited by the ticket
+    expect(s).toMatch(/#469/);
+    expect(s).toMatch(/#472/);
+    // an unmatched report still falls through to today's unchanged respawn/escalate path
+    expect(s).toMatch(/defer/i);
+    // no longer phrased as future/out-of-scope work — the #464/#522-era phrasing is retired
+    expect(s).not.toMatch(/#474.{0,40}(is the follow-up|out of (this ticket's |)scope|deliberately not built here)/i);
+  });
+
   it("AC-526.5: § The loop reorders the periodic rate-budget recheck to after selection, threading the selected ticket's kind", async () => {
     const s = await read('plugin/skills/autopilot/SKILL.md');
     const loopStart = s.indexOf('## The loop');
