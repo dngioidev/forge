@@ -42,20 +42,49 @@ export const ARCHIVE_DIR = join('.forge', 'journal-archive');
  * KNOWN LIMITATION, stated rather than hidden (adversarial security review):
  * this is a text match over a flat (already-truncated) `cmd` string, not a
  * shell parser — it cannot always tell which SEGMENT of a multi-part command
- * a discriminator match belongs to. A destructive command chained via
- * `&&`/`;` with an unrelated, genuinely guard-testing-shaped segment (e.g.
- * `<destructive> && cat <<EOF … EOF`) can still borrow that segment's label.
- * `stripComment()` closes the cheapest, most likely version of this
+ * a discriminator match belongs to, or how a captured VALUE is subsequently
+ * used elsewhere in the same command. Two concrete shapes of this:
+ *   1. A destructive command chained via `&&`/`;` with an unrelated,
+ *      genuinely guard-testing-shaped segment (e.g. `<destructive> && cat
+ *      <<EOF … EOF`) can still borrow that segment's label.
+ *   2. The doc-write discriminator's `$(cat <<EOF … EOF)` command-substitution
+ *      anchor is safe BY ITSELF (it only captures a string, never writes a
+ *      file) — but if that captured string is then used as an ARGUMENT to a
+ *      destructive verb in the same atomic command (`rm -rf "$(cat <<EOF …
+ *      EOF)"`), the overall command is a real, working delete, not "just
+ *      documentation".
+ * `stripComment()` closes the cheapest, most likely version of case 1
  * (appending `# check(this)` or similar, which costs an attacker nothing and
- * needs no real guard-testing shape at all) with no recall cost; closing the
- * compound-command case fully would need denylist.mjs's own quote-aware
+ * needs no real guard-testing shape at all) with no recall cost; closing
+ * either case fully would need denylist.mjs's own quote-aware, argv-level
  * segmentation, which is a materially bigger change than this ticket's scope
  * (its non-goal: this ticket is about how the journal is interpreted, not a
  * redesign of distill or an absorption of denylist mechanics) — tracked as a
- * disclosed, linked follow-up rather than silently dropped. AC.3's inline
- * excerpt (see `cmdExcerpt()`, sized to the same 300-char cap the journal
- * itself enforces) is the backstop: a maintainer approving a "no role-card
- * change" proposal is always looking at the same text this function did.
+ * disclosed, linked follow-up rather than silently dropped.
+ *
+ * SIXTH round (two more adversarial passes, one each from forge:reviewer and
+ * forge:security) found further instances of this same class —
+ * `stripComment()` itself is quote-blind (a `#` inside an executed quoted
+ * string can hide a real destructive tail from every discriminator below,
+ * not just borrow a label for it); a `$(cat <<EOF …)` capture fed to
+ * `eval`/`bash -c` genuinely executes; a `$(...)` substitution embedded in a
+ * "scratch path" string executes for real regardless of where the final path
+ * lands. Each is a new shape of the identical unresolved question — can a
+ * text-substring match ever be trusted to characterize an entire unparsed
+ * shell command — and four independent adversarial rounds finding four new
+ * shapes rather than converging to zero is itself the answer: no, not
+ * without real shell parsing, which is out of scope here (see above) and is
+ * a genuinely hard, still-open problem elsewhere on this board (#448/#449/
+ * #459). Rather than a fifth regex-narrowing attempt at an unsound premise,
+ * the fix moved one level up: `proposalFor()` no longer asserts confident
+ * dismissal for ANY classification — see its own doc comment. AC.1 requires
+ * the signal need not be perfect, only that the report never present a match
+ * as proof of benign intent; that is now true regardless of what a future
+ * seventh round finds. AC.3's inline excerpt (see `cmdExcerpt()`, sized to
+ * the same 300-char cap the journal itself enforces, and always drawn from
+ * the ORIGINAL `cmd` — never from `stripComment()`'s output) is the backstop
+ * for both branches: a maintainer is always looking at the same full text
+ * this function did, comment-stripped or not.
  */
 /**
  * Strip an inert shell comment (a space/line-start-preceded `#` and
@@ -81,12 +110,22 @@ export function classifyBlockedEdit(cmd) {
   if (typeof cmd !== 'string' || !cmd) return { guardTesting: false, reasons: [] };
   const text = stripComment(cmd);
   const reasons = [];
-  // Testing the guard itself: invoking check()/denylist.mjs, the agy shim's
-  // toolCall envelope, or importing anything under plugin/hooks/. `\bcheck\(`
+  // Testing the guard itself: invoking check()/denylist.mjs, importing
+  // anything under plugin/hooks/, or the agy shim's own agy-deny.mjs. `\bcheck\(`
   // (word-boundary — fourth adversarial-review round, reviewer): unanchored
   // `check\(` also matches inside an unrelated identifier sharing the
-  // substring (`typecheck(`, `healthcheck(`).
-  if (/denylist\.mjs/.test(text) || /\bcheck\(/.test(text) || /toolCall/.test(text) || /isAllowedCommand/.test(text) || /spawnSync/.test(text) || /agy-deny\.mjs/.test(text) || /plugin\/hooks\//.test(text)) {
+  // substring (`typecheck(`, `healthcheck(`). `toolCall`/`isAllowedCommand`/
+  // `spawnSync` were REMOVED from this discriminator (fifth adversarial-review
+  // round, re-review): each is a generic identifier/API name that appears in
+  // ordinary, unrelated real code too (`toolCall` especially — it is common
+  // LLM/agent terminology, not unique to this repo's own denylist-testing
+  // harness), so on their own they are too weak a signal to trust — a genuine
+  // destructive command sitting next to ordinary application code using any
+  // of the three would misclassify. Every real event in the validated data
+  // that used one of them ALSO carried a scratch-path or plugin/hooks/ marker
+  // (dropping them costs zero recall — verified against all three journal
+  // sources); the strong, repo-specific markers below carry the signal alone.
+  if (/denylist\.mjs/.test(text) || /\bcheck\(/.test(text) || /agy-deny\.mjs/.test(text) || /plugin\/hooks\//.test(text)) {
     reasons.push('denylist-harness');
   }
   // A throwaway or review-worktree target, never the working tree the agent
@@ -117,16 +156,16 @@ export function classifyBlockedEdit(cmd) {
   // quoted/heredoc bodies too, so quoting a blocked string here still trips it.
   // Anchored to `$(cat …)` COMMAND SUBSTITUTION specifically — never a bare
   // `cat > file <<EOF` redirect (fifth adversarial-review round, self-review):
-  // `$(cat <<EOF … EOF)` never touches the filesystem at all — it only
+  // `$(cat <<EOF … EOF)` never touches the filesystem BY ITSELF — it only
   // captures the heredoc as a shell STRING, typically to feed `--body`/
-  // `--body-file` elsewhere in the same command — so it is safe regardless of
-  // what the captured text says. A bare `cat > file <<EOF` genuinely WRITES
-  // that content to `file`, which is exactly as dangerous as any other write
-  // when the target is sensitive (`cat > ~/.ssh/authorized_keys <<EOF … EOF`
-  // installs a real backdoor key; `cat > .git/hooks/pre-commit <<EOF … EOF`
-  // installs a real malicious hook) — a prior draft anchored only to `cat`
-  // itself and read both as safe "documentation". A scratch-path `cat > file`
-  // (e.g. `cat > "$SCRATCH/probe.mjs" <<EOF`) still classifies as guard-testing
+  // `--body-file` elsewhere in the same command. A bare `cat > file <<EOF`
+  // genuinely WRITES that content to `file`, which is exactly as dangerous as
+  // any other write when the target is sensitive (`cat > ~/.ssh/authorized_keys
+  // <<EOF … EOF` installs a real backdoor key; `cat > .git/hooks/pre-commit
+  // <<EOF … EOF` installs a real malicious hook) — a prior draft anchored only
+  // to `cat` itself and read both as safe "documentation". A scratch-path
+  // `cat > file` (e.g. `cat > "$SCRATCH/probe.mjs" <<EOF`) still classifies
+  // as guard-testing
   // via the independent scratch-path signal above, so this costs no real
   // recall against the validated data.
   if (/--body-file/.test(text) || /\$\(\s*cat\b[^<\n]{0,40}<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(text)) {
@@ -253,11 +292,31 @@ export function clusterEvents(events) {
 /**
  * blocked-edit gets its own proposal text per classification (AC.1/AC.2) rather
  * than the fixed "teach the escalation path" line every rule used to get
- * regardless of cause. A guard-testing cluster gets NO role-card proposal — the
- * #465 round's whole failure was proposing exactly that for behaviour that is
- * desirable. An unclassified cluster gets a QUESTION with evidence, never an
- * instruction: the classifier has no signal either way, and a diagnosis
- * phrasing here is what produced silent rubber-stamping risk before.
+ * regardless of cause.
+ *
+ * NEITHER branch below asserts a confident verdict (sixth fix wave, converging
+ * two rounds each of forge:reviewer/forge:security adversarial review that
+ * each found a NEW way to satisfy a "safe" discriminator while a genuinely
+ * destructive, cleanly-executing command sat alongside or inside it — a
+ * quote-blind `#` hiding a real `&& rm -rf ~` tail from `stripComment()`, a
+ * `$(cat <<EOF …)` capture fed to `eval`/`bash -c`, a `$(...)` substitution
+ * executing for real while merely constructing a path string, a generic
+ * `child_process` API name used for a real destructive spawn. Every round
+ * closed the specific reproduced case; none closed the CLASS, because the
+ * class is "can a text-substring match ever be trusted to characterize an
+ * entire unparsed shell command" — the answer, demonstrated empirically
+ * across four independent adversarial rounds, is no, not without the kind of
+ * real shell-parsing/segmentation `denylist.mjs` itself does not yet have
+ * (board #448/#449/#459, explicitly out of this ticket's scope). AC.1 does
+ * not require a perfect signal ("the signal need not be perfect") — it
+ * requires the REPORT never present a match as confident proof of benign
+ * intent. So a `guardTesting: true` cluster is now a HYPOTHESIS ("likely",
+ * "verify") backed by the reason(s) that matched, not a closed determination
+ * — exactly parallel to the `guardTesting: false` branch's existing "question,
+ * not a diagnosis" framing, and exactly why AC.3's excerpt (drawn from the
+ * ORIGINAL `cmd`, never from `stripComment()`'s output — a maintainer always
+ * sees the full text, including anything the classifier itself missed) is
+ * load-bearing for both branches, not just the unclassified one.
  */
 // Full descriptions keyed by reason code — proposalFor() looks up only the
 // reasons that actually matched (reviewer finding, #465 fix wave: the prior
@@ -276,7 +335,7 @@ function proposalFor(c) {
   const { guardTesting, reasons } = classifyBlockedEdit(c.events[0]?.cmd);
   if (guardTesting) {
     const why = reasons.map((r) => REASON_LABELS[r] ?? r).join(', ');
-    return `no role-card change proposed — every event matching \`${rule}\` here carries a guard-testing signal (${why}). This reads as the guard being deliberately exercised, not an agent reaching for the action. Kept as evidence only.`;
+    return `**likely guard-testing, not a diagnosis** — every event matching \`${rule}\` here carries a guard-testing signal (${why}), which reads as the guard being deliberately exercised rather than an agent reaching for the action. This is a text match, not a shell parser: it cannot always tell whether that signal characterizes the WHOLE command or merely sits alongside/inside an unrelated destructive segment (chained via \`&&\`/\`;\`, hidden by a quote-blind \`#\`, or fed to \`eval\`/\`bash -c\`/a redirect). Read the excerpt below before treating this as evidence-only — if it shows the matched signal coexisting with content that would genuinely execute something destructive, this is NOT a "no role-card change" case regardless of what matched.`;
   }
   return `**question, not a diagnosis** — ${c.count} event(s) matching \`${rule}\` show no known guard-testing signal (no scratch path, harness reference, doc-write, or probe shape detected). Is this a genuine destructive attempt, or a guard-testing shape this classifier doesn't recognise yet? Check the excerpt below before deciding on a role-card edit.`;
 }

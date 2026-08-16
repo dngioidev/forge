@@ -201,6 +201,39 @@ command (from this repo's own #454 branch history) that happens to trip
 correctly stay unclassified/visible rather than guessed either way — this is
 exactly why AC.2 exists.
 
+**A SIXTH round** (one more pass each from `forge:reviewer` and
+`forge:security`, both re-reviewing after round 5) found four more instances
+of the identical unresolved class, none closable by narrowing a regex
+further: `stripComment()` is quote-blind and can hide a real `&& rm -rf ~`
+tail behind a `#` inside an executed quoted string; a `$(cat <<EOF …)`
+capture genuinely executes when fed to `eval`/`bash -c`; a `$(...)`
+substitution embedded in a scratch-looking path string executes for real
+regardless of where the final path lands; a generic `child_process` API name
+(`spawnSync`) is not exclusive to this repo's own denylist-testing harness.
+Four independent adversarial rounds each finding a NEW shape of "can a
+text-substring match ever be trusted to characterize an entire unparsed
+shell command" — rather than converging toward zero — is itself the answer:
+no, not without real shell parsing, which `denylist.mjs` itself does not yet
+have and which board #448/#449/#459 are separately, still working on. A
+fifth regex-narrowing round would very likely find a seventh shape.
+
+The fix moved one level up instead of chasing another instance: `proposalFor()`
+no longer asserts confident dismissal for a `guardTesting: true` cluster
+("kept as evidence only") — it now reads as a hedged hypothesis ("likely
+guard-testing, not a diagnosis") that explicitly names the residual risk and
+points at the excerpt, symmetric with the `guardTesting: false` branch's
+existing "question, not a diagnosis" framing. AC.1 does not require a
+perfect signal ("the signal need not be perfect") — only that the report
+never present a match as proof of benign intent. That invariant now holds
+regardless of what a future adversarial round finds, because the excerpt
+(AC.3) is drawn from the ORIGINAL `cmd`, never from `stripComment()`'s
+output, so a maintainer is always looking at the full text regardless of
+what the classifier itself missed. The `toolCall`/`isAllowedCommand`/
+`spawnSync` markers were also dropped from `denylist-harness` entirely
+(zero-recall-cost per the validated data — every real event using one of
+them also carried a scratch-path or `plugin/hooks/` marker), since each is a
+generic identifier that ordinary, unrelated real code could also contain.
+
 ## Design
 
 Bounded to `distill.mjs`'s clustering/report functions and their tests, per
