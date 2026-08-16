@@ -59,14 +59,22 @@ describe('#462 — ADR-0006/0005 and runner-adoption assert self-hosted CI as cu
   describe('AC-462.4: docs/README.md route-index lines for ADR-0005/0006 do not describe superseded state as live', () => {
     it('the ADR-0005 route-index line does not claim the runner is currently enabled/live', async () => {
       const index = await readFile(readmePath, 'utf8');
-      const line = index.split('\n').find((l) => l.includes('ADR-0005'));
+      // Anchor on the route-index list-item shape ("- [ADR-0005") so this
+      // doesn't false-match a prose mention elsewhere (e.g. this ticket's own
+      // "#462 — ADR-0006/0005 and runner-adoption..." entry, which contains
+      // the substring "ADR-0005" but isn't the ADR-0005 route-index line).
+      const line = index.split('\n').find((l) => l.startsWith('- [ADR-0005'));
       expect(line).toBeTruthy();
       expect(line).not.toMatch(/currently (enabled|running|live)/i);
     });
 
     it('the ADR-0006 route-index line does not claim the runner fleet is currently live', async () => {
       const index = await readFile(readmePath, 'utf8');
-      const line = index.split('\n').find((l) => l.includes('ADR-0006'));
+      // Same anchoring rationale as the ADR-0005 case above — this ticket's
+      // own new route-index entry title contains the literal substring
+      // "ADR-0006" ("ADR-0006/0005"), so a bare .includes() match binds to
+      // the wrong line.
+      const line = index.split('\n').find((l) => l.startsWith('- [ADR-0006'));
       expect(line).toBeTruthy();
       expect(line).not.toMatch(/currently (enabled|running|live)/i);
     });

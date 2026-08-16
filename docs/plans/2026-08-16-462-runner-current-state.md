@@ -11,8 +11,11 @@ currently live: `docs/decisions/0006-runner-ui.md` (lines 7/18/21, present-tense
 "shipped"/"already runs"/"is the cockpit's config source of truth"),
 `docs/decisions/0005-local-self-hosted-runner.md` (Status line, no post-#426
 note), and `docs/guides/runner-adoption.md` (silent on hosted-only, not false).
-`docs/README.md`'s route-index lines for both ADRs (99-100) are already accurate
-— no edit expected, just a regression pin. This is annotation-only: the ADRs'
+`docs/README.md`'s route-index lines for both ADRs are already accurate — no
+content edit expected there, just a regression pin (line numbers deliberately
+omitted here: this ticket's own body already saw them drift twice in one
+session, 82,94 → 99,100, which is exactly why the pinning test is
+content-anchored rather than line-numbered). This is annotation-only: the ADRs'
 historical decision content and reasoning are not rewritten, matching how
 ADR-0006 already handles Decision-1's real supersession by ADR-0008 as contrast
 (that one was a design change; this is not).
