@@ -58,7 +58,15 @@ const SCRATCH_CMD = 'SCRATCH="C:/Users/x/AppData/Local/Temp/claude/scratchpad/wt
 const DOC_WRITE_CMD = 'cd C:/mywp/forge && node "scripts/board/comment.mjs" --issue 398 --phase note --body "$(cat <<\'EOF\'\nFindings doc landed. AC.1 verified.\nEOF\n)"';
 const PROBE_ECHO_TAIL_CMD = `git push --force origin main ; echo ${'y'.repeat(200)}`;
 const PROBE_BRACE_CMD = 'git push --force x{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}';
+const PROBE_SPELLING_OBFUSCATION_CMD = 'rm --{r,Z}{e,Z}{c,Z}{u,Z}{r,Z}{s,Z}{i,Z}{v,Z}{e,Z} -f /opt/danger';
+const PROBE_NESTED_BRACE_CMD = "bash -c 'echo git branch {{a,b},-D} main'";
 const GENUINE_BARE_CMD = 'git push --force origin main';
+// Adversarial-review counterexamples (reviewer fix wave): a heredoc piped into
+// an EXECUTING shell (not `cat`) runs the payload rather than writing it as
+// data, and a single non-nested `{a,b}` pair is ordinary shell multi-target
+// syntax — both must stay unclassified, not read as guard-testing evidence.
+const GENUINE_HEREDOC_EXEC_CMD = "bash <<'EOF'\nrm -rf /prod\nEOF";
+const GENUINE_BRACE_MULTI_TARGET_CMD = 'rm -rf {important-secrets,customer-db}';
 
 describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () => {
   it('AC-465.4: a check()/denylist.mjs harness invocation classifies as guard-testing', () => {
@@ -85,6 +93,24 @@ describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () =>
 
   it('AC-465.4: a genuine bare destructive command does NOT classify as guard-testing — do not fix the false positives by suppressing the true ones', () => {
     const { guardTesting } = classifyBlockedEdit(GENUINE_BARE_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 fix wave: a spelling-obfuscation brace probe (consecutive {x,Z} groups) still classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(PROBE_SPELLING_OBFUSCATION_CMD).guardTesting).toBe(true);
+  });
+
+  it('#465 fix wave: a nested-brace probe still classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(PROBE_NESTED_BRACE_CMD).guardTesting).toBe(true);
+  });
+
+  it('#465 fix wave: a heredoc piped into an EXECUTING shell (not cat) does NOT classify as guard-testing — it runs the payload rather than writing it as data', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_HEREDOC_EXEC_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('#465 fix wave: a single non-nested brace pair (ordinary multi-target shell syntax) does NOT classify as guard-testing', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_BRACE_MULTI_TARGET_CMD);
     expect(guardTesting).toBe(false);
   });
 
@@ -124,6 +150,13 @@ describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () =>
     expect(report).toMatch(/Sample: `git push --force origin main/);
     // truncated, not the full ~90-char echo tail
     expect(report).toContain('…');
+  });
+
+  it('#465 fix wave: a single-occurrence guard-testing cluster also gets a cmd excerpt in the one-offs list, not a bare label with no evidence', () => {
+    const events = [ev('blocked-edit', { rule: 'hard-reset', cmd: SCRATCH_CMD })];
+    const report = renderReport(clusterEvents(events));
+    expect(report).toContain('One-offs');
+    expect(report).toMatch(/blocked-edit: hard-reset \[guard-testing\] — `/);
   });
 });
 

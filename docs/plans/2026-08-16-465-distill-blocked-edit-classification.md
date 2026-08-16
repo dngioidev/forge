@@ -20,45 +20,57 @@ cluster is close to 100% guard-testing.
 Measured against this run's real evidence (`.forge/journal-archive/
 2026-08-13.jsonl`, `.forge/journal-archive/2026-08-14.jsonl`, and the live
 `.forge/journal.jsonl`, which keeps growing as the run continues — 119 + 60 +
-~25 = ~204 `blocked-edit` events at analysis time), the SHIPPED classifier
-(scoped deliberately narrower than an earlier draft — see below) resolves
-190/204 (93.1%) as carrying at least one guard-testing signal:
+~27 = ~206 `blocked-edit` events at analysis time), the SHIPPED classifier
+resolves 191/206 (~92.7%) as carrying at least one guard-testing signal:
 importing/invoking the denylist-guard machinery itself
 (`check(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
 a scratch/tmp/review-worktree path
 (`scratchpad`/`/tmp`/`AppData\Local\Temp`/`forge-security-N`/
-`forge-review-N`), writing *about* a blocked command via a heredoc or
-`--body-file` — the literal-string caveat — or an adversarial-probe shape
-(brace-expansion, a long repeated-character/echo-padding tail, or ANSI-C/
-quoted flag-spelling tricks).
+`forge-review-N`), writing *about* a blocked command via a `cat`-anchored
+heredoc or `--body-file` — the literal-string caveat — or an
+adversarial-probe shape (multi-group/nested brace expansion, a long
+repeated-character/echo-padding tail, or ANSI-C/quoted flag-spelling
+tricks).
 
-An earlier draft of this classifier also matched anything under
-`plugin/scripts/` (not just `plugin/hooks/`) and any bare `--body` flag (not
-just `--body-file`), which would have caught a few more real noise cases —
-board/comment.mjs calls whose `--body` text happens to quote a blocked
-string as data. Deliberately walked back before shipping: `plugin/scripts/`
-is the path nearly every forge-authored command touches, tool or not, and a
-bare `--body` flag appears on completely ordinary trail comments too, so
-either one risks classifying a genuinely dangerous command as guard-testing
-whenever it happens to run near an unrelated forge script or comment call —
-exactly the false-positive direction AC.2's design caution warns against.
-Recall lost by walking back (about 3.5 points) is the acceptable trade for
-never widening the guard-testing label past what `plugin/hooks/`/
-`--body-file` can support with no manually-audited false positive in this
-data.
+Two drafts were walked back before shipping, both caught by adversarial
+review of the diff, not by the original data pass — the accuracy-on-real-data
+audit alone did not surface either:
 
-The remaining ~14/204 (~6.9%) are not a defect to be regex'd away — they
-split several honest ways: a few are `node -e` proof-of-concept scripts
-whose identifying `import .../check(` text sits past the journal's 300-char
-`cmd` truncation (a real, disclosed recall ceiling, not a modelling gap); a
-few reference `plugin/scripts/` specifically (the walked-back signal above);
-one is the single genuinely bare `git push --force origin main` with no
-distinguishing context anywhere in this run's evidence; one is a real
+- An earlier draft matched anything under `plugin/scripts/` (not just
+  `plugin/hooks/`) and any bare `--body` flag (not just `--body-file`), which
+  would have caught a few more real noise cases (board/comment.mjs calls whose
+  `--body` text happens to quote a blocked string as data) but risks
+  classifying a genuinely dangerous command as guard-testing whenever it
+  happens to run near an unrelated forge script or comment call.
+- A second draft matched *any* heredoc (`<<DELIM`) as doc-write and *any*
+  single `{a,b}` brace pair as an adversarial probe. Reviewer counterexamples,
+  reproduced directly: `bash <<EOF` / `sh <<EOF` **executes** the heredoc body
+  rather than writing it as data, so a genuinely destructive payload delivered
+  that way would have read as "just documentation"; and a lone brace pair is
+  ordinary shell multi-target syntax (`rm -rf {secretA,secretB}` is a
+  plausible real destructive command), not evidence of anything adversarial.
+  Fixed by anchoring the heredoc check to `cat` specifically (every real
+  doc-write shape in the data pipes into `cat`) and requiring the brace check
+  to see either two-or-more CONSECUTIVE groups (the real spelling-obfuscation
+  and range-spam shapes below) or NESTED braces, never a single pair.
+
+Recall lost by both walk-backs (~4 points total, from a peak of ~96.6% on an
+unreviewed draft down to ~92.7% shipped) is the accepted trade: never widen
+the guard-testing label past what survives adversarial review with no
+plausible false positive, per AC.2's design caution.
+
+The remaining ~15/206 (~7.3%) are not a defect to be regex'd away — they
+split several honest ways: a few are `node -e` proof-of-concept scripts whose
+identifying `import .../check(` text sits past the journal's 300-char `cmd`
+truncation (a real, disclosed recall ceiling, not a modelling gap); a few
+reference `plugin/scripts/` specifically (the first walked-back signal
+above); one is the single genuinely bare `git push --force origin main` with
+no distinguishing context anywhere in this run's evidence; one is a real
 `git checkout -B ... && git fetch origin main` mid-branch-fixup command
-(from this repo's own #454 branch history) that happens to trip
-`hard-reset` and reads as plausibly genuine
-work, not a probe. All of them correctly stay unclassified/visible rather
-than guessed either way — this is exactly why AC.2 exists.
+(from this repo's own #454 branch history) that happens to trip `hard-reset`
+and reads as plausibly genuine work, not a probe. All of them correctly stay
+unclassified/visible rather than guessed either way — this is exactly why
+AC.2 exists.
 
 ## Design
 

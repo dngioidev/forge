@@ -51,12 +51,25 @@ export function classifyBlockedEdit(cmd) {
   // Writing ABOUT a blocked command (PR body, heredoc doc/test fixture) rather
   // than invoking it — the literal-string caveat: the denylist matches inside
   // quoted/heredoc bodies too, so quoting a blocked string here still trips it.
-  if (/--body-file/.test(cmd) || /<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(cmd) || /\$\(cat <</.test(cmd)) {
+  // Anchored to `cat` specifically (adversarial review finding, #465 fix wave):
+  // an unanchored `<<DELIM` also matches `bash <<EOF`/`sh <<EOF`, which EXECUTES
+  // the heredoc body rather than writing it as data — a genuinely destructive
+  // payload delivered that way must not read as "just documentation". Every
+  // real doc-write shape in the validated data pipes the heredoc into `cat`
+  // (`cat > file <<EOF`, `cat >> file <<EOF`, `$(cat <<EOF`).
+  if (/--body-file/.test(cmd) || /\bcat\b[^<\n]{0,40}<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(cmd)) {
     reasons.push('doc-write');
   }
-  // Adversarial probe shapes: ReDoS/length tails, brace expansion, a long
-  // repeated-character run, or ANSI-C/quoted flag-spelling tricks.
-  if (/;\s*echo\s+y{5,}/.test(cmd) || /\{[^{}]{1,40},[^{}]{1,40}\}/.test(cmd) || /\{[^{}\s]{1,20}\.\.[^{}\s]{1,20}\}/.test(cmd) || /(.)\1{14,}/.test(cmd) || /\$'/.test(cmd) || /-\\"[a-zA-Z]\\"/.test(cmd) || /-"[a-zA-Z]"/.test(cmd)) {
+  // Adversarial probe shapes: ReDoS/length tails, a long repeated-character
+  // run, ANSI-C/quoted flag-spelling tricks, or brace-expansion obfuscation.
+  // The brace check requires TWO OR MORE consecutive `{...}` groups (spelling
+  // obfuscation like `{r,Z}{e,Z}{c,Z}…`, or range-spam like `{a..a}{a..a}…`)
+  // or NESTED braces (`{{a,b},-D}`) — never a single `{a,b}` pair (adversarial
+  // review finding, #465 fix wave): a lone brace pair is ordinary shell
+  // multi-target syntax (`rm -rf {secretA,secretB}` is a real, plausible
+  // destructive command), so matching it unconditionally mislabelled a
+  // genuine multi-target delete as guard-testing.
+  if (/;\s*echo\s+y{5,}/.test(cmd) || /(\{[^{}]{0,20}\}){2,}/.test(cmd) || /\{[^{}]*\{/.test(cmd) || /(.)\1{14,}/.test(cmd) || /\$'/.test(cmd) || /-\\"[a-zA-Z]\\"/.test(cmd) || /-"[a-zA-Z]"/.test(cmd)) {
     reasons.push('adversarial-probe');
   }
   return { guardTesting: reasons.length > 0, reasons };
@@ -166,7 +179,15 @@ export function renderReport(clusters) {
   }
   if (singles.length) {
     lines.push('## One-offs (no pattern yet — stay in the archive as evidence)', '');
-    for (const c of singles) lines.push(`- ${c.kind}: ${c.signature}`);
+    for (const c of singles) {
+      // A single guard-testing blocked-edit event asserts a positive ("this
+      // reads as guard-testing") with no repeat evidence to lean on — unlike a
+      // repeat cluster it had no `Sample:` line at all pre-fix (reviewer
+      // finding, #465 fix wave). Print the excerpt here too so that assertion
+      // is never made without something a maintainer can check it against.
+      const excerpt = c.kind === 'blocked-edit' ? cmdExcerpt(c.events[0]?.cmd) : null;
+      lines.push(excerpt ? `- ${c.kind}: ${c.signature} — \`${excerpt}\`` : `- ${c.kind}: ${c.signature}`);
+    }
     lines.push('');
   }
   lines.push('---', 'A maintainer approves each proposal before anything is written; approved lessons land as a PR. Then archive: `distill.mjs --archive`.');
