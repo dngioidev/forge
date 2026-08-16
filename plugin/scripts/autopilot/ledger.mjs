@@ -27,12 +27,20 @@ export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 // is last-write-wins per issue).
 export const OUTCOMES = ['merged', 'escalated', 'skipped', 'awaiting-human', 'ready', 'stalled-before-pr'];
 
+// #517: a small rolling cap on `run.rateBudgetReadings` — only recent readings are relevant
+// to "what should the next check expect," not a full run history.
+export const MAX_BUDGET_READINGS = 6;
+
 export function freshRun(startedAt = null) {
   return {
     version: 1, startedAt, iterations: 0, outcomes: [], filed: [], mergeMode: null, mergeReason: null,
     // #488 AC.4: the board size the run started at (or was first observed at, for a ledger
     // upgraded mid-run). null until `startRun` is given a `boardSize` opt — see § startRun.
     boardSizeAtStart: null,
+    // #517: rolling log of `remaining` readings taken at every rate-budget check — feeds
+    // `recentBudgetDeltas`/`estimateTicketCost` so the low-water threshold reflects this
+    // run's own observed per-ticket cost instead of a flat constant.
+    rateBudgetReadings: [],
   };
 }
 
@@ -82,6 +90,36 @@ export function applyOutcome(run, { issue, outcome, ref = null, stage = null }) 
 export function applyFiled(run, { issue, kind, from }) {
   if (run.filed.some((f) => f.issue === issue)) return run;
   return { ...run, filed: [...run.filed, { issue, kind, from }] };
+}
+
+/**
+ * Pure state transition (#517): append a fresh `remaining` reading to
+ * `run.rateBudgetReadings`, capped to the last `MAX_BUDGET_READINGS` entries
+ * (drops the OLDEST once over cap). A non-finite or negative reading is
+ * ignored — returns `run` unchanged rather than corrupting the log (same
+ * trust-boundary posture as `sanitizePositiveInt` above).
+ */
+export function applyBudgetReading(run, remaining) {
+  if (!Number.isFinite(remaining) || remaining < 0) return run;
+  const readings = [...(run.rateBudgetReadings ?? []), remaining].slice(-MAX_BUDGET_READINGS);
+  return { ...run, rateBudgetReadings: readings };
+}
+
+/**
+ * Pure derivation (#517): consecutive-reading drops only. For each pair of
+ * consecutive readings, `readings[i-1] - readings[i]` is pushed into the
+ * result ONLY when it's `> 0` — a reading that went UP means the hourly
+ * window reset, not "a ticket was cheap," and must never be counted as a
+ * zero/negative cost. Returns the positive drops in chronological order.
+ */
+export function recentBudgetDeltas(run) {
+  const readings = run?.rateBudgetReadings ?? [];
+  const deltas = [];
+  for (let i = 1; i < readings.length; i++) {
+    const delta = readings[i - 1] - readings[i];
+    if (delta > 0) deltas.push(delta);
+  }
+  return deltas;
 }
 
 // #488: PR #468's no-fused-routes rule made every `select.mjs` action its own spawn with
@@ -255,6 +293,11 @@ export async function recordOutcome(cwd, entry) {
 }
 export async function recordFiled(cwd, entry) {
   const run = applyFiled(await loadRun(cwd), entry);
+  await writeJson(join(cwd, RUN_RELPATH), run);
+  return run;
+}
+export async function recordBudgetReading(cwd, remaining) {
+  const run = applyBudgetReading(await loadRun(cwd), remaining);
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
 }
