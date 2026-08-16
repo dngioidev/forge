@@ -155,13 +155,27 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
  *     risk reading a disclaimed or already-resolved role as still awaited.
  *     **Honest limit:** this is a curated cue-word list, not a semantic
  *     negation parser — it cannot be exhaustive against arbitrary free
- *     text (a #474 fix-wave round 2 finding: the round-1 list, covering
- *     only grammatical negation, missed "the wait is over"-style
- *     completion phrasing). The residual risk is bounded, not eliminated:
- *     (a) `outcome` is a delivery subagent's own cooperative narration, not
- *     adversarial human-crafted input; (b) a wrong relay's blast radius is
- *     small — it only resumes the SAME already-running subagent with a
- *     verdict message for it to reason about in its own context, and every
+ *     text, and the gap runs in BOTH directions, not just one:
+ *       - *Under-catching* (a false `relay`): round 1's list covered only
+ *         grammatical negation and missed completion phrasing ("the wait
+ *         is over") — fixed in round 2. Round 2's list in turn missed a
+ *         cue trailing the wait clause via a comma + conjunction ("X, but
+ *         not anymore") — fixed in round 3 (`TRAILING_NEGATION_RE`, below;
+ *         best-effort over five common conjunctions, not exhaustive).
+ *       - *Over-catching* (a false `defer` — the SAFE direction, but still
+ *         a real trade-off worth naming): round 3 deliberately did NOT add
+ *         `complete`/`finished`/`resolved`/`closed` as cues, even though
+ *         they'd close a few more under-catching gaps, because "waiting
+ *         for the security review to complete" is one of the MOST common
+ *         ways to phrase a still-ONGOING wait — adding them would trade a
+ *         narrow under-catching gap for a much wider, more damaging
+ *         over-catching one against exactly the phrasing this feature
+ *         exists to catch.
+ *     The residual risk is bounded, not eliminated: (a) `outcome` is a
+ *     delivery subagent's own cooperative narration, not adversarial
+ *     human-crafted input; (b) a wrong relay's blast radius is small — it
+ *     only resumes the SAME already-running subagent with a verdict
+ *     message for it to reason about in its own context, and every
  *     downstream gate (adversarial review, the merge bar) independently
  *     re-verifies everything regardless. AC.2's "never guess" is honored
  *     as best-effort-with-a-documented-ceiling, not as a claim of
@@ -185,16 +199,30 @@ function parseAwaitedRoles(text) {
   const WAIT_RE = /\b(?:wait(?:ing)?|await(?:ing)?)\b/i;
   // Grammatical negation (round 1) + completion/mootness cues (round 2 fix-wave finding — see JSDoc
   // "Honest limit" above): either kind anywhere in the clause disqualifies the whole clause.
+  // Deliberately EXCLUDES "complete"/"finished"/"resolved"/"closed" — a #474 round-3 review considered and
+  // rejected adding them: "waiting for the security review to complete" / "once it's finished" is one of
+  // the MOST common ways to phrase a still-ONGOING wait (the awaited thing completing is what's awaited),
+  // not evidence the wait itself has ended — adding those words would reintroduce false defers on exactly
+  // the phrasing this feature exists to catch, a worse regression than the narrow gap they'd close.
   const NEGATION_RE =
     /\b(?:not|n't|never|no\s+(?:need|longer)|isn't|aren't|doesn't|didn't|won't|done|over|unnecessary|moot|nothing\s+left|stopped|used\s+to|formerly|waived|concluded|hardly)\b/i;
+  // #474 round-3 fix-wave: a negation/completion cue joined to the wait clause by a comma + coordinating
+  // conjunction ("X, but not anymore" / "X, but that's done now") lands in the NEXT comma-split segment,
+  // not the wait clause itself — `forge:security` found this defeats detection even for an already-listed
+  // cue word. Best-effort, not exhaustive: only these five common conjunctions are recognised.
+  const TRAILING_NEGATION_RE = /^\s*(?:but|however|except|though|yet)\b/i;
   const BOTH_RE = /\bboth\b/i;
   const SECURITY_RE = /\bsecurity\b/i;
   const SECURITY_ANCHOR_RE = /\b(?:agent|verdict|check|pass|notification|confirmation|clear(?:ance)?|sign-?off|review(?:er)?|result|hold)\b/i;
   const REVIEWER_RE = /\breviewer\b/i; // bare "review" deliberately excluded — see JSDoc above
   const roles = new Set();
-  for (const segment of text.split(/[.!?;,]/)) {
+  const segments = text.split(/[.!?;,]/);
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
     if (!WAIT_RE.test(segment)) continue; // this clause isn't a "waiting on" clause at all
     if (NEGATION_RE.test(segment)) continue; // a disclaimed/negated clause is never a source of awaited roles
+    const next = segments[i + 1] ?? '';
+    if (TRAILING_NEGATION_RE.test(next) && NEGATION_RE.test(next)) continue; // "…, but that's done now" etc.
     if (BOTH_RE.test(segment)) {
       roles.add('reviewer');
       roles.add('security');

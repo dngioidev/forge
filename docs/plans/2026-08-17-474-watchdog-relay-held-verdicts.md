@@ -182,8 +182,61 @@ verdict message for it to reason about in context, and every downstream gate
 (adversarial review, the merge bar) independently re-verifies everything
 regardless of what this heuristic decided.
 
-Both `forge:reviewer` and `forge:security` re-run a third time against this
-round-2 fix; see the PR body for the final verdicts.
+### Round 3: both passes returned `verdict: pass`; one non-blocking structural finding fixed proactively
+
+`forge:reviewer`, re-run a third time, confirmed its own round-1 repros stay
+fixed and returned `verdict: pass` with zero findings, but noted the round-2
+word-list widening was itself capable of over-catching (bare `over`/`done`
+in their ordinary senses, e.g. "waiting for **over** an hour" or "get my own
+checks **done** in parallel") — a fail-safe direction (falls to the
+pre-existing respawn/escalate path, not a wrong relay), rated `minor`.
+
+`forge:security`, re-run a third time in its own disposable worktree,
+confirmed all 8 round-2 repros now correctly defer and also returned
+`verdict: pass` (explicitly: "no critical/blocking issue... not escalating
+this as a gate-halting critical"), but found one more genuine, well-isolated
+gap and rated it `major` even though non-blocking: a negation/completion cue
+joined to the wait clause by a comma + coordinating conjunction ("I was
+waiting on the security agent, **but** that's done now.") defeats detection
+even for an *already-listed* cue word, because the comma-split architecture
+puts the cue in the NEXT segment, which the same-segment check never
+inspects. Explicitly called this "not fixable by adding more words" — a
+structural gap, not a vocabulary one — and recommended a targeted one-time
+fix rather than another vocabulary-widening round.
+
+Both verdicts already satisfied the merge bar (`pass`, zero critical/high),
+so this was not required to ship — but the security agent's specific,
+narrow, well-reasoned fix (look one segment ahead when it starts with a
+coordinating conjunction) was cheap and clearly bounded, so it was applied
+proactively rather than deferred: `TRAILING_NEGATION_RE` (best-effort over
+five common conjunctions — `but`/`however`/`except`/`though`/`yet`, not
+exhaustive — `or` was deliberately excluded, since it collides with
+legitimate non-negating phrasing like "the reviewer or the security agent,
+whichever finishes first"). Four new regression tests pin the exact repro
+shape; a fifth documents the deliberate `or`/two-clauses-away scope boundary
+as a known, disclosed miss rather than hiding it.
+
+Reviewer's over-catching finding was investigated but NOT acted on with more
+word removals: the JSDoc's "Honest limit" paragraph was instead extended to
+name the trade-off explicitly. Adding `complete`/`finished`/`resolved`/
+`closed` (as one path to closing the round-2 gap further) was deliberately
+REJECTED after tracing it against this ticket's own `#464`/#522-era test
+fixture ("Still waiting on the security review **to complete** before I can
+proceed.") — that phrasing is one of the most common ways to describe a
+still-ONGOING wait, and adding those words would have broken it, trading a
+narrow under-catching gap for a much wider over-catching one against exactly
+the phrasing this feature exists to catch. A regression test now pins that
+decision (`tests/autopilot/engine.test.mjs`, "waiting for X to complete" is
+NOT treated as a negation cue).
+
+No further adversarial round was spawned after this: both gates already
+returned `pass` twice running (round 3 was itself a re-confirmation, not a
+fail), and the residual gaps that remain (the `or`/two-clauses-away miss,
+and the acknowledged word-list incompleteness in both directions) are
+explicitly disclosed rather than chased indefinitely — consistent with this
+codebase's own precedent (#465's seven-round fix-wave eventually settling on
+a hedged, disclosed limitation rather than pursuing an unreachable "perfect
+classifier").
 
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 

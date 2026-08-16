@@ -1181,6 +1181,46 @@ describe('autopilot watchdog — matchHeldVerdicts: relay a held verdict to a st
     });
   });
 
+  describe('AC-474.2 fix-wave round 3: a negation cue joined via comma + conjunction ("X, but not anymore") defeats same-clause detection — forge:security structural finding', () => {
+    const held = (issue, role) => [{ issue, role, verdict: 'pass' }];
+
+    it.each([
+      [31, "I was waiting on the security agent, but that's done now.", 'security'],
+      [32, "I was waiting on the reviewer, but that's over now.", 'reviewer'],
+      [33, 'Waiting on the reviewer, but not anymore.', 'reviewer'],
+      [34, "Waiting on the security agent's clearance, however that requirement was waived.", 'security'],
+    ])('issue #%i: %s → defers (the trailing conjunction clause carries the negation)', (issue, outcome, role) => {
+      const dec = matchHeldVerdicts({ issue, outcome }, held(issue, role));
+      expect(dec.action, outcome).toBe('defer');
+    });
+
+    it('documented scope boundary: "or" is deliberately NOT a recognised trailing conjunction, and only ONE segment of lookahead is attempted — a negation two clauses away is missed', () => {
+      // TRAILING_NEGATION_RE only recognises but/however/except/though/yet, and parseAwaitedRoles only
+      // ever looks one segment ahead. "Waiting on the security agent, or so I thought, turns out that's
+      // done." negates the wait, but two clauses removed via "or" — not caught, and disclosed as a known
+      // scope limit rather than chased further (#474 round-3 review; "or" is also common in legitimate,
+      // non-negating phrasing like "reviewer or security, whichever finishes first", so it isn't a safe
+      // general trailing-conjunction cue).
+      const dec = matchHeldVerdicts(
+        { issue: 35, outcome: "Waiting on the security agent, or so I thought, turns out that's done." },
+        held(35, 'security'),
+      );
+      expect(dec.action).toBe('relay'); // known miss, not a regression — documents the boundary, doesn't hide it
+    });
+
+    it('guard: "waiting for X to complete" is NOT treated as a negation cue — an ongoing wait described via the awaited thing\'s own completion still relays correctly', () => {
+      // Pins the round-3 design decision NOT to add complete/finished/resolved/closed to NEGATION_RE
+      // (see the JSDoc "Honest limit" — over-catching risk) by proving the single most common phrasing
+      // this would have broken still works.
+      const dec = matchHeldVerdicts(
+        { issue: 36, outcome: 'Waiting for the security review to complete before I can proceed.' },
+        held(36, 'security'),
+      );
+      expect(dec.action).toBe('relay');
+      expect(dec.verdicts.map((v) => v.role)).toEqual(['security']);
+    });
+  });
+
   it('AC-474.4: matchHeldVerdicts stays pure — same input always yields the same output, no IO', () => {
     const report = { issue: 472, outcome: "I'll wait for the notification when both agents finish." };
     const held = [
