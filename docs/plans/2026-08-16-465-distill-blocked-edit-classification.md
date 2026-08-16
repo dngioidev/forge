@@ -19,12 +19,14 @@ cluster is close to 100% guard-testing.
 
 Measured against this run's real evidence (`.forge/journal-archive/
 2026-08-13.jsonl`, `.forge/journal-archive/2026-08-14.jsonl`, and the live
-`.forge/journal.jsonl`, which keeps growing as the run continues — ~216
+`.forge/journal.jsonl`, which keeps growing as the run continues — ~222
 `blocked-edit` events at final analysis time), the SHIPPED classifier
-resolves 184/216 (~85.2%) as carrying at least one guard-testing signal:
+resolves 190/222 (~85.6%) as carrying at least one guard-testing signal:
 importing/invoking the denylist-guard machinery itself
-(`\bcheck(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
-a scratch/tmp/review-worktree path with no `..` traversal following the
+(`\bcheck(`/`denylist.mjs`/`agy-deny.mjs`/anything under `plugin/hooks/` —
+see the sixth round below for why `toolCall`/`isAllowedCommand`/`spawnSync`
+were dropped from this list), a scratch/tmp/review-worktree path with no `..`
+traversal following the
 marker (`scratchpad`/`/tmp`/`AppData\Local\Temp`/`forge-security-N`/
 `forge-review-N`), a `$(cat <<EOF … EOF)` command-substitution doc-write or
 `--body-file` — the literal-string caveat — or a ReDoS/length-padding tail
@@ -182,25 +184,6 @@ start), never a bare mid-path substring; the other scratch markers keep a
 substring match since they are this repo's own distinctive path components,
 not a generic word an unrelated real directory would also contain.
 
-Recall lost across all six walk-backs (~11 points total, from a peak of
-~96.6% on the first unreviewed draft down to ~85.2% shipped) is the accepted
-trade: never widen the guard-testing label past what survives adversarial
-review with no plausible false positive, per AC.2's design caution.
-
-The remaining ~32/216 (~14.8%) are not a defect to be regex'd away — they
-split several honest ways: several are `node -e` proof-of-concept scripts
-whose identifying `import .../check(` text sits past the journal's 300-char
-`cmd` truncation (a real, disclosed recall ceiling, not a modelling gap);
-several reference `plugin/scripts/` specifically (the first walked-back
-signal above); several use the now-removed brace-expansion/ANSI-C shapes
-(rounds 4-5); one is the single genuinely bare `git push --force origin
-main` with no distinguishing context anywhere in this run's evidence; one is
-a real `git checkout -B ... && git fetch origin main` mid-branch-fixup
-command (from this repo's own #454 branch history) that happens to trip
-`hard-reset` and reads as plausibly genuine work, not a probe. All of them
-correctly stay unclassified/visible rather than guessed either way — this is
-exactly why AC.2 exists.
-
 **A SIXTH round** (one more pass each from `forge:reviewer` and
 `forge:security`, both re-reviewing after round 5) found four more instances
 of the identical unresolved class, none closable by narrowing a regex
@@ -262,10 +245,12 @@ the ticket's non-goal (denylist matching behaviour itself is untouched).
   event) is untouched — it already carries `reason` and has a pinned test.
 - `renderReport()`: `blocked-edit` clusters get proposal text selected by
   `classifyBlockedEdit()` instead of the fixed `PROPOSALS['blocked-edit']`
-  string (removed from that map). A `guardTesting: true` cluster proposes NO
-  role-card edit and states plainly this reads as the guard being
-  deliberately exercised, never "the agent keeps reaching for a denylisted
-  action" (AC.1). An unclassified cluster is phrased as a question with
+  string (removed from that map). A `guardTesting: true` cluster never claims
+  "the agent keeps reaching for a denylisted action" (AC.1) — as of the sixth
+  round it is phrased as a hedged hypothesis ("likely guard-testing, not a
+  diagnosis", naming the matched signal and pointing at the excerpt) rather
+  than a closed "no role-card change" determination, symmetric with the
+  unclassified branch. An unclassified cluster is phrased as a question with
   evidence, not an instruction (AC.2). Every `blocked-edit` cluster gets a
   truncated, whitespace-collapsed excerpt of its sample event's `cmd`
   printed inline via a new `cmdExcerpt()` helper (AC.3) — the pre-fix report
@@ -289,9 +274,15 @@ the archive/report skeleton, `PROPOSALS` entries for kinds other than
   `blocked-edit` cluster inline, not just bare timestamps.
 - **AC.4** Tests pin classification against a fixture built from this
   round's real shapes: a `check()` harness invocation, an adversarial probe
-  with a long echo tail, a brace-expansion probe, a `--body-file` doc write,
-  and a genuine bare destructive command — the genuine one still clusters
-  separately (false positives are not fixed by suppressing true ones).
+  with a long echo tail, a `--body-file`/`$(cat …)` doc write, and a genuine
+  bare destructive command — the genuine one still clusters separately
+  (false positives are not fixed by suppressing true ones). The ticket's own
+  AC.4 text also names a brace-expansion probe; per the sixth-round finding
+  above (a brace-expansion PROBE and a real brace-expansion BYPASS are
+  textually identical), that fixture is still built and its classification
+  is still pinned — as `unclassified`, with the reasoning inline in the test
+  name — rather than asserted as a positive guard-testing signal, since
+  asserting the latter is exactly the false confidence AC.1/AC.2 rule out.
 - **AC.5** `escalation-resolved` clustering does not group unrelated
   escalations under `unspecified`.
 
@@ -299,18 +290,20 @@ the archive/report skeleton, `PROPOSALS` entries for kinds other than
 
 `tests/learn/distill.test.mjs` gains `AC-465.*`-titled tests:
 `classifyBlockedEdit` unit tests for a `check()`-harness `node -e` script, a
-scratch-path command, a `--body-file`/heredoc doc write, a long-echo-tail
-probe, a brace-expansion probe, and a genuine bare `git push --force origin
-main` with no scaffolding (AC.4); a `clusterEvents` test proving the same
-`rule` splits into a `guard-testing` cluster and an `unclassified` cluster
-rather than merging (AC.1); a `renderReport` test asserting the
-guard-testing cluster's proposal never contains "reaching for a denylisted
-action" and the unclassified cluster's proposal contains question language
-(AC.1, AC.2); a `renderReport` test asserting a truncated `cmd` excerpt
-(with an ellipsis) appears inline (AC.3); and `escalation-resolved`
-signature tests proving resolved decisions for different issues never share
-a signature while the same escalation `id` resolved twice still clusters as
-a repeat (AC.5).
+scratch-path command, a `--body-file`/`$(cat …)` doc write, a long-echo-tail
+probe, a brace-expansion probe (pinned `unclassified` — see AC.4 above), and
+a genuine bare `git push --force origin main` with no scaffolding (AC.4); a
+`clusterEvents` test proving the same `rule` splits into a `guard-testing`
+cluster and an `unclassified` cluster rather than merging (AC.1); a
+`renderReport` test asserting the guard-testing cluster's proposal never
+contains "reaching for a denylisted action" and the unclassified cluster's
+proposal contains question language (AC.1, AC.2); a `renderReport` test
+asserting a truncated `cmd` excerpt (with an ellipsis) appears inline
+(AC.3); and `escalation-resolved` signature tests proving resolved
+decisions for different issues never share a signature while the same
+escalation `id` resolved twice still clusters as a repeat (AC.5). Later
+rounds add regression fixtures for every counterexample found along the
+way (see the review history above) — 50 tests total.
 
 **Files:** tests/learn/distill.test.mjs
 **AC map:** AC-465.1, AC-465.2, AC-465.3, AC-465.4, AC-465.5
