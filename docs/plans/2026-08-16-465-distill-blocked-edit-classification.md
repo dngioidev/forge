@@ -57,8 +57,8 @@ distinguishing context anywhere in this run's evidence; one is a real
 `git checkout -B ... && git fetch origin main` mid-branch-fixup command
 (from this repo's own #454 branch history) that happens to trip
 `hard-reset` and reads as plausibly genuine
-work, not a probe. All seven correctly stay unclassified/visible rather than
-guessed either way — this is exactly why AC.2 exists.
+work, not a probe. All of them correctly stay unclassified/visible rather
+than guessed either way — this is exactly why AC.2 exists.
 
 ## Design
 
