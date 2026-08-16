@@ -18,48 +18,44 @@ export const ARCHIVE_DIR = join('.forge', 'journal-archive');
 /**
  * blocked-edit clustering by rule name ALONE cannot tell a genuine destructive
  * attempt from an agent deliberately exercising the guard — see #465. Grounded
- * against the real 2026-08-13 round (119 blocked-edit events, all 8 role-card
- * proposals rejected because the premise was false): every discriminator below
- * was validated against that data, not invented — and re-validated after three
- * rounds of adversarial review (forge:reviewer, then forge:security twice)
- * each tightened it to close a false-positive path. 115/119 carry at least one
- * signal, with zero false positives on manual audit of every single-signal hit
- * that survived all three rounds.
+ * against the real 2026-08-13/14 rounds plus the live journal (real events,
+ * not invented) and taken through four rounds of adversarial review
+ * (forge:reviewer, forge:security ×2, forge:reviewer again) that each closed
+ * a false-positive path — most recently removing brace-expansion and
+ * ANSI-C/quote-spelling from the "adversarial-probe" signal entirely, because
+ * both are the literal mechanism a real bypass would use to spell a dangerous
+ * flag past a naive guard, not just a shape a tester happens to favour (see
+ * the inline comment on the adversarial-probe check below for the reproduced
+ * exploits). The plan doc carries the full, dated review history and current
+ * recall numbers rather than duplicating them here, since they shift each
+ * time this function does: docs/plans/2026-08-16-465-distill-blocked-edit-classification.md.
  *
  * Deliberately TWO states, not three. Absence of a guard-testing signal is not
  * proof of genuine intent — it just means this cheap text match found nothing —
  * so there is no confident "genuine" label here, only "guard-testing" (a
  * discriminator matched) and "unclassified" (none did, review the excerpt).
- * The 4 real events with no signal: the single genuinely bare
- * `git push --force origin main` in the whole round (correctly stays
- * unclassified/visible — required by AC.4); an adversarial CRLF-splitting
- * probe with no denylist reference at all; and two CR/quote-splicing probes
- * that use ANSI-C quoting (`$'"'"'…'"'"'`) purely to embed a literal
- * single-quote, carrying neither a hex/octal escape nor a leading dash — all
- * three honest can't-tell cases once the ANSI-C discriminator was tightened
- * (see below) to stop treating bare `$'…'` as evidence on its own. Erring
- * toward keeping an event visible (AC.2) is the point: a false "guard-testing"
- * label is the dangerous direction, a false "unclassified" one merely asks a
- * human to look.
+ * Erring toward keeping an event visible (AC.2) is the point: a false
+ * "guard-testing" label is the dangerous direction — it suppresses exactly
+ * the lesson distill exists to surface — a false "unclassified" one merely
+ * asks a human to look.
  *
- * KNOWN LIMITATION, stated rather than hidden (adversarial security review,
- * #465 second fix wave): this is a text match over a flat (already-truncated)
- * `cmd` string, not a shell parser — it cannot always tell which SEGMENT of a
- * multi-part command a discriminator match belongs to. A destructive command
- * chained via `&&`/`;` with an unrelated, genuinely guard-testing-shaped
- * segment (e.g. `<destructive> && cat <<EOF … EOF`) can still borrow that
- * segment's label. `stripComment()` closes the cheapest, most likely version
- * of this (appending `# check(this)` or similar, which costs an attacker
- * nothing and needs no real guard-testing shape at all) with no recall cost;
- * closing the compound-command case fully would need denylist.mjs's own
- * quote-aware segmentation, which is a materially bigger change than this
- * ticket's scope (its non-goal: this ticket is about how the journal is
- * interpreted, not a redesign of distill or an absorption of denylist
- * mechanics). The real backstop for this residual case is AC.3: a
- * `blocked-edit` cluster's proposal is never rendered without the excerpt
- * that earned it printed right below, so a maintainer approving a "no
- * role-card change" proposal is always looking at the same text this
- * function did.
+ * KNOWN LIMITATION, stated rather than hidden (adversarial security review):
+ * this is a text match over a flat (already-truncated) `cmd` string, not a
+ * shell parser — it cannot always tell which SEGMENT of a multi-part command
+ * a discriminator match belongs to. A destructive command chained via
+ * `&&`/`;` with an unrelated, genuinely guard-testing-shaped segment (e.g.
+ * `<destructive> && cat <<EOF … EOF`) can still borrow that segment's label.
+ * `stripComment()` closes the cheapest, most likely version of this
+ * (appending `# check(this)` or similar, which costs an attacker nothing and
+ * needs no real guard-testing shape at all) with no recall cost; closing the
+ * compound-command case fully would need denylist.mjs's own quote-aware
+ * segmentation, which is a materially bigger change than this ticket's scope
+ * (its non-goal: this ticket is about how the journal is interpreted, not a
+ * redesign of distill or an absorption of denylist mechanics) — tracked as a
+ * disclosed, linked follow-up rather than silently dropped. AC.3's inline
+ * excerpt (see `cmdExcerpt()`, sized to the same 300-char cap the journal
+ * itself enforces) is the backstop: a maintainer approving a "no role-card
+ * change" proposal is always looking at the same text this function did.
  */
 /**
  * Strip an inert shell comment (a space/line-start-preceded `#` and
@@ -86,66 +82,114 @@ export function classifyBlockedEdit(cmd) {
   const text = stripComment(cmd);
   const reasons = [];
   // Testing the guard itself: invoking check()/denylist.mjs, the agy shim's
-  // toolCall envelope, or importing anything under plugin/hooks/.
-  if (/denylist\.mjs/.test(text) || /check\(/.test(text) || /toolCall/.test(text) || /isAllowedCommand/.test(text) || /spawnSync/.test(text) || /agy-deny\.mjs/.test(text) || /plugin\/hooks\//.test(text)) {
+  // toolCall envelope, or importing anything under plugin/hooks/. `\bcheck\(`
+  // (word-boundary — fourth adversarial-review round, reviewer): unanchored
+  // `check\(` also matches inside an unrelated identifier sharing the
+  // substring (`typecheck(`, `healthcheck(`).
+  if (/denylist\.mjs/.test(text) || /\bcheck\(/.test(text) || /toolCall/.test(text) || /isAllowedCommand/.test(text) || /spawnSync/.test(text) || /agy-deny\.mjs/.test(text) || /plugin\/hooks\//.test(text)) {
     reasons.push('denylist-harness');
   }
   // A throwaway or review-worktree target, never the working tree the agent
   // actually cares about (forge-security-N / forge-review-N are this repo's
-  // own adversarial-review worktree naming, per #433/#437).
-  if (/\/tmp\//.test(text) || /AppData[\\/]Local[\\/]Temp/.test(text) || /scratchpad/.test(text) || /\.tmp-review/.test(text) || /forge-(security|review)-\d+/.test(text)) {
+  // own adversarial-review worktree naming, per #433/#437). Each marker
+  // requires no `..` traversal immediately after it (fourth adversarial-review
+  // round, reviewer): an unqualified `/\/tmp\//` reads `rm -rf /tmp/../
+  // important-project/.git` as a safe scratch-path operation when the `..`
+  // walks straight back out of the scratch dir into the real tree — the
+  // marker's mere presence proves nothing once a traversal follows it.
+  // `/tmp/` is anchored to a path START (preceded by whitespace, `=`, a quote,
+  // or the string start), never a bare substring (fifth adversarial-review
+  // round, self-review against an adversarial fixture set): unanchored, it
+  // also matches `/tmp/` sitting mid-path inside a completely unrelated real
+  // directory (`rm -rf /home/user/myapp/tmp/uploads --force` is a genuine
+  // destructive command against an app's own "tmp" subfolder, not the system
+  // scratch dir). The other markers keep a bare-substring match — they are
+  // this repo's own distinctive path components (`scratchpad`, `forge-
+  // security-N`), not a generic word a real project directory would also
+  // happen to contain.
+  const scratchMarker = /(?:^|[\s"'=])\/tmp\/|AppData[\\/]Local[\\/]Temp[\\/]|scratchpad[\\/]|\.tmp-review[\\/]|forge-(?:security|review)-\d+[\\/]/;
+  const scratchEscape = /(?:\/tmp|AppData[\\/]Local[\\/]Temp|scratchpad|\.tmp-review|forge-(?:security|review)-\d+)[\\/]\.\.(?:[\\/]|$)/;
+  if (scratchMarker.test(text) && !scratchEscape.test(text)) {
     reasons.push('scratch-path');
   }
   // Writing ABOUT a blocked command (PR body, heredoc doc/test fixture) rather
   // than invoking it — the literal-string caveat: the denylist matches inside
   // quoted/heredoc bodies too, so quoting a blocked string here still trips it.
-  // Anchored to `cat` specifically (adversarial review finding, #465 fix wave):
-  // an unanchored `<<DELIM` also matches `bash <<EOF`/`sh <<EOF`, which EXECUTES
-  // the heredoc body rather than writing it as data — a genuinely destructive
-  // payload delivered that way must not read as "just documentation". Every
-  // real doc-write shape in the validated data pipes the heredoc into `cat`
-  // (`cat > file <<EOF`, `cat >> file <<EOF`, `$(cat <<EOF`).
-  if (/--body-file/.test(text) || /\bcat\b[^<\n]{0,40}<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(text)) {
+  // Anchored to `$(cat …)` COMMAND SUBSTITUTION specifically — never a bare
+  // `cat > file <<EOF` redirect (fifth adversarial-review round, self-review):
+  // `$(cat <<EOF … EOF)` never touches the filesystem at all — it only
+  // captures the heredoc as a shell STRING, typically to feed `--body`/
+  // `--body-file` elsewhere in the same command — so it is safe regardless of
+  // what the captured text says. A bare `cat > file <<EOF` genuinely WRITES
+  // that content to `file`, which is exactly as dangerous as any other write
+  // when the target is sensitive (`cat > ~/.ssh/authorized_keys <<EOF … EOF`
+  // installs a real backdoor key; `cat > .git/hooks/pre-commit <<EOF … EOF`
+  // installs a real malicious hook) — a prior draft anchored only to `cat`
+  // itself and read both as safe "documentation". A scratch-path `cat > file`
+  // (e.g. `cat > "$SCRATCH/probe.mjs" <<EOF`) still classifies as guard-testing
+  // via the independent scratch-path signal above, so this costs no real
+  // recall against the validated data.
+  if (/--body-file/.test(text) || /\$\(\s*cat\b[^<\n]{0,40}<<\s*'?"?[A-Za-z_]{2,}'?"?/.test(text)) {
     reasons.push('doc-write');
   }
-  // Adversarial probe shapes: ReDoS/length tails, a long repeated-character
-  // run, ANSI-C/quoted flag-spelling tricks, or brace-expansion obfuscation.
-  // The brace check requires FOUR OR MORE consecutive `{...}` groups (spelling
-  // obfuscation like `{r,Z}{e,Z}{c,Z}…`, or range-spam like `{a..a}{a..a}…`)
-  // — never one, two, or three consecutive pairs (second adversarial-review
-  // finding, #465 fix wave): ordinary bash Cartesian-product multi-target
-  // syntax routinely chains 2-3 brace groups (`rm -rf backup{2024,2025}{01,02}`
-  // is a real, plausible destructive command), so a lower bar mislabelled it.
-  // Nested braces are anchored to `{{` — braces glued with ZERO whitespace
-  // between them (third adversarial-review round, security): every real
-  // nested-brace probe (`{{a,b},-D}`) has this shape, but ordinary bash
-  // command-grouping (`{ cmd; }`) and nested code in a harness's own `node -e`
-  // script (`function f(){ if(1){…} }`) always have a space or other
-  // character between the braces, so `\{[^{}]*\{` — matching ANY two nested
-  // braces regardless of what sits between them — mislabelled both. ANSI-C
-  // quoting requires either a hex/octal/unicode escape (arbitrary-byte
-  // spelling, e.g. `$'\x2df'`) or the quoted content starting with a literal
-  // dash (`$'-f'`, denylist.mjs's own documented flag-hiding bypass class) —
-  // never a bare `$'…'` (third round, security): ordinary data-shaped ANSI-C
-  // usage (`$'\n'`, `$'hello\tworld'`) is explicitly pinned as benign by this
-  // repo's own `tests/hooks/denylist.test.mjs` (AC-437.5) and carries neither
-  // shape. The repeated-character run needs 30+ — comfortably below every real
-  // probe's tail (validated data: shortest is 35 chars, most are 260+) and
-  // comfortably above anything organic (an adversarial-review counterexample
-  // used 20).
-  const consecutiveBrace = /(\{[^{}]{0,20}\}){4,}/;
-  const nestedBrace = /\{\{/;
-  const ansiCFlagSpell = /\$'(?:\\(?:x[0-9a-fA-F]|[0-7]{1,3}|u[0-9a-fA-F]|U[0-9a-fA-F])|-)/;
-  if (/;\s*echo\s+y{5,}/.test(text) || consecutiveBrace.test(text) || nestedBrace.test(text) || /(.)\1{29,}/.test(text) || ansiCFlagSpell.test(text) || /-\\"[a-zA-Z]\\"/.test(text) || /-"[a-zA-Z]"/.test(text)) {
+  // Adversarial-probe: ONLY the ReDoS/length-padding tail survives here after
+  // a fourth adversarial-review round (reviewer) removed brace-expansion and
+  // ANSI-C/quote-spelling entirely. Both were previously treated as a safe
+  // "guard-testing shape" signal; both are reproducibly exploitable as the
+  // literal MECHANISM a real bypass would use, not just a shape a tester
+  // happens to favour:
+  //   - `git branch {{a,b},-D} release-2026` (nested) bash-expands to three
+  //     CLEAN standalone arguments — `a`, `b`, `-D` — a real, complete `-D`
+  //     flag with no interfering garbage. Reproduced directly.
+  //   - The previously-required "4+ consecutive groups" bar (meant to rule
+  //     out ordinary 2-3-group Cartesian multi-target syntax) does not close
+  //     this: `{--,}{r,}{f,}{,X}` is 4 non-nested groups, each with an empty
+  //     branch, whose Cartesian product includes the single clean combination
+  //     `--rf` alongside the empty-string/garbage combinations — the same
+  //     flaw, just spread across more groups instead of nesting.
+  //   - `$'-f'` cleanly, unconditionally bash-expands to the literal two-char
+  //     string `-f` — no combinatorics needed at all; `git push $'-f' origin
+  //     main` really does force-push if executed for real.
+  // Text alone cannot distinguish "a security role spelling out a bypass to
+  // prove the guard catches it" from "an attacker (or a confused agent)
+  // spelling out a real one" — the command text is deliberately identical in
+  // both cases, by design of these evasion techniques. That is a genuine
+  // limit of what this classifier's evidence can support, disclosed rather
+  // than papered over: a blocked-edit using brace-expansion or ANSI-C/quote
+  // obfuscation now falls to "unclassified" and stays visible — the correct,
+  // safe default per AC.2 — instead of being auto-labelled guard-testing on
+  // the strength of a shape a real bypass could equally produce.
+  //
+  // The padding tail is different in kind, not degree: the primary command
+  // sits in full, un-obscured plain text BEFORE the `;`, so whichever
+  // denylist rule matched it already saw exactly what it needed to see — the
+  // padding neither hides nor helps construct anything, and a real attacker
+  // gains nothing from appending 30+ repeated characters. The only plausible
+  // reason is deliberately stress-testing the guard's own regex engine
+  // (confirmed against this run's real evidence: forge:security's own
+  // `git push --force origin main ; echo yyyyy…` ReDoS probes).
+  if (/;\s*echo\s+y{5,}/.test(text)) {
     reasons.push('adversarial-probe');
   }
   return { guardTesting: reasons.length > 0, reasons };
 }
 
-/** Truncate a command excerpt for inline evidence — one line, bounded length. */
-function cmdExcerpt(cmd, max = 140) {
+/**
+ * One-line command excerpt for inline evidence (AC.3). `max` is 300 —
+ * `denylist.mjs` already hard-caps a journaled `cmd` to 300 chars at capture
+ * time, so this never truncates BELOW what `classifyBlockedEdit()` itself
+ * saw. A shorter bound (a prior draft used 140) reproducibly broke the
+ * report's own stated invariant — "a maintainer approving a proposal is
+ * always looking at the same text this function did" — whenever the
+ * matched discriminator or the dangerous verb sat past that shorter cutoff
+ * in an otherwise-legitimate-looking command (adversarial security review,
+ * #465 fix wave). Backticks are replaced (never left to break out of the
+ * Markdown inline-code span this excerpt is always embedded in, matching
+ * this codebase's own `escapeMd()` precedent in `board/escalate.mjs`).
+ */
+function cmdExcerpt(cmd, max = 300) {
   if (typeof cmd !== 'string' || !cmd) return null;
-  const oneLine = cmd.replace(/\s+/g, ' ').trim();
+  const oneLine = cmd.replace(/\s+/g, ' ').replaceAll('`', "'").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 }
 
@@ -215,12 +259,24 @@ export function clusterEvents(events) {
  * instruction: the classifier has no signal either way, and a diagnosis
  * phrasing here is what produced silent rubber-stamping risk before.
  */
+// Full descriptions keyed by reason code — proposalFor() looks up only the
+// reasons that actually matched (reviewer finding, #465 fix wave: the prior
+// text always printed all four category descriptions regardless of which
+// reason(s) fired, reading as if every signal had matched when only one had).
+const REASON_LABELS = {
+  'denylist-harness': 'denylist-harness invocation',
+  'scratch-path': 'scratch/review-worktree path',
+  'doc-write': 'doc-write (heredoc/--body-file)',
+  'adversarial-probe': 'adversarial-probe (ReDoS-padding) shape',
+};
+
 function proposalFor(c) {
   if (c.kind !== 'blocked-edit') return PROPOSALS[c.kind] ?? 'memory entry';
   const rule = c.events[0]?.rule ?? 'unknown-rule';
   const { guardTesting, reasons } = classifyBlockedEdit(c.events[0]?.cmd);
   if (guardTesting) {
-    return `no role-card change proposed — every event matching \`${rule}\` here carries a guard-testing signal (${reasons.join(', ')}: scratch/review-worktree path, denylist-harness invocation, doc-write, or adversarial-probe shape). This reads as the guard being deliberately exercised, not an agent reaching for the action. Kept as evidence only.`;
+    const why = reasons.map((r) => REASON_LABELS[r] ?? r).join(', ');
+    return `no role-card change proposed — every event matching \`${rule}\` here carries a guard-testing signal (${why}). This reads as the guard being deliberately exercised, not an agent reaching for the action. Kept as evidence only.`;
   }
   return `**question, not a diagnosis** — ${c.count} event(s) matching \`${rule}\` show no known guard-testing signal (no scratch path, harness reference, doc-write, or probe shape detected). Is this a genuine destructive attempt, or a guard-testing shape this classifier doesn't recognise yet? Check the excerpt below before deciding on a role-card edit.`;
 }

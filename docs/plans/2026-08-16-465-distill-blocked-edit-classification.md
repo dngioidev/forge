@@ -19,18 +19,20 @@ cluster is close to 100% guard-testing.
 
 Measured against this run's real evidence (`.forge/journal-archive/
 2026-08-13.jsonl`, `.forge/journal-archive/2026-08-14.jsonl`, and the live
-`.forge/journal.jsonl`, which keeps growing as the run continues — 119 + 60 +
-~36 = ~215 `blocked-edit` events at analysis time), the SHIPPED classifier
-resolves 194/215 (~90.2%) as carrying at least one guard-testing signal:
+`.forge/journal.jsonl`, which keeps growing as the run continues — ~216
+`blocked-edit` events at final analysis time), the SHIPPED classifier
+resolves 184/216 (~85.2%) as carrying at least one guard-testing signal:
 importing/invoking the denylist-guard machinery itself
-(`check(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
-a scratch/tmp/review-worktree path
-(`scratchpad`/`/tmp`/`AppData\Local\Temp`/`forge-security-N`/
-`forge-review-N`), writing *about* a blocked command via a `cat`-anchored
-heredoc or `--body-file` — the literal-string caveat — or an
-adversarial-probe shape (multi-group/nested brace expansion, a long
-repeated-character/echo-padding tail, or ANSI-C/quoted flag-spelling
-tricks).
+(`\bcheck(`/`denylist.mjs`/`isAllowedCommand`/anything under `plugin/hooks/`),
+a scratch/tmp/review-worktree path with no `..` traversal following the
+marker (`scratchpad`/`/tmp`/`AppData\Local\Temp`/`forge-security-N`/
+`forge-review-N`), a `$(cat <<EOF … EOF)` command-substitution doc-write or
+`--body-file` — the literal-string caveat — or a ReDoS/length-padding tail
+(`; echo yyyy…`). Recall is materially lower than earlier drafts (a peak of
+~96.6% on the first unreviewed draft) — see the two removed signal
+categories below, both closed for the same reason: they are not just a
+*shape* a security role happens to favour, they are the literal *mechanism*
+a real bypass would use.
 
 Two drafts were walked back before shipping, both caught by adversarial
 review of the diff, not by the original data pass — the accuracy-on-real-data
@@ -99,26 +101,105 @@ commit as the third round above:
   content starting with a literal dash (`$'-f'` — denylist.mjs's own
   documented flag-hiding bypass class).
 
-Recall lost across all four walk-backs (~6 points total, from a peak of
-~96.6% on the first unreviewed draft down to ~90.2% shipped) is the accepted
+A FOURTH round (`forge:reviewer`, re-reviewing the diff after round 3 landed)
+found a critical-severity gap the first three rounds' fixture-driven approach
+never surfaced, because it required reasoning about what the *matched text
+itself bash-expands to*, not just what shape it has:
+
+- `git branch {{a,b},-D} release-2026` — the exact nested-brace shape round 3
+  anchored to `\{\{` and pinned as guard-testing — bash-expands to three
+  CLEAN standalone arguments (`a`, `b`, `-D`), i.e. a real, complete `-D`
+  flag with no interfering garbage. Reproduced directly: the un-wrapped bare
+  form is a genuinely working `git branch -D` bypass, not a benign shape.
+  Generalizing the same review, the "4+ consecutive groups" bar from round 3
+  (meant to require spelling-obfuscation/range-spam, not ordinary 2-3-group
+  Cartesian syntax) does not close this either: `{--,}{r,}{f,}{,X}` is 4
+  non-nested groups, each with an empty-string branch, whose Cartesian
+  product includes the single clean combination `--rf` — the identical flaw,
+  spread across groups instead of nesting.
+- `$'-f'` cleanly, unconditionally bash-expands to the literal two-char
+  string `-f` — no combinatorics needed at all. `git push $'-f' origin main`
+  really does force-push if executed for real; round 3's ANSI-C tightening
+  (require a hex/octal escape or a leading dash) was aimed at ruling out
+  ordinary *data* usage, but a leading-dash `$'-f'` is exactly the shape
+  round 3 kept as a *positive* signal, and it is exactly as dangerous as
+  writing `-f` literally.
+
+Both are the same underlying problem: brace-expansion and ANSI-C/quote
+obfuscation are evasion TECHNIQUES, not "probe shapes" — text alone cannot
+tell "a security role spelling out a bypass to prove the guard catches it"
+from "an attacker (or a confused agent) spelling out a real one", because
+the command text is deliberately identical in both cases by design of these
+techniques. Fixed by removing brace-expansion and ANSI-C/quote-spelling from
+`adversarial-probe` entirely, rather than attempting a fifth, sixth, … regex
+refinement of an unsound premise — this is the same class of unsolved
+problem the board's own #448/#459 tickets are independently working on for
+`denylist.mjs` itself, and reproducing that work inside `distill.mjs` is
+explicitly out of this ticket's scope. This is the honest finding the
+ticket's own brief asked for: **the recorded evidence (command text alone,
+with no actor/role/ticket-context field ever journaled) does not contain
+enough signal to safely treat brace/ANSI-C obfuscation as proof of benign
+intent.** Only the ReDoS/length-padding tail survives in `adversarial-probe`
+— it is different in kind, not degree: the primary command sits in full,
+un-obscured plain text before the `;`, so padding neither hides nor helps
+construct anything, and a real attacker gains nothing from appending 30+
+repeated characters.
+
+A subsequent `forge:security` pass (adversarial, reviewing the same diff
+independently) found two more issues, both non-blocking (verdict: pass) but
+fixed in the same wave: `cmdExcerpt()` truncated the human-visible `Sample:`
+line to 140 chars while `classifyBlockedEdit()` classified against the full
+~300-char `cmd`, so a crafted command could earn the softer "guard-testing"
+label while hiding both the destructive content and the matched signal from
+the report — contradicting the code's own stated AC.3 invariant. Fixed by
+raising the excerpt bound to 300, matching `denylist.mjs`'s own journal
+storage cap exactly, so the excerpt can never truncate below what the
+classifier itself saw. Separately, the excerpt was spliced into a Markdown
+inline-code span with no escaping (unlike this codebase's own `escapeMd()`
+precedent in `board/escalate.mjs`); backticks are now replaced before
+embedding.
+
+A FIFTH, self-directed round (building an adversarial fixture set in the
+same spirit as rounds 3-4, rather than waiting for a further external pass)
+found two more instances of the exact round-4 pattern — a signal that is the
+literal delivery mechanism for a real attack, not just a probe shape:
+`cat > ~/.ssh/authorized_keys <<EOF … EOF` and `cat > .git/hooks/pre-commit
+<<EOF … EOF` both matched the round-2 `cat`-anchored doc-write signal, but a
+bare `cat > file <<EOF` genuinely WRITES the heredoc content to `file` —
+installing a real backdoor SSH key or a real malicious git hook is exactly
+as dangerous as any other destructive write, `cat` or not. Only `$(cat
+<<EOF … EOF)` COMMAND SUBSTITUTION is actually safe unconditionally, because
+it never touches the filesystem at all — it just captures the heredoc as a
+shell string (the real validated shape: `--body "$(cat <<EOF … EOF)"`).
+Fixed by anchoring doc-write to the `$(cat …)` form specifically; a
+scratch-path `cat > file` still classifies via the independent scratch-path
+signal, so this costs no recall against the validated data. Also found:
+`rm -rf /home/user/myapp/tmp/uploads --force` — a genuine destructive
+command against a real project's own directory that merely happens to be
+*named* `tmp` — matched the unanchored `/tmp/` substring check. Fixed by
+anchoring `/tmp/` to a path start (preceded by whitespace/`=`/a quote/string
+start), never a bare mid-path substring; the other scratch markers keep a
+substring match since they are this repo's own distinctive path components,
+not a generic word an unrelated real directory would also contain.
+
+Recall lost across all six walk-backs (~11 points total, from a peak of
+~96.6% on the first unreviewed draft down to ~85.2% shipped) is the accepted
 trade: never widen the guard-testing label past what survives adversarial
 review with no plausible false positive, per AC.2's design caution.
 
-The remaining ~21/215 (~9.8%) are not a defect to be regex'd away — they
-split several honest ways: a few are `node -e` proof-of-concept scripts whose
-identifying `import .../check(` text sits past the journal's 300-char `cmd`
-truncation (a real, disclosed recall ceiling, not a modelling gap); a few
-reference `plugin/scripts/` specifically (the first walked-back signal
-above); a few use ANSI-C quoting purely to splice a literal quote character
-(`$'"'"'…'"'"'`, a real CR-handling test shape) with neither a flag-spelling
-escape nor a leading dash — now correctly ambiguous rather than
-over-confidently flagged; one is the single genuinely bare
-`git push --force origin main` with no distinguishing context anywhere in
-this run's evidence; one is a real `git checkout -B ... && git fetch origin
-main` mid-branch-fixup command (from this repo's own #454 branch history)
-that happens to trip `hard-reset` and reads as plausibly genuine work, not a
-probe. All of them correctly stay unclassified/visible rather than guessed
-either way — this is exactly why AC.2 exists.
+The remaining ~32/216 (~14.8%) are not a defect to be regex'd away — they
+split several honest ways: several are `node -e` proof-of-concept scripts
+whose identifying `import .../check(` text sits past the journal's 300-char
+`cmd` truncation (a real, disclosed recall ceiling, not a modelling gap);
+several reference `plugin/scripts/` specifically (the first walked-back
+signal above); several use the now-removed brace-expansion/ANSI-C shapes
+(rounds 4-5); one is the single genuinely bare `git push --force origin
+main` with no distinguishing context anywhere in this run's evidence; one is
+a real `git checkout -B ... && git fetch origin main` mid-branch-fixup
+command (from this repo's own #454 branch history) that happens to trip
+`hard-reset` and reads as plausibly genuine work, not a probe. All of them
+correctly stay unclassified/visible rather than guessed either way — this is
+exactly why AC.2 exists.
 
 ## Design
 
