@@ -303,7 +303,8 @@ asserting a truncated `cmd` excerpt (with an ellipsis) appears inline
 decisions for different issues never share a signature while the same
 escalation `id` resolved twice still clusters as a repeat (AC.5). Later
 rounds add regression fixtures for every counterexample found along the
-way (see the review history above) — 50 tests total.
+way (see the review history above), plus a seventh re-review round's three
+disclosed-not-fixed KNOWN LIMITATION fixtures — 53 tests total.
 
 **Files:** tests/learn/distill.test.mjs
 **AC map:** AC-465.1, AC-465.2, AC-465.3, AC-465.4, AC-465.5
