@@ -59,7 +59,7 @@ SPAWN a subagent keyed on `action` (Task tool) ───────────
     return {verdict, outcome, issue, followUp, sources}          │
   ▼                                                              │
 main loop reads ONLY that terminal report ◀─────────────────────┘
-  │  WATCHDOG: matchHeldVerdicts(report, heldVerdicts) FIRST (#474) ── run on every non-conforming report
+  │  WATCHDOG: matchHeldVerdicts(report, heldVerdicts) FIRST (#474) ── run on every deliver/resume report (internally defers for a resolved/awaiting-merge outcome)
   │    └─ action=relay ──▶ SendMessage the held verdict(s), resume the SAME subagent, await its next report
   │    └─ action=defer ──▶ resolveReturnedTicket(report) (§ Return-then-resume watchdog)  ← run on EVERY delivery report
   ├─ action=merge ───────────────────────▶ funnel the PR through the merge bar (autopilot_merge/runMerge)

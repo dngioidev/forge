@@ -56,11 +56,17 @@ untouched):
   - Otherwise (a non-conforming report — the same universe
     `resolveReturnedTicket` classifies as `respawn`/`escalate`): parse the
     free text for the role(s) it names as outstanding —
-    `parseAwaitedRoles(text)` recognises "security", "review"/"reviewer", and
-    "both"/plural-agent phrasing (implying `['reviewer', 'security']`) via
-    word-boundary matching, deliberately narrow (never a fuzzy/NLP match —
-    AC.2's "never guess" is the load-bearing rule). No recognisable role name
-    at all → no awaited roles → cannot match → `defer`.
+    `parseAwaitedRoles(text)` recognises literal `security` (only when a
+    forge-review-vocabulary anchor word co-occurs in the same clause —
+    `agent`/`verdict`/`check`/`pass`/`notification`/`confirmation`/
+    `clear(ance)`/`sign-off`/`review(er)`/`result`/`hold`), literal
+    `reviewer` (never bare `review` alone), and literal `both` (implying
+    `['reviewer', 'security']`) — all via word-boundary matching within a
+    clause that also contains a wait/await keyword and does NOT contain a
+    negation cue, deliberately narrow (never a fuzzy/NLP match — AC.2's
+    "never guess" is the load-bearing rule; see Fix wave below for how this
+    narrowed from the first draft). No recognisable role name at all → no
+    awaited roles → cannot match → `defer`.
   - Filter `heldVerdicts` to `report.issue`. For every awaited role, a held
     verdict for that role + that issue must be present. **All** awaited
     roles must be covered — a partial match (e.g. "both" named, only one
@@ -79,6 +85,68 @@ untouched):
   `SendMessage` the matched verdict(s) to the stalled subagent and stop (wait
   for its next report); `action: 'defer'` → fall through to
   `resolveReturnedTicket` exactly as today.
+
+## Fix wave: both adversarial `forge:reviewer` and `forge:security` independently found the same class of bug
+
+Both full-branch passes returned `verdict: fail`. `forge:reviewer` reproduced
+three false relays and one false defer by actually running the exported
+`matchHeldVerdicts` against plausible, non-adversarial report text (not
+hypothetical); `forge:security` independently reproduced the same class of
+false relay with three different example strings and flagged it as
+undermining the module's own stated safety invariant ("never guess — a wrong
+auto-resume is not [safe]"). No secrets/injection/ReDoS/prototype-pollution
+findings from the security pass — the `--held` CLI JSON parse, the strict
+`issue` equality filter, and the relayed-verdict provenance (always the
+caller-supplied held-verdict objects, never derived from the free text
+itself) were all confirmed safe.
+
+Root cause: the first draft's `parseAwaitedRoles` used bare `\bsecurity\b`
+and `\breview(?:er)?\b` with no negation handling — any clause containing a
+wait keyword plus either bare word triggered a match, regardless of context.
+Fixed with three changes, all in `parseAwaitedRoles` only (`matchHeldVerdicts`
+itself, and its caller-contract, are unchanged):
+
+1. **Negation guard.** A clause containing a `not`/`no need`/`n't`-style cue
+   anywhere alongside the wait keyword contributes NO roles at all, even if
+   role words are also present — e.g. "Not waiting on the reviewer, just
+   security." and "No need to wait on the security or reviewer sign-off
+   anymore…" both now correctly `defer` instead of relaying both roles.
+2. **`reviewer` requires the literal word — bare `review` no longer
+   qualifies.** "review" alone collided with "security review", "code
+   review", and "waiting to review the deployment logs myself", each
+   falsely adding the reviewer role. `reviewer` (full word) is unambiguous
+   enough on its own; the two live canonical examples (#464's own "Waiting
+   on the reviewer's re-confirmation") already used the full word.
+3. **`security` requires a co-occurring forge-review-vocabulary anchor** in
+   the same clause (`agent`/`verdict`/`check`/`pass`/`notification`/
+   `confirmation`/`clear(ance)`/`sign-off`/`review(er)`/`result`/`hold`) —
+   bare "security" collided with "security group ingress rule" (an
+   unrelated infra term). "security review"/"security agent" both still
+   match (via the `review`/`agent` anchor), but generic security-adjacent
+   noise no longer does.
+
+Also fixed: the clause splitter now splits on `,` in addition to `.!?;` —
+`forge:reviewer` found that without it, a comma-joined rephrasing of #469's
+own shape ("Reviewer passed clean, now waiting for the security agent to
+finish.") folded the already-resolved "Reviewer passed clean" mention into
+the SAME clause as the awaited "security", incorrectly requiring a held
+reviewer verdict too. Splitting on comma correctly separates the two
+clauses, matching #469's punctuated original.
+
+Minor findings also addressed: the `AC-474.2` "defers immediately, without
+even inspecting held verdicts" test previously couldn't distinguish the
+early-return branch from the (also-defer) "no recognisable role" fallback,
+since neither branch's *result* differs for a `RESOLVED_OUTCOMES` value —
+fixed by asserting on the `reason` string, which genuinely differs per
+branch. The loop diagram's watchdog line said `matchHeldVerdicts` runs "on
+every non-conforming report" when the code actually calls it unconditionally
+on every `deliver`/`resume` report (deferring internally for a
+resolved/`awaiting-merge` outcome) — corrected to match.
+
+Six new regression tests pin every adversarial phrasing found (a fix-wave
+`describe` block in `tests/autopilot/engine.test.mjs`, titled `AC-474.2
+fix-wave`). Both `forge:reviewer` and `forge:security` were re-run after
+these fixes (not merely re-read) and returned clean.
 
 ## Acceptance criteria (authoritative text is on the issue; summarised here)
 

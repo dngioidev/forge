@@ -1086,18 +1086,77 @@ describe('autopilot watchdog — matchHeldVerdicts: relay a held verdict to a st
     expect(dec.action).toBe('defer');
   });
 
-  it('AC-474.2: an already-resolved outcome defers immediately, without even inspecting held verdicts', () => {
+  it('AC-474.2: an already-resolved outcome defers immediately via the early-return branch, not merely because no role words happen to appear', () => {
     const resolved = matchHeldVerdicts({ issue: 1, outcome: 'merged' }, [{ issue: 1, role: 'security', verdict: 'fail' }]);
     expect(resolved.action).toBe('defer');
-    // every RESOLVED_OUTCOMES value defers the same way
+    // the reason string itself pins WHICH branch fired — "resolved/awaiting-merge state" only ever comes from
+    // the early-return guard, never from the "no recognisable role" fallback (a different reason string) —
+    // so this genuinely distinguishes the early-return path from a same-result-different-cause coincidence.
+    expect(resolved.reason).toMatch(/resolved\/awaiting-merge state/i);
+    // every RESOLVED_OUTCOMES value defers the same way, via the same branch
     for (const outcome of RESOLVED_OUTCOMES) {
-      expect(matchHeldVerdicts({ issue: 1, outcome }, []).action).toBe('defer');
+      const dec = matchHeldVerdicts({ issue: 1, outcome }, []);
+      expect(dec.action, outcome).toBe('defer');
+      expect(dec.reason, outcome).toMatch(/resolved\/awaiting-merge state/i);
     }
   });
 
-  it('AC-474.2: the awaiting-merge sentinel defers untouched — resolveReturnedTicket alone handles it', () => {
+  it('AC-474.2: the awaiting-merge sentinel defers untouched via the same early-return branch — resolveReturnedTicket alone handles it', () => {
     const dec = matchHeldVerdicts({ issue: 1, outcome: STALL_OUTCOME }, [{ issue: 1, role: 'reviewer', verdict: 'pass' }]);
     expect(dec.action).toBe('defer');
+    expect(dec.reason).toMatch(/resolved\/awaiting-merge state/i);
+  });
+
+  describe('AC-474.2 fix-wave: adversarial phrasings both forge:reviewer and forge:security independently reproduced as false relays — now pinned as regressions', () => {
+    it('a negated clause ("Not waiting on X, just Y") never contributes any role, even though both role words are present', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 3, outcome: 'Not waiting on the reviewer, just security.' },
+        [{ issue: 3, role: 'reviewer', verdict: 'pass' }, { issue: 3, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('a "no need to wait" disclaimer never contributes a role, even when both role words are present in the same clause', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 4, outcome: 'No need to wait on the security or reviewer sign-off anymore, that part is already handled separately.' },
+        [{ issue: 4, role: 'reviewer', verdict: 'pass' }, { issue: 4, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('bare "review" (not "reviewer") inside an unrelated compound phrase never triggers the reviewer role', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 5, outcome: 'Still waiting on the security review to complete before I can proceed.' },
+        [{ issue: 5, role: 'security', verdict: 'pass' }], // reviewer deliberately NOT held — a false reviewer match would defer here
+      );
+      expect(dec.action).toBe('relay'); // security IS correctly named (via the security-review co-occurrence)
+      expect(dec.verdicts.map((v) => v.role)).toEqual(['security']); // and reviewer was never falsely required
+    });
+
+    it('bare "security" with no forge-review-vocabulary anchor nearby never triggers the security role (domain-ambiguous term)', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 6, outcome: 'Deployment is waiting on the security group ingress rule to finish propagating.' },
+        [{ issue: 6, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('bare "review" in "waiting to review the logs myself" never triggers the reviewer role', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 7, outcome: 'I am waiting to review the deployment logs myself, not blocked on anything external.' },
+        [{ issue: 7, role: 'reviewer', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('defer');
+    });
+
+    it('a comma-joined rephrasing of the #469 shape ("Reviewer passed clean, now waiting for the security agent…") still relays only security', () => {
+      const dec = matchHeldVerdicts(
+        { issue: 8, outcome: 'Reviewer passed clean, now waiting for the security agent to finish.' },
+        [{ issue: 8, role: 'security', verdict: 'pass' }],
+      );
+      expect(dec.action).toBe('relay');
+      expect(dec.verdicts.map((v) => v.role)).toEqual(['security']);
+    });
   });
 
   it('AC-474.4: matchHeldVerdicts stays pure — same input always yields the same output, no IO', () => {

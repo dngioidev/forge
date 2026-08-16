@@ -134,12 +134,32 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
 /**
  * Narrow, word-boundary parse of which review role(s) a free-text report
  * names as outstanding — deliberately NOT a fuzzy/NLP match (AC.2's "never
- * guess" is the load-bearing rule for #474). Only text inside a clause that
- * itself contains a wait/await keyword counts, so a report that RESOLVES one
- * role inline ("Reviewer passed clean.") and only awaits the other in a
- * separate clause ("waiting for the security agent...") correctly yields
- * just the awaited one (#469's shape) — not both merely because both words
- * appear somewhere in the report.
+ * guess" is the load-bearing rule for #474). Only text inside a clause
+ * (split on `.!?;,`) that itself contains a wait/await keyword counts, so a
+ * report that RESOLVES one role inline ("Reviewer passed clean.") and only
+ * awaits the other in a separate clause ("waiting for the security
+ * agent...") correctly yields just the awaited one (#469's shape) — not
+ * both merely because both words appear somewhere in the report.
+ *
+ * Fix-wave hardening (#474, adversarial `forge:reviewer` + `forge:security`
+ * both independently reproduced the same class of false relay against
+ * ordinary, non-adversarial phrasing — see the plan doc's Fix wave
+ * section):
+ *   - **A negated clause is never extracted from** ("Not waiting on the
+ *     reviewer, just security." / "No need to wait on the security or
+ *     reviewer sign-off anymore…") — a `not`/`no need`/`n't`-style cue
+ *     anywhere in the same clause as the wait keyword makes the WHOLE
+ *     clause untrustworthy, so it contributes no roles at all rather than
+ *     risk reading a disclaimed role as awaited.
+ *   - **`reviewer` requires the full word, never bare `review`** — "review"
+ *     alone collides with too many unrelated, plausible phrases ("security
+ *     review", "code review", "review the deployment logs") to be a safe
+ *     standalone signal for the CODE-review role.
+ *   - **`security` requires a co-occurring forge-review-vocabulary anchor**
+ *     in the same clause (`agent`/`verdict`/`check`/`pass`/`notification`/
+ *     `confirmation`/`clear(ance)`/`sign-off`/`review(er)`/`result`/`hold`)
+ *     — bare "security" alone is too domain-ambiguous ("security group",
+ *     "security patch") to be a safe standalone signal either.
  *
  * @param {string} text the report's free-text `outcome`.
  * @returns {Array<'reviewer'|'security'>} sorted, deduplicated awaited roles (possibly empty).
@@ -147,18 +167,21 @@ export const NONCONFORMING_OUTCOME = 'stalled-before-pr';
 function parseAwaitedRoles(text) {
   if (typeof text !== 'string' || !text.trim()) return [];
   const WAIT_RE = /\b(?:wait(?:ing)?|await(?:ing)?)\b/i;
+  const NEGATION_RE = /\b(?:not|n't|never|no\s+(?:need|longer)|isn't|aren't|doesn't|didn't|won't)\b/i;
   const BOTH_RE = /\bboth\b/i;
   const SECURITY_RE = /\bsecurity\b/i;
-  const REVIEWER_RE = /\breview(?:er)?\b/i;
+  const SECURITY_ANCHOR_RE = /\b(?:agent|verdict|check|pass|notification|confirmation|clear(?:ance)?|sign-?off|review(?:er)?|result|hold)\b/i;
+  const REVIEWER_RE = /\breviewer\b/i; // bare "review" deliberately excluded — see JSDoc above
   const roles = new Set();
-  for (const segment of text.split(/[.!?;]/)) {
+  for (const segment of text.split(/[.!?;,]/)) {
     if (!WAIT_RE.test(segment)) continue; // this clause isn't a "waiting on" clause at all
+    if (NEGATION_RE.test(segment)) continue; // a disclaimed/negated clause is never a source of awaited roles
     if (BOTH_RE.test(segment)) {
       roles.add('reviewer');
       roles.add('security');
       continue;
     }
-    if (SECURITY_RE.test(segment)) roles.add('security');
+    if (SECURITY_RE.test(segment) && SECURITY_ANCHOR_RE.test(segment)) roles.add('security');
     if (REVIEWER_RE.test(segment)) roles.add('reviewer');
   }
   return [...roles].sort();
