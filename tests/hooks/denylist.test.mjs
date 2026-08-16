@@ -877,6 +877,124 @@ describe('recursive-delete flag detection honors POSIX -- end-of-options (#454/#
   });
 });
 
+// #472 — a raw NUL fusing a safe word with a dash-prefixed continuation
+// defeats safeRmTarget(). spacedText's NUL-to-space substitution (#446) is a
+// deliberate over-approximation FOR the case where the NUL is deleted and
+// the pieces fuse into something that would otherwise wrongly read as safe
+// (a trailing safe word vouching for a fused whole) — but the same
+// substitution runs backwards when the piece AFTER the dropped NUL starts
+// with `-`: safeRmTarget()'s flag filter unconditionally treats ANY
+// dash-leading token as a flag and discards it, with no way to tell "a real
+// bash argument boundary" apart from "a boundary that only exists because a
+// NUL was substituted with a space." `dist<NUL>-prod-secrets` real-bash-fuses
+// to the single argument `dist-prod-secrets` — not a whole `dist` component
+// (nothing ends the word at `/` or string-end there), so it correctly fails
+// SAFE_RM_TARGET as one piece — but split via spacedText, "dist" is judged
+// and passes while "-prod-secrets" is silently filtered as a flag and never
+// judged at all. One safe-looking prefix vouches for the fused unsafe whole.
+//
+// Verified against `check()` directly against `main` before this fix:
+// `rm -rf dist<NUL>-prod-secrets` read `blocked:false`.
+//
+// Fixed by walking the spacedText-derived reading in lockstep with the
+// sibling text-derived reading (already available to this rule as `c`) and
+// only treating a dash-leading token as a genuine, filterable flag when the
+// sibling reading ALSO shows real IFS whitespace at that same gap — i.e.
+// real bash genuinely split there, not merely a NUL-inserted space. This
+// touches only `safeRmTarget()`'s own flag-eligibility test; it does not
+// change `normalizeShellText()`, `spacedText`, or `guardedText` in any way,
+// so AC-446.6/AC-450.*/AC-452.*'s pinned semantics (including AC-452.5's
+// exact-content assertions on `spacedText`) are untouched by this ticket.
+describe('a NUL fusing a safe word with a dash-prefixed continuation defeats safeRmTarget (#472, AC-472.*)', () => {
+  const NUL = String.fromCharCode(0);
+
+  // AC-472.1 — the ticket's exact reproduction.
+  it('AC-472.1: a safe word fused by a dropped NUL with a dash-prefixed continuation is judged, not filtered as a flag', () => {
+    expect(check(`rm -rf dist${NUL}-prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-472.1 — every SAFE_RM_TARGET alternative is checked as the fused
+  // prefix, not just `dist`: the bug lives in safeRmTarget()'s generic
+  // flag-filtering, not in any one alternative's own matching.
+  it('AC-472.1: every safe-word alternative fused with a dash-prefixed continuation still blocks', () => {
+    for (const cmd of [
+      `rm -rf node_modules${NUL}-prod-secrets`,
+      `rm -rf build${NUL}-prod-secrets`,
+      `rm -rf coverage${NUL}-prod-secrets`,
+      `rm -rf temp${NUL}-prod-secrets`,
+      `rm -rf tmp${NUL}-prod-secrets`,
+      `rm -rf scratchpad${NUL}-prod-secrets`,
+      `rm -rf .forge${NUL}-prod-secrets`,
+      `rm -rf $TMP${NUL}-prod-secrets`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+
+  // AC-472.1 — the decoy still blocks regardless of position among other
+  // targets, matching #446's own per-argument (never whole-line) discipline.
+  it('AC-472.1: the fused decoy still blocks regardless of position among other targets', () => {
+    expect(check(`rm -rf dist build${NUL}-prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check(`rm -rf dist${NUL}-prod-secrets build`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check(`rm -rf /already-unsafe dist${NUL}-prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-472.2 — no regression on #446's own raw-NUL target-splice tests:
+  // those need the OPPOSITE outcome from this fix in the analogous position
+  // (the piece after the NUL there does not start with `-`, so it is
+  // untouched by the new flag-eligibility condition), and this fix must not
+  // have changed that via an alternative design (fusing split pieces back
+  // together) considered and rejected during shaping — see the ticket
+  // trail for why fusing would have reopened exactly this bypass. Re-run by
+  // name so a regression here is never mistaken for an unrelated failure.
+  it('AC-472.2: #446\'s raw-NUL target-splice cases stay blocked, unchanged', () => {
+    for (const cmd of [
+      `rm -rf /prod-secrets${NUL}/scratchpad`,
+      `rm -rf "/prod-secrets${NUL}/scratchpad"`,
+      `rm -rf '/prod-secrets${NUL}/scratchpad'`,
+      `rm -rf important-secret-data${NUL}dist`,
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+    // ...and the all-safe NUL-joined case (neither side dash-led) stays
+    // exempt — this fix's new condition only ever gates a dash-led piece.
+    expect(check(`rm -rf dist${NUL}build`).blocked).toBe(false);
+  });
+
+  // AC-472.2 — no regression on #450's POSIX `--` end-of-options handling:
+  // a genuine `--` marker (real whitespace throughout, no NUL involved)
+  // still latches end-of-options exactly as before.
+  it('AC-472.2: #450\'s -- end-of-options cases stay unaffected', () => {
+    expect(check('rm -rf -- -prod-secrets dist')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('rm -rf -- dist').blocked).toBe(false);
+    expect(check('rm -rf --')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-472.2 — no regression on #452's own NUL-inside-a-flag-cluster fix:
+  // that mechanism reads the NUL-DELETED `text` view via shortFlagCluster()
+  // on `c`, an entirely different code path from the target-parsing this
+  // ticket touches.
+  it('AC-472.2: #452\'s NUL-in-flag-cluster cases stay blocked', () => {
+    expect(check(`rm -r${NUL}f /prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-472.3 — a genuine, standalone flag preceded by REAL whitespace is
+  // still correctly filtered and never mistaken for a fused continuation,
+  // even when some OTHER NUL appears elsewhere in the same command, or
+  // immediately after real whitespace of its own.
+  it('AC-472.3: a real flag with genuine whitespace before it is still filtered, even alongside an unrelated NUL elsewhere', () => {
+    expect(check(`rm -rf dist -x${NUL}build`).blocked).toBe(false);
+    expect(check(`rm -rf ${NUL}-rf dist`).blocked).toBe(false);
+  });
+
+  // AC-472.4 — the long-flag (--recursive --force) spelling is affected
+  // identically, since safeRmTarget()'s target-parsing is flag-spelling-
+  // agnostic.
+  it('AC-472.4: the long-flag (--recursive --force) spelling is affected identically', () => {
+    expect(check(`rm --recursive --force dist${NUL}-prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+});
+
 describe('hard-reset reordered/bundled/abbreviated spellings (#437, AC-437.1)', () => {
   // AC-437.1 — --hard blocks regardless of OTHER flags sitting between `reset`
   // and `--hard`, in either order, and regardless of a global git flag before

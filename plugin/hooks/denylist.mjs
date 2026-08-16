@@ -94,6 +94,64 @@ const SAFE_RM_TARGET =
  * is treated as unsafe — that keeps the old outcome for a bare `rm -rf`, and
  * "nothing recognisable to vouch for" should never read as "safe".
  *
+ * ## A NUL fusing a safe word with a dash-prefixed continuation (#472)
+ *
+ * The per-argument split above closes "one safe decoy vouches for the whole
+ * line" (#446), but `spacedText`'s NUL-to-space substitution it depends on
+ * (see `normalizeShellText()`'s own comment) is a genuine OVER-
+ * approximation for that case specifically: real bash FUSES
+ * `/prod-secrets<NUL>/scratchpad` into ONE argument, but reading it as TWO
+ * tokens here is exactly what lets the dangerous `/prod-secrets` half be
+ * judged on its own instead of hiding behind the trailing safe word. That
+ * same over-approximation runs backwards when the token AFTER a dropped
+ * NUL starts with `-`: `dist<NUL>-prod-secrets` real-bash-fuses to the
+ * single argument `dist-prod-secrets` — not a whole `dist` component
+ * (nothing ends the word at `/` or string-end there), so it correctly
+ * fails `SAFE_RM_TARGET` as one piece — but split via `spacedText`, "dist"
+ * is judged and passes while "-prod-secrets" is silently discarded as a
+ * flag and never judged at all. One safe-looking prefix vouches for the
+ * fused unsafe whole.
+ *
+ * The fix is neither "stop splitting" (reopens #446 above) nor "always fuse
+ * a synthetic-gap pair back together" (tried and rejected during shaping:
+ * fusing `/prod-secrets<NUL>/scratchpad` back into one string reintroduces
+ * #446's own bypass, since `SAFE_RM_TARGET.test()` matches a trailing safe
+ * COMPONENT anywhere in its argument, not the whole argument — the fused
+ * form ends in `/scratchpad` and would wrongly test safe). It only changes
+ * which pieces are ELIGIBLE to be filtered as a flag: a `-`-leading piece
+ * is a genuine, standalone flag only when REAL bash whitespace preceded it
+ * — not when the only thing preceding it was a position where a NUL was
+ * dropped. `safeRmTarget()` determines that per-piece by walking `rest`
+ * (the `spacedText`-derived reading) in LOCKSTEP with `restText` (the
+ * sibling `text`-derived reading, where a dropped NUL leaves nothing behind
+ * at all), rather than by embedding some new marker character into
+ * `spacedText` itself: a fixed sentinel character risks colliding with a
+ * literal, non-NUL control byte a real command could contain verbatim as
+ * ordinary bare data (`normalizeShellText()` never strips or decodes an
+ * unquoted, non-NUL control byte), which would spoof or blind the
+ * "was this gap synthetic" test depending on which direction the collision
+ * ran. Comparing against the sibling `text` reading — already computed,
+ * already available to this rule — has no such risk: it is `rest`'s own
+ * comparison baseline, not a character value attacker input could collide
+ * with.
+ *
+ * Two adjacent, pre-existing gaps a full-branch adversarial pass on this
+ * ticket's own diff found — confirmed identical on `main` before this
+ * fix, i.e. neither introduced nor worsened by the lockstep walk here —
+ * are deliberately NOT closed by it and are tracked separately rather than
+ * folded into this bounded change: a NUL splitting the literal `rm` token
+ * itself can desync which occurrence `rest`/`restText` each anchor at
+ * (#537), and a QUOTED INTERNAL space is invisible to both readings the
+ * same way a NUL-inserted one is, since neither `text` nor `spacedText`
+ * retains whether a given whitespace character was genuinely a top-level
+ * separator or protected inside a quote — the same ambiguity `guardedText`
+ * exists to resolve for `beforeEndOfOptions()`'s flag-boundary check, just
+ * not yet threaded into this function's target/flag split (#538). #538 is
+ * NOT NUL-related at all — `rm -rf "tmp -etc-shadow"` alone reproduces it,
+ * with no NUL byte anywhere in the command — so it needs a third
+ * (`guardedText`-based) reading threaded through, not a fix to this
+ * function's two-reading NUL-vs-real-separator comparison.
+ *
  * POSIX `--` end-of-options (#450, AC-450.*): a bare `--` token tells the
  * shell/utility that every token AFTER it is a filename, never a flag, even
  * one that starts with `-`. Verified against real bash (`argv rm -rf --
@@ -120,20 +178,59 @@ const SAFE_RM_TARGET =
  * tab does separate. Carriage returns need no case here — normalizeShellText()
  * strips them before any rule runs.
  */
-function safeRmTarget(rest) {
+/** Bash's own default IFS — space, tab, newline (see safeRmTarget()'s own comment on why not JS's wider `\s`). */
+const isIfsChar = (ch) => ch === ' ' || ch === '\t' || ch === '\n';
+
+function safeRmTarget(rest, restText) {
   let endOfOptions = false;
-  const targets = rest
-    .split(/[ \t\n]+/)
-    .slice(1)
-    .filter((t) => {
-      if (!t) return false;
-      if (endOfOptions) return true;
-      if (t === '--') {
-        endOfOptions = true;
-        return false;
-      }
-      return !t.startsWith('-');
-    });
+  const targets = [];
+  let i = 0;
+  let j = 0;
+  const n = rest.length;
+  const m = restText.length;
+  let seenRm = false; // the first token is always 'rm' itself; drop it
+  while (i < n) {
+    // Walk the gap in `rest`. `gapHasRealSep` goes true only if `restText`
+    // ALSO has whitespace somewhere in this same gap — i.e. real bash
+    // genuinely split here too, not merely a space `spacedText` re-inserted
+    // for a dropped NUL that leaves nothing behind in `restText` at all
+    // (#472). `j` only advances when a `restText` whitespace character is
+    // actually consumed, so a gap containing BOTH a real separator and a
+    // NUL-inserted space still correctly reports real, and a purely
+    // synthetic gap leaves `j` exactly where it was, pointing straight at
+    // the next real character in `restText`.
+    let gapHasRealSep = false;
+    while (i < n && isIfsChar(rest[i])) {
+      if (j < m && isIfsChar(restText[j])) { gapHasRealSep = true; j++; }
+      i++;
+    }
+    if (i >= n) break;
+    const start = i;
+    // `text` and `spacedText` share the identical non-whitespace character
+    // sequence in order (AC-452.5), so a token in `rest` and its
+    // counterpart in `restText` advance in lockstep one character at a
+    // time PROVIDED the two `\brm\b` matches below anchor at the same
+    // logical `rm` occurrence — a full-branch adversarial `forge:reviewer`
+    // pass found that assumption can fail (a NUL splitting the literal
+    // `rm` token itself, `r<NUL>m`, moves `cSpaced`'s own `\brm\b` match to
+    // a LATER decoy occurrence while `c`'s independent match stays
+    // correctly anchored at the real one). Confirmed pre-existing —
+    // verified identical on `main` before this ticket, unrelated to and
+    // unaffected by the lockstep walk itself — and filed separately rather
+    // than folded into this ticket's bounded scope; see the call site's
+    // own comment for the tracking issue.
+    while (i < n && !isIfsChar(rest[i])) { i++; j++; }
+    const tok = rest.slice(start, i);
+    if (!seenRm) { seenRm = true; continue; }
+    if (!tok) continue;
+    if (endOfOptions) { targets.push(tok); continue; }
+    if (tok === '--') { endOfOptions = true; continue; }
+    if (tok.startsWith('-') && gapHasRealSep) continue; // a genuine, standalone flag
+    // A dash-led token whose own leading gap was NUL-only is not a real,
+    // separate flag argument in real bash at all (#472) — judged as a
+    // target instead of silently discarded, same as any non-dash-led piece.
+    targets.push(tok);
+  }
   if (targets.length === 0) return false;
   return targets.every((t) => SAFE_RM_TARGET.test(t));
 }
@@ -1381,10 +1478,20 @@ export const RULES = [
       // above already establishes one exists in the sibling `text` reading).
       const rmMatch = /\brm\b/.exec(cSpaced);
       const rest = cSpaced.slice(rmMatch ? rmMatch.index : 0);
+      // The sibling `text`-derived reading (#472), sliced at ITS OWN `rm`
+      // match — see safeRmTarget()'s own comment for why this, not a new
+      // marker character, is what tells a genuine bash argument boundary
+      // apart from one that only exists because a NUL was substituted with
+      // a space. This match is independent of `rmMatch` above; see
+      // safeRmTarget()'s own comment on the lockstep loop for a known,
+      // pre-existing case (#537, out of #472's bounded scope) where the two
+      // can diverge.
+      const rmMatchText = /\brm\b/.exec(c);
+      const restText = rmMatchText ? c.slice(rmMatchText.index) : c;
       // EVERY target must be safe, not merely one of them (#446) — see
       // safeRmTarget(): a single safe-looking decoy argument used to exempt
       // the whole command, however many real targets sat beside it.
-      return !safeRmTarget(rest);
+      return !safeRmTarget(rest, restText);
     },
     msg: 'rm -rf (incl. --recursive --force) outside build/temp dirs',
   },
