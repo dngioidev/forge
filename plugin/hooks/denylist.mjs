@@ -135,6 +135,23 @@ const SAFE_RM_TARGET =
  * comparison baseline, not a character value attacker input could collide
  * with.
  *
+ * Two adjacent, pre-existing gaps a full-branch adversarial pass on this
+ * ticket's own diff found — confirmed identical on `main` before this
+ * fix, i.e. neither introduced nor worsened by the lockstep walk here —
+ * are deliberately NOT closed by it and are tracked separately rather than
+ * folded into this bounded change: a NUL splitting the literal `rm` token
+ * itself can desync which occurrence `rest`/`restText` each anchor at
+ * (#537), and a QUOTED INTERNAL space is invisible to both readings the
+ * same way a NUL-inserted one is, since neither `text` nor `spacedText`
+ * retains whether a given whitespace character was genuinely a top-level
+ * separator or protected inside a quote — the same ambiguity `guardedText`
+ * exists to resolve for `beforeEndOfOptions()`'s flag-boundary check, just
+ * not yet threaded into this function's target/flag split (#538). #538 is
+ * NOT NUL-related at all — `rm -rf "tmp -etc-shadow"` alone reproduces it,
+ * with no NUL byte anywhere in the command — so it needs a third
+ * (`guardedText`-based) reading threaded through, not a fix to this
+ * function's two-reading NUL-vs-real-separator comparison.
+ *
  * POSIX `--` end-of-options (#450, AC-450.*): a bare `--` token tells the
  * shell/utility that every token AFTER it is a filename, never a flag, even
  * one that starts with `-`. Verified against real bash (`argv rm -rf --
@@ -190,9 +207,18 @@ function safeRmTarget(rest, restText) {
     if (i >= n) break;
     const start = i;
     // `text` and `spacedText` share the identical non-whitespace character
-    // sequence in order (AC-452.5) once aligned at their own `rm`, so a
-    // token in `rest` and its counterpart in `restText` advance in lockstep
-    // one character at a time.
+    // sequence in order (AC-452.5), so a token in `rest` and its
+    // counterpart in `restText` advance in lockstep one character at a
+    // time PROVIDED the two `\brm\b` matches below anchor at the same
+    // logical `rm` occurrence — a full-branch adversarial `forge:reviewer`
+    // pass found that assumption can fail (a NUL splitting the literal
+    // `rm` token itself, `r<NUL>m`, moves `cSpaced`'s own `\brm\b` match to
+    // a LATER decoy occurrence while `c`'s independent match stays
+    // correctly anchored at the real one). Confirmed pre-existing —
+    // verified identical on `main` before this ticket, unrelated to and
+    // unaffected by the lockstep walk itself — and filed separately rather
+    // than folded into this ticket's bounded scope; see the call site's
+    // own comment for the tracking issue.
     while (i < n && !isIfsChar(rest[i])) { i++; j++; }
     const tok = rest.slice(start, i);
     if (!seenRm) { seenRm = true; continue; }
@@ -1456,7 +1482,10 @@ export const RULES = [
       // match — see safeRmTarget()'s own comment for why this, not a new
       // marker character, is what tells a genuine bash argument boundary
       // apart from one that only exists because a NUL was substituted with
-      // a space.
+      // a space. This match is independent of `rmMatch` above; see
+      // safeRmTarget()'s own comment on the lockstep loop for a known,
+      // pre-existing case (#537, out of #472's bounded scope) where the two
+      // can diverge.
       const rmMatchText = /\brm\b/.exec(c);
       const restText = rmMatchText ? c.slice(rmMatchText.index) : c;
       // EVERY target must be safe, not merely one of them (#446) — see
