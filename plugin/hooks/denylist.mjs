@@ -599,10 +599,13 @@ const ANSI_C_ESCAPES = {
  * the byte before its parser ever runs). Node's child_process throws on an
  * embedded NUL before the command ever runs, too — NOT truncation under
  * either concrete path. Every rule reads `text` (via `segments()`) as its
- * primary/only view.
+ * primary/only view. A DECODED NUL (an ANSI-C escape like `$'\x00'` that
+ * evaluates to code point 0) is deleted the same way (#470) — see
+ * `emitCodePoint()`'s own comment for why the escape-decode path needed the
+ * identical treatment as this raw-byte path, not a separate mechanism.
  *
  * `spacedText` is `text` with one inert SPACE re-inserted at every position a
- * raw NUL was dropped — needed ONLY by `recursive-delete`'s own
+ * raw OR decoded NUL was dropped — needed ONLY by `recursive-delete`'s own
  * `safeRmTarget()` target-parsing, to keep closing #446's target-path splice
  * (`/prod-secrets<NUL>/scratchpad` must judge as TWO tokens, not one fused
  * path ending in the safe word `scratchpad`) without reopening the
@@ -746,7 +749,38 @@ export function normalizeShellText(rawCommand) {
   // becomes an inert space: it cannot spell a flag, and it keeps this total —
   // String.fromCodePoint throws above U+10FFFF and `$'\UFFFFFFFF'` is
   // reachable input, while check() must never throw (AC-3.4).
+  //
+  // A decoded NUL (code point 0 — reached via `\x00`/`\0`/`\000`/` `/
+  // `\U00000000`) is the ONE exception to "map to a space" (#470): every
+  // OTHER control byte is genuinely kept by bash as literal, non-dropped
+  // argument data, so collapsing it to an inert space is already the correct
+  // safe approximation for it (see this function's own header comment) — but
+  // bash does not do that for a NUL. A persistent bash session (and #452's
+  // own already-established raw-NUL handling elsewhere in this file) drops a
+  // NUL wherever it appears — decoded escape or raw byte alike — and fuses
+  // the surrounding text into ONE token, never leaving a space behind.
+  // Mapping a decoded NUL to a space instead of deleting it is exactly the
+  // bug this ticket exists to close: `-u$'\x00'f` really is the single fused
+  // argv token `-uf` to a real shell (verified against bash 5.3.15), but the
+  // inert space broke shortFlagCluster()'s contiguous-letter scan — and,
+  // found during triage, the SAME space breaks a literal long-flag word split
+  // by the escape too (`--for$'\x00'ce` really is `--force`).
+  //
+  // Fixed by reusing the EXACT mechanism #452 built for a raw NUL byte,
+  // rather than inventing a second one: record a `nulMarkers` position and
+  // emit nothing, so `text` (the canonical view every flag-cluster/literal-
+  // word rule reads) comes out with the NUL deleted and the surrounding
+  // letters contiguous, while `spacedText` — built afterward by re-inserting
+  // one space per marker — still gets an inert space at this exact position.
+  // That is what keeps AC-446.6's decoded-NUL target-splice case
+  // (`rm -rf $'/etc/shadow-backup\x00scratchpad'`) judging as two tokens,
+  // not one fused safe-looking path: `recursive-delete`'s own
+  // `safeRmTarget()` reads `spacedText`, never `text`, for target parsing.
+  // Sharing `nulMarkers` also means the `&&`-run and standalone-`--`-token
+  // adjustments already applied to raw-NUL markers apply here for free, with
+  // no new bookkeeping.
   const emitCodePoint = (code) => {
+    if (code === 0) { nulMarkers.push(parts.length); return; }
     if (!Number.isInteger(code) || code < 0x20 || code > 0x7e) { push(' '); return; }
     emit(String.fromCharCode(code));
   };

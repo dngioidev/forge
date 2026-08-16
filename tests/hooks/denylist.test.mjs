@@ -1723,6 +1723,100 @@ describe('a raw NUL inside a short-flag cluster defeats four rules at once (#452
   });
 });
 
+// #470 — a DECODED ANSI-C NUL (`$'\x00'`, `\000`, ` `, `\U00000000`, …)
+// defeats the same flag-cluster/literal-word matching #452 fixed for a RAW
+// NUL byte, through a different code path. #452's dual-view fix (`text`
+// NUL-deleted, `spacedText` NUL-as-space) only parameterises the raw-NUL
+// pre-scan; `emitCodePoint()` — the ANSI-C escape decoder, shared by both
+// views — mapped every decoded control byte, NUL included, to an inert SPACE
+// unconditionally, with no delete mode of its own. Verified against real bash
+// 5.3.15 (argv-printing harness) that a decoded NUL genuinely fuses the
+// surrounding text into ONE argv token exactly like a raw NUL byte does —
+// this is not a `check()`-only artifact, a live shell really does hand the
+// target program the intact flag.
+describe('a decoded ANSI-C NUL inside a flag cluster still defeats detection (#470, AC-470.*)', () => {
+  // `$'\x00'` as a literal source spelling: dollar, single-quote, backslash,
+  // x, 0, 0, single-quote — built from character codes so the raw bytes in
+  // this file are unambiguous regardless of editor/encoding, same convention
+  // AC-446.6's escape-splice tests above already use.
+  const ansiCNul = () => {
+    const D = String.fromCharCode(36); // $
+    const S = String.fromCharCode(39); // '
+    const B = String.fromCharCode(92); // \
+    return `${D}${S}${B}x00${S}`;
+  };
+
+  // AC-470.1 — a decoded NUL splitting a SHORT-FLAG CLUSTER, the ticket's own
+  // reproduction, verified for all four flag-cluster-sensitive rules #452
+  // named. Each of these currently (pre-fix) returns blocked:false, mirroring
+  // AC-452.1's raw-NUL cases exactly but via the escape-decode path.
+  it('AC-470.1: force-push blocks a decoded-NUL split of the -uf short-flag cluster', () => {
+    const cmd = `git push -u${ansiCNul()}f origin main`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-470.1: env-branch-delete blocks a decoded-NUL split of the -D short flag on a protected branch', () => {
+    const cmd = `git branch -${ansiCNul()}D main`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+  });
+
+  it('AC-470.1: git-clean-force blocks a decoded-NUL separating a lone -f from its dash', () => {
+    const cmd = `git clean -${ansiCNul()}f`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'git-clean-force' });
+  });
+
+  it('AC-470.1: recursive-delete blocks a decoded-NUL split of the -rf cluster', () => {
+    const cmd = `rm -r${ansiCNul()}f /prod-secrets`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-470.2 — found during triage: the SAME root cause (emitCodePoint()'s
+  // unconditional space) breaks contiguity for the LITERAL long-flag
+  // spelling too, not only shortFlagCluster()'s bundling — a decoded NUL
+  // sitting inside the word "force" or hiding the leading letter of "hard"
+  // behind a bare dash both defeat detection identically. Verified against
+  // real bash that both fuse into the genuine long flag.
+  it('AC-470.2: force-push blocks a decoded-NUL split of the literal --force word itself', () => {
+    const cmd = `git push --for${ansiCNul()}ce origin main`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'force-push' });
+  });
+
+  it('AC-470.2: hard-reset blocks a decoded-NUL hiding --hard\'s leading letter behind a bare dash', () => {
+    const cmd = `git reset -${ansiCNul()}-hard`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'hard-reset' });
+  });
+
+  // AC-470.3 (regression guard) — #446's decoded-NUL target-path splice
+  // (AC-446.6, tests/hooks/denylist.test.mjs:423-433 above — untouched by
+  // this ticket) must stay blocked: `recursive-delete`'s own safeRmTarget()
+  // target-parsing reads `spacedText`, not `text`, and the fix must keep
+  // putting the inert space there via the same nulMarkers mechanism. Re-
+  // verified here as this ticket's own regression guard rather than editing
+  // the pinned AC-446.6 tests, which is exactly what the ticket's own
+  // "without reopening" scope requires.
+  it('AC-470.3: the #446 decoded-NUL target-splice case stays blocked', () => {
+    const S = String.fromCharCode(39), D = String.fromCharCode(36);
+    const cmd = `rm -rf ${D}${S}/etc/shadow-backup${ansiCNul().slice(2)}scratchpad${S}`;
+    expect(check(cmd)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+  });
+
+  // AC-470.4 (regression guard) — a command carrying no NUL at all (decoded
+  // or raw) must keep its exact pre-#470 outcome: emitCodePoint()'s new
+  // code-point-0 special case must never fire, and every non-NUL control
+  // byte keeps mapping to an inert space exactly as before.
+  it('AC-470.4: non-NUL decoded control bytes and NUL-free commands are unaffected', () => {
+    expect(check('git push -uf origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git push --force origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('git push --force-with-lease origin feat/x').blocked).toBe(false);
+    // \x01 is a decoded control byte too, but bash does NOT drop it the way
+    // it drops NUL — it stays as literal argument data, so mapping it to an
+    // inert space (rather than deleting it) remains the correct behaviour,
+    // unchanged by this fix.
+    const D = String.fromCharCode(36), S = String.fromCharCode(39), B = String.fromCharCode(92);
+    expect(check(`git push -u${D}${S}${B}x01${S}f origin main`)).toMatchObject({ blocked: false });
+  });
+});
+
 // #448 — brace expansion can complete a flag the command text never spells.
 // `git push --forc{e,} origin main` hands git a real `--force`; the text a
 // purely-literal rule sees never contains the word "force". Verified against
