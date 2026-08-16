@@ -92,30 +92,83 @@ export function budgetPauseNotice(budget) {
 export const MIN_PLAUSIBLE_DELTA = 500;
 
 /**
- * Derives the low-water threshold for THIS check from THIS run's own recent
- * GraphQL-remaining deltas rather than a flat constant (#517). Real
- * per-ticket cost varies ~5x by ticket kind, so no single number protects a
- * ticket boundary without either idling a usable bucket (too conservative)
- * or starting a ticket it can't finish (too optimistic).
+ * Per-kind measured GraphQL cost (#526, option 3 of the #526 fix-wave). #438
+ * (~4993pt, an ordinary feature ticket) queued right before #462 (~975pt,
+ * a docs+regression-test ticket) dragged #462's low-water up to #438's delta
+ * under the old MAX-of-recentDeltas rule (AC-526.1's "#526 pathology") — a
+ * known-cheap ticket kind was held hostage by a past expensive ticket's cost,
+ * even though its OWN cost was already known and small. Values are the
+ * actually-measured GraphQL spend for each kind, not estimates: `docs: 975`
+ * is #462's measured docs+regression-test cost; `spike: 3457` is #448's
+ * measured spike+docs-PR cost. Only these two kinds carry evidence — every
+ * other WORK_TYPES prefix still falls through to the recentDeltas-based
+ * estimate below unchanged (see `ticketKind` in `select.mjs`).
  *
- * Uses the MAX of the valid (finite, plausible — see `MIN_PLAUSIBLE_DELTA`)
- * deltas, not an average: the question being answered is "does 'continue'
- * guarantee THIS ticket can complete," which demands the conservative
- * reading of recent evidence, not the typical one. A delta is measured
- * between two actual `remaining` readings — whatever consumed the bucket in
- * between, delivery or otherwise — so taking the max means any unattributed
- * background drain observed in a recent window automatically raises the bar
- * for the next check, without needing to know its cause (#517 correction
- * comment). `Array.prototype.reduce`, not a spread into `Math.max`, so an
- * oversized `recentDeltas` (a corrupted/hand-edited history) cannot blow the
- * call stack (#517 security fix-wave) — this function must never throw.
- *
- * Falls back to `fallback` (the cold-start `DEFAULT_LOW_WATER`) when there
- * is no history yet, OR when every supplied delta is below
- * `MIN_PLAUSIBLE_DELTA` — i.e. "no plausible evidence" degrades exactly like
- * "no evidence," never toward zero.
+ * Trust boundary (#526 security pass): `kind` originates from a ticket TITLE
+ * (`select.mjs` `ticketKind`), which is editable by anyone with repo issue-
+ * write/triage access — a broader scope than the board-write access needed
+ * to reach `ready`. A mistitled ticket can therefore steer this lookup. That
+ * is an accepted, bounded risk (see `ticketKind`'s own docblock for the full
+ * reasoning): the live `remaining` reading this feeds into is never
+ * attacker-controlled, and `UNATTRIBUTED_DRAIN_FLOOR` below still bounds how
+ * low a known-kind result can go.
  */
-export function estimateTicketCost(recentDeltas, fallback = DEFAULT_LOW_WATER) {
+export const KIND_COST_ESTIMATES = { docs: 975, spike: 3457 };
+
+/**
+ * Floor under ANY per-kind estimate above (#526): #526 itself observed
+ * ~1,400pt of unattributed background drain between checks with no delivery
+ * actually running — bot polling, workflow status checks, board reads, etc.
+ * A per-kind number below this floor would understate the real bucket cost
+ * of just letting time pass, independent of what the next ticket costs to
+ * deliver. Rounded up from the ~1,400pt observed figure with margin, mirroring
+ * `MIN_PLAUSIBLE_DELTA`'s role on the recentDeltas side: a known-cheap kind
+ * must not be dragged UP by a past expensive ticket's delta (the #526
+ * pathology), but it must still never be dragged BELOW what idle drain alone
+ * is known to cost.
+ */
+export const UNATTRIBUTED_DRAIN_FLOOR = 1500;
+
+/**
+ * Derives the low-water threshold for THIS check. Two paths (#526):
+ *
+ * 1. Known kind (`kind` is a `KIND_COST_ESTIMATES` key, e.g. 'docs'/'spike'):
+ *    short-circuits straight to `Math.max(KIND_COST_ESTIMATES[kind],
+ *    UNATTRIBUTED_DRAIN_FLOOR)`, ignoring `recentDeltas`/`fallback` entirely.
+ *    This is the option-5 fix: a known-cheap kind's own measured cost is
+ *    strictly better evidence than a past, possibly-unrelated ticket's delta
+ *    — letting `recentDeltas` override it is exactly the #526 pathology — but
+ *    the result still respects `UNATTRIBUTED_DRAIN_FLOOR` because idle drain
+ *    happens regardless of kind.
+ *
+ * 2. Unknown kind (`kind` is `null`/omitted/unrecognized — anything not a
+ *    `KIND_COST_ESTIMATES` key): byte-identical to the pre-#526 (#517) logic
+ *    below. Real per-ticket cost varies ~5x by ticket kind, so with no known
+ *    per-kind number the MAX of the valid (finite, plausible — see
+ *    `MIN_PLAUSIBLE_DELTA`) recent deltas is used, not an average: the
+ *    question being answered is "does 'continue' guarantee THIS ticket can
+ *    complete," which demands the conservative reading of recent evidence,
+ *    not the typical one. A delta is measured between two actual `remaining`
+ *    readings — whatever consumed the bucket in between, delivery or
+ *    otherwise — so taking the max means any unattributed background drain
+ *    observed in a recent window automatically raises the bar for the next
+ *    check, without needing to know its cause (#517 correction comment).
+ *    `Array.prototype.reduce`, not a spread into `Math.max`, so an oversized
+ *    `recentDeltas` (a corrupted/hand-edited history) cannot blow the call
+ *    stack (#517 security fix-wave) — this function must never throw. Falls
+ *    back to `fallback` (the cold-start `DEFAULT_LOW_WATER`) when there is no
+ *    history yet, OR when every supplied delta is below `MIN_PLAUSIBLE_DELTA`
+ *    — i.e. "no plausible evidence" degrades exactly like "no evidence,"
+ *    never toward zero.
+ *
+ * `kind` itself is untrusted the same way `recentDeltas` is (#526 AC-526.4):
+ * a non-string/malformed value simply isn't a `KIND_COST_ESTIMATES` key, so
+ * it falls through to path 2 rather than throwing.
+ */
+export function estimateTicketCost(recentDeltas, kind, fallback = DEFAULT_LOW_WATER) {
+  if (Object.prototype.hasOwnProperty.call(KIND_COST_ESTIMATES, kind)) {
+    return Math.max(KIND_COST_ESTIMATES[kind], UNATTRIBUTED_DRAIN_FLOOR);
+  }
   const valid = Array.isArray(recentDeltas)
     ? recentDeltas.filter((d) => Number.isFinite(d) && d >= MIN_PLAUSIBLE_DELTA)
     : [];
@@ -130,13 +183,16 @@ export function estimateTicketCost(recentDeltas, fallback = DEFAULT_LOW_WATER) {
  * reactive per-call retry keeps covering individual 403s.
  *
  * `lowWater` (#517): an explicit numeric value still wins outright — a
- * caller opting into the old explicit-constant behavior keeps it. Otherwise
- * the effective threshold is derived from `recentDeltas` via
- * `estimateTicketCost`, falling back to `DEFAULT_LOW_WATER` when there's no
- * history yet.
+ * caller opting into the old explicit-constant behavior keeps it, overriding
+ * both `recentDeltas` and `kind`. Otherwise the effective threshold is
+ * derived via `estimateTicketCost(recentDeltas, kind, DEFAULT_LOW_WATER)`:
+ * a known `kind` (#526 — the next selected ticket's `docs`/`spike`
+ * classification from `select.mjs`'s `ticketKind`) short-circuits to its own
+ * measured per-kind cost, otherwise falling back to the `recentDeltas` MAX,
+ * and finally to `DEFAULT_LOW_WATER` when there's no history yet.
  */
-export async function evaluateRateBudget(gh, { lowWater, recentDeltas } = {}) {
-  const effectiveLowWater = Number.isFinite(lowWater) ? lowWater : estimateTicketCost(recentDeltas, DEFAULT_LOW_WATER);
+export async function evaluateRateBudget(gh, { lowWater, recentDeltas, kind } = {}) {
+  const effectiveLowWater = Number.isFinite(lowWater) ? lowWater : estimateTicketCost(recentDeltas, kind, DEFAULT_LOW_WATER);
   const budget = await rateBudget(gh, { lowWater: effectiveLowWater });
   if (!budget.ok) {
     return {

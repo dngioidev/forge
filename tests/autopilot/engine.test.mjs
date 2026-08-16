@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { selectNext, actionFor, actionableQueue, normalize } from '../../plugin/scripts/autopilot/select.mjs';
+import { selectNext, actionFor, actionableQueue, normalize, ticketKind } from '../../plugin/scripts/autopilot/select.mjs';
+import { WORK_TYPES } from '../../plugin/scripts/lib/ticket.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
 import {
   applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun,
@@ -24,6 +25,7 @@ import {
 import {
   shouldPauseForBudget, budgetCheckDue, evaluateRateBudget, estimateTicketCost,
   DEFAULT_LOW_WATER, DEFAULT_CHECK_EVERY_N, MIN_PLAUSIBLE_DELTA,
+  KIND_COST_ESTIMATES, UNATTRIBUTED_DRAIN_FLOOR,
 } from '../../plugin/scripts/autopilot/ratebudget.mjs';
 import {
   evaluateEnvPreflight, formatBlockers, probeExecutable, probeNodeModules,
@@ -1709,27 +1711,27 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
     expect(DEFAULT_LOW_WATER).toBe(4993);
   });
 
-  describe('AC-517.1: estimateTicketCost — the low-water threshold derived from recent actual deltas', () => {
+  describe('AC-517.1: estimateTicketCost — the low-water threshold derived from recent actual deltas (kind: null — unknown-kind path, byte-identical to pre-#526)', () => {
     it('no recentDeltas (absent or empty) falls back to DEFAULT_LOW_WATER', () => {
-      expect(estimateTicketCost(undefined)).toBe(DEFAULT_LOW_WATER);
-      expect(estimateTicketCost([])).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost(undefined, null)).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([], null)).toBe(DEFAULT_LOW_WATER);
     });
 
     it('a single valid delta is used as-is', () => {
-      expect(estimateTicketCost([975])).toBe(975);
+      expect(estimateTicketCost([975], null)).toBe(975);
     });
 
     it('multiple deltas take the MAX — the conservative read, not the average or most-recent', () => {
-      expect(estimateTicketCost([4993, 3457, 975])).toBe(4993);
+      expect(estimateTicketCost([4993, 3457, 975], null)).toBe(4993);
     });
 
     it('non-finite/negative/zero entries are filtered out before taking the max', () => {
-      expect(estimateTicketCost([4000, -50, NaN, undefined, 0, 2000])).toBe(4000);
+      expect(estimateTicketCost([4000, -50, NaN, undefined, 0, 2000], null)).toBe(4000);
     });
 
     it('a custom fallback is honoured when recentDeltas has no valid entries', () => {
-      expect(estimateTicketCost([], 111)).toBe(111);
-      expect(estimateTicketCost([-50, NaN, 0], 111)).toBe(111);
+      expect(estimateTicketCost([], null, 111)).toBe(111);
+      expect(estimateTicketCost([-50, NaN, 0], null, 111)).toBe(111);
     });
 
     // #517 security fix-wave: a plausibility floor (MIN_PLAUSIBLE_DELTA), not just a
@@ -1737,25 +1739,25 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
     // window with no ticket delivered, OR a corrupted/hand-edited run.json — can never drag
     // the derived threshold toward zero and silently disable the pause guard.
     it('SECURITY (#517): a delta below MIN_PLAUSIBLE_DELTA is NOT treated as evidence — falls back instead of collapsing toward zero', () => {
-      expect(estimateTicketCost([1])).toBe(DEFAULT_LOW_WATER);
-      expect(estimateTicketCost([200])).toBe(DEFAULT_LOW_WATER); // the OLD, already-proven-unsafe DEFAULT_LOW_WATER magnitude
-      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA - 1])).toBe(DEFAULT_LOW_WATER);
-      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA])).toBe(MIN_PLAUSIBLE_DELTA); // the floor itself is plausible
+      expect(estimateTicketCost([1], null)).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([200], null)).toBe(DEFAULT_LOW_WATER); // the OLD, already-proven-unsafe DEFAULT_LOW_WATER magnitude
+      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA - 1], null)).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([MIN_PLAUSIBLE_DELTA], null)).toBe(MIN_PLAUSIBLE_DELTA); // the floor itself is plausible
     });
 
     it('SECURITY (#517): a hostile/corrupted near-flat history ([5000,4999,4998,4997,4996,4995] -> deltas of 1) cannot disable the guard — falls back to the safe DEFAULT_LOW_WATER', () => {
       // recentBudgetDeltas([5000,4999,4998,4997,4996,4995]) === [1,1,1,1,1]
-      expect(estimateTicketCost([1, 1, 1, 1, 1])).toBe(DEFAULT_LOW_WATER);
+      expect(estimateTicketCost([1, 1, 1, 1, 1], null)).toBe(DEFAULT_LOW_WATER);
     });
 
     it('SECURITY (#517): a real plausible delta among noise still wins the max — the floor doesn\'t suppress genuine evidence', () => {
-      expect(estimateTicketCost([1, 1, 975, 1])).toBe(975);
+      expect(estimateTicketCost([1, 1, 975, 1], null)).toBe(975);
     });
 
     it('SECURITY (#517): an oversized recentDeltas array does not throw (RangeError via Math.max(...spread)) — uses reduce instead', () => {
       const huge = new Array(200_000).fill(999);
-      expect(() => estimateTicketCost(huge)).not.toThrow();
-      expect(estimateTicketCost(huge)).toBe(999);
+      expect(() => estimateTicketCost(huge, null)).not.toThrow();
+      expect(estimateTicketCost(huge, null)).toBe(999);
     });
   });
 
@@ -1792,6 +1794,182 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 500, reset: 100 } } }), stderr: '' }));
       const decision = await evaluateRateBudget(gh, { recentDeltas: deltas });
       expect(decision.pause).toBe(true); // WITHOUT the MIN_PLAUSIBLE_DELTA floor this incorrectly reads pause:false (lowWater≈1)
+    });
+  });
+
+  // #526: option 3 (estimate per ticket kind) + option 5 (gate on the NEXT selected ticket's
+  // cost). #438 (~4993pt) queued right before #462 (~975pt docs) dragged the docs ticket's
+  // low-water up to the expensive ticket's delta under the old MAX-of-recentDeltas rule — a
+  // known-cheap kind was held hostage by a past expensive ticket's cost. estimateTicketCost
+  // gains a `kind` 2nd positional param: a known kind (docs/spike, KIND_COST_ESTIMATES) now
+  // short-circuits straight to its measured per-kind estimate, floored at
+  // UNATTRIBUTED_DRAIN_FLOOR, ignoring recentDeltas/fallback entirely. An unknown kind falls
+  // through to the byte-identical #517 MAX-of-plausible-deltas-or-fallback path.
+  describe('AC-526.1: estimateTicketCost — a known kind (docs/spike) short-circuits to its per-kind estimate, ignoring recentDeltas/fallback entirely', () => {
+    it('KIND_COST_ESTIMATES / UNATTRIBUTED_DRAIN_FLOOR carry the measured/derived values (#462 docs ~975, #448 spike ~3457, #526 drain floor 1500)', () => {
+      expect(KIND_COST_ESTIMATES).toEqual({ docs: 975, spike: 3457 });
+      expect(UNATTRIBUTED_DRAIN_FLOOR).toBe(1500);
+    });
+
+    it('a known "docs" kind returns its table value floored at UNATTRIBUTED_DRAIN_FLOOR (975 < 1500 -> 1500)', () => {
+      expect(estimateTicketCost([], 'docs')).toBe(1500);
+      expect(estimateTicketCost(undefined, 'docs')).toBe(1500);
+    });
+
+    it('a known "spike" kind returns its own table value unchanged — it already exceeds the floor (3457 > 1500)', () => {
+      expect(estimateTicketCost([], 'spike')).toBe(3457);
+      expect(estimateTicketCost(undefined, 'spike')).toBe(3457);
+    });
+
+    it('THE #526 PATHOLOGY: a large recentDeltas entry that would have dominated under the old MAX rule must NOT affect a known-kind result', () => {
+      // Under the old (pre-#526) 2-arg rule, estimateTicketCost([4993]) === 4993 — the whole
+      // point of this fix is that a docs/spike ticket is no longer held to that bar.
+      expect(estimateTicketCost([4993], 'docs')).toBe(1500);
+      expect(estimateTicketCost([4993], 'spike')).toBe(3457);
+    });
+
+    it('a known kind ignores a custom fallback too — the table value wins unconditionally', () => {
+      expect(estimateTicketCost([], 'docs', 1)).toBe(1500);
+      expect(estimateTicketCost([], 'spike', 99999)).toBe(3457);
+    });
+
+    it('an unknown kind (null, an unrecognized string, or a WORK_TYPES prefix without cost evidence like "feat") falls through to the byte-identical old #517 MAX-of-plausible-deltas-or-fallback behavior', () => {
+      expect(estimateTicketCost([4993, 3457, 975], null)).toBe(4993);
+      expect(estimateTicketCost([4993, 3457, 975], 'feat')).toBe(4993);
+      expect(estimateTicketCost([4993, 3457, 975], 'bug')).toBe(4993); // not even a WORK_TYPES member
+      expect(estimateTicketCost([], null, 111)).toBe(111);
+      expect(estimateTicketCost([], 'feat', 111)).toBe(111);
+      expect(estimateTicketCost(undefined, undefined)).toBe(DEFAULT_LOW_WATER); // kind omitted entirely also falls through
+    });
+  });
+
+  // #526: select.mjs's title-prefix classifier that estimateTicketCost's `kind` param consumes.
+  // Reuses lib/ticket.mjs's WORK_TYPES (the existing branch-naming prefix vocabulary) instead of
+  // re-inventing it — but only docs/spike carry measured cost evidence (KIND_COST_ESTIMATES), so
+  // every OTHER recognized WORK_TYPES prefix still returns null here, deliberately.
+  describe('AC-526.2: ticketKind(title) — leading docs:/spike: prefix classifier; normalize() carries it as t.kind', () => {
+    it('recognizes a leading "docs:" and "docs(scope):" prefix, case-insensitively', () => {
+      expect(ticketKind('docs: update the README')).toBe('docs');
+      expect(ticketKind('docs(readme): update')).toBe('docs');
+      expect(ticketKind('DOCS: Update The README')).toBe('docs');
+      expect(ticketKind('Docs(Scope): x')).toBe('docs');
+    });
+
+    it('recognizes a leading "spike:" and "spike(scope):" prefix, case-insensitively', () => {
+      expect(ticketKind('spike: try library x')).toBe('spike');
+      expect(ticketKind('spike(auth): try library x')).toBe('spike');
+      expect(ticketKind('SPIKE: try library x')).toBe('spike');
+      expect(ticketKind('Spike(Auth): x')).toBe('spike');
+    });
+
+    it('every other WORK_TYPES prefix (feat/fix/chore/refactor/test/perf/hotfix) returns null — only docs/spike have measured cost evidence', () => {
+      for (const type of WORK_TYPES.filter((w) => w !== 'docs' && w !== 'spike')) {
+        expect(ticketKind(`${type}: something`)).toBeNull();
+        expect(ticketKind(`${type}(scope): something`)).toBeNull();
+      }
+    });
+
+    it('no recognized prefix at all returns null', () => {
+      expect(ticketKind('just a plain title with no prefix')).toBeNull();
+      expect(ticketKind('')).toBeNull();
+    });
+
+    it('a trailing "(spike)" marker with no LEADING prefix does not match — only a leading prefix counts (no false-cheap positives)', () => {
+      expect(ticketKind('improve caching (spike)')).toBeNull();
+      expect(ticketKind('rate budget work (docs)')).toBeNull();
+      expect(ticketKind('(spike) improve caching')).toBeNull();
+    });
+
+    it('normalize() carries the kind field from ticketKind(title)', () => {
+      const ctx = { itemFieldKey: () => null };
+      expect(normalize(ctx, { content: { number: 10, title: 'docs: update readme' } }).kind).toBe('docs');
+      expect(normalize(ctx, { content: { number: 11, title: 'spike(x): try thing' } }).kind).toBe('spike');
+      expect(normalize(ctx, { content: { number: 12, title: 'feat: add thing' } }).kind).toBe(null);
+      expect(normalize(ctx, { content: { number: 13, title: 'plain title' } }).kind).toBe(null);
+    });
+  });
+
+  describe('AC-526.3: evaluateRateBudget threads kind into estimateTicketCost — the #526 pathology (a cheap ticket queued right after an expensive one) is fixed', () => {
+    it('a docs kind yields the cheap per-kind threshold even when recentDeltas carries a much larger past delta — reproduces AND fixes the exact #526 pathology', async () => {
+      // remaining:3000 — under the OLD rule (MAX of recentDeltas=[4993]) this would read
+      // low:true (3000 <= 4993) and pause. With kind:'docs' threaded through, the effective
+      // low-water is the floored docs estimate (1500), so 3000 is comfortably above it.
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 3000, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [4993], kind: 'docs' });
+      expect(decision.pause).toBe(false);
+      expect(decision.budget.low).toBe(false);
+    });
+
+    it('a spike kind at the same remaining:3000 reading still pauses — its own table value (3457) exceeds remaining', async () => {
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 3000, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [4993], kind: 'spike' });
+      expect(decision.pause).toBe(true);
+    });
+
+    it('kind: null reproduces the OLD unchanged behavior — still gated by the recentDeltas MAX (pauses at the same remaining:3000 reading)', async () => {
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 3000, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [4993], kind: null });
+      expect(decision.pause).toBe(true);
+    });
+
+    it('an omitted kind (not passed at all) also reproduces the OLD unchanged behavior', async () => {
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 3000, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { recentDeltas: [4993] });
+      expect(decision.pause).toBe(true);
+    });
+
+    it('an explicit lowWater still overrides kind AND recentDeltas when all three are supplied (back-compat, mirrors AC-517.3)', async () => {
+      const gh = makeGh(async () => ({ ok: true, code: 0, stdout: JSON.stringify({ resources: { graphql: { limit: 5000, remaining: 1543, reset: 100 } } }), stderr: '' }));
+      const decision = await evaluateRateBudget(gh, { lowWater: 100, recentDeltas: [4993], kind: 'spike' });
+      expect(decision.pause).toBe(false); // 1543 > explicit lowWater 100, ignoring both recentDeltas and kind
+    });
+  });
+
+  describe('AC-526.4: estimateTicketCost/ticketKind never throw on malformed input (non-string kind, malformed title, oversized recentDeltas)', () => {
+    it('estimateTicketCost does not throw on a malformed kind (number, object, huge string) — falls through to the unknown-kind path', () => {
+      expect(() => estimateTicketCost([975], 42)).not.toThrow();
+      expect(estimateTicketCost([975], 42)).toBe(975);
+      expect(() => estimateTicketCost([975], { evil: true })).not.toThrow();
+      expect(estimateTicketCost([975], { evil: true })).toBe(975);
+      const hugeKindString = 'x'.repeat(200_000);
+      expect(() => estimateTicketCost([975], hugeKindString)).not.toThrow();
+      expect(estimateTicketCost([975], hugeKindString)).toBe(975);
+    });
+
+    it('SECURITY (#517, adapted to the 3-arg signature): an oversized recentDeltas array does not throw (RangeError via Math.max(...spread)) regardless of kind', () => {
+      const huge = new Array(200_000).fill(999);
+      expect(() => estimateTicketCost(huge, null)).not.toThrow();
+      expect(estimateTicketCost(huge, null)).toBe(999);
+      // a known kind short-circuits before ever touching recentDeltas, so the oversized array
+      // is irrelevant to the result — but must still not throw.
+      expect(() => estimateTicketCost(huge, 'docs')).not.toThrow();
+      expect(estimateTicketCost(huge, 'docs')).toBe(1500);
+    });
+
+    it('ticketKind does not throw on a malformed title (number, object, null, undefined, huge string)', () => {
+      expect(() => ticketKind(42)).not.toThrow();
+      expect(ticketKind(42)).toBeNull();
+      expect(() => ticketKind({ title: 'docs: x' })).not.toThrow();
+      expect(ticketKind({ title: 'docs: x' })).toBeNull();
+      expect(() => ticketKind(null)).not.toThrow();
+      expect(ticketKind(null)).toBeNull();
+      expect(() => ticketKind(undefined)).not.toThrow();
+      expect(ticketKind(undefined)).toBeNull();
+      const hugeTitle = `docs: ${'x'.repeat(200_000)}`;
+      expect(() => ticketKind(hugeTitle)).not.toThrow();
+      expect(ticketKind(hugeTitle)).toBe('docs');
+    });
+
+    it('SECURITY: a prototype-pollution-shaped kind string never reads Object.prototype through KIND_COST_ESTIMATES', () => {
+      // hasOwnProperty.call(KIND_COST_ESTIMATES, kind) must reject these — a plain object
+      // literal's only OWN keys are 'docs'/'spike', so none of these should ever short-circuit
+      // to a KIND_COST_ESTIMATES[kind] read (which would resolve to an inherited Object.prototype
+      // value/function instead of a number, corrupting the low-water threshold).
+      for (const evilKind of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+        expect(() => estimateTicketCost([975], evilKind)).not.toThrow();
+        expect(estimateTicketCost([975], evilKind)).toBe(975); // unknown-kind path, unaffected
+        expect(typeof estimateTicketCost([975], evilKind)).toBe('number');
+      }
     });
   });
 });
