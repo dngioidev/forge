@@ -170,6 +170,80 @@ size + latency cases, and an AC-448.5 totality sweep.
 **AC map:** AC-448.1 – AC-448.6
 **Test plan:** `npx vitest run tests/hooks/denylist.test.mjs -t "AC-448"`
 
+## Fix wave 1: full-branch adversarial REVIEWER finding, closed
+
+`forge:reviewer`, run on the full branch diff before shipping (per this
+file's own established policy), found a critical bypass in
+`recursive-delete`'s `allowBareBrace: false` narrowing: it exempted every
+leading-`{` token from the check specifically so `rm {file1,file2}` (a
+harmless bare target list) stayed allowed, reasoning that `rm`'s non-flag
+arguments are ordinary bare words too. But that reasoning didn't account for
+a bare-brace token whose OWN leading character is `{`, yet one of its
+alternatives itself starts with `-` — bash glues whatever comes before/after
+a group onto EVERY alternative, so the token's own first character does not
+determine every possible resulting word's first character. Verified against
+real bash: `bash -c 'echo {,-}rf'` prints `rf -rf`; `bash -c 'echo
+{-rf,rf}'` prints `-rf rf`. Both are genuine `rm -rf`-class bypasses (GNU
+`rm` permutes options anywhere in argv) that read `blocked: false` before
+this fix.
+
+**Fix:** rather than add a narrower peek (check whether the group's first
+alternative specifically looks flag-shaped), `allowBareBrace` was removed
+entirely. Every rule now treats ANY token starting with `{` (and containing
+a qualifying brace-group) as flag-adjacent, uniformly. `rm {file1,file2}`
+becomes a known, accepted over-block — documented below — traded
+deliberately for a check whose correctness doesn't depend on getting a
+nested-alternative peek right, after this exemption's specific narrowing
+was where the bypass lived.
+
+Regression-pinned as `rm {,-}rf /important-secrets` / `rm {-rf,rf}
+/important-secrets` / `rm target {,-}rf` all blocking as `recursive-delete`,
+plus a re-pin of `rm {file1,file2}` now correctly blocking (was previously
+asserted allowed). Full suite green (1517/1517: 1361 pre-existing + 156 in
+this file).
+
+## Fix wave 2: full-branch adversarial SECURITY finding, closed
+
+`forge:security`, dispatched in parallel with the fix-wave-1 reviewer pass,
+found two independent CRITICAL problems in the original `BRACE_GROUP`
+regex (`/\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}/`):
+
+1. **Nesting bypass.** The regex's `[^{}\s]*` deliberately would not cross a
+   nested `{`/`}` boundary. A token where the qualifying comma sits at the
+   TOP level but a comma-less NESTED group sits between the flag's literal
+   prefix and that comma — `--for{ce,c{xy}e}` — real-bash-expands to a
+   literal `--force` (verified: `bash -c "printf '%s\n' --for{ce,c{xy}e}"`
+   prints `--force` and `--forc{xy}e`) while containing no FLAT `{...}`
+   substring anywhere for the old regex to match. Reproduced identically for
+   `rm -r{f,x{yz}}`, `git branch -{D,x{yz}}`, and `git reset
+   --{hard,x{yz}}`.
+2. **Quadratic backtracking.** The same regex's two adjacent unbounded
+   `[^{}\s]*` runs either side of the comma/`..` alternation backtrack
+   catastrophically on a token containing a long comma-bearing run with NO
+   closing `}` ahead — measured at 8.7s through the real `check()` entry
+   point on a ~120KB input (`git push -{` + `a,`×60000), breaching
+   AC-448.3's own 500ms ceiling by ~17x and approaching agy's 10s fail-open
+   budget (#428) — the exact hang-on-every-Bash-call failure class the
+   whole detect-don't-enumerate design exists to eliminate, reopened by the
+   regex ENGINE's own retry behaviour rather than by anything this file
+   materialised.
+
+**Fix:** `BRACE_GROUP` (the regex) was replaced by `tokenHasBraceGroup()`, a
+linear left-to-right scan with an explicit depth counter — genuinely
+O(token length), one character visited once, no backtracking possible
+because nothing is ever re-scanned from an earlier position, and nesting is
+handled BY CONSTRUCTION (the depth counter) rather than excluded by a
+character class. Mirrors this file's own established pattern elsewhere
+(`beforeEndOfOptions()`'s paren-depth tracker, `ampRunEnd`'s precomputed
+backward pass) of replacing a regex whose worst case is hard to bound with
+an explicit scan.
+
+Regression-pinned as the four nested-brace reproductions all blocking
+correctly, plus a linear-time pin on the ~120KB unclosed-brace construction
+(completes well under 500ms and correctly resolves to `blocked: false`,
+matching real bash's own "an unterminated brace never expands" behaviour).
+Full suite green (1517/1517).
+
 ## Task 2 (code): the detector + four rule sites
 
 - Extend `normalizeShellText()`'s `guardedText` `maskable` set to include
@@ -183,4 +257,9 @@ size + latency cases, and an AC-448.5 totality sweep.
 **Files:** plugin/hooks/denylist.mjs
 **AC map:** AC-448.1, AC-448.4, AC-448.6
 **Done:** Task 1's new tests pass; full `tests/hooks/denylist.test.mjs`
-green; full `vitest run` green.
+green; full `vitest run` green. Superseded by fix waves 1-2 above (the
+`allowBareBrace` per-rule narrowing was removed, and `BRACE_GROUP` the
+regex was replaced by `tokenHasBraceGroup()` the linear scan) — final state
+after both fix waves: full suite green (1517/1517), all 6 mechanical gates
+(plandrift/testintent/depguard/acgate) pass, both `forge:reviewer` and
+`forge:security` re-dispatched clean on the fix-wave-2 tip before shipping.

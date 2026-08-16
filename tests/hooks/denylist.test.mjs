@@ -1893,10 +1893,85 @@ describe('brace expansion (#448, AC-448.4) — flag-adjacent, not blanket: no fa
     expect(check("git push origin main -o 'ship notes {a,b} today'").blocked).toBe(false);
   });
 
-  it('AC-448.4: a bare rm target list with no dash anywhere is not treated as a hidden flag', () => {
-    // recursive-delete passes allowBareBrace:false precisely so this stays
-    // allowed — no -r/-f present anywhere, literal or brace-hidden.
-    expect(check('rm {file1,file2}').blocked).toBe(false);
+  it('a bare rm target list is a KNOWN, ACCEPTED over-block, not a false positive this ticket promises to avoid', () => {
+    // Not an AC-448.4 case: `{file1,file2}` here is a TARGET, not a flag, and
+    // an earlier version of hasFlagAdjacentBrace() had a per-rule
+    // `allowBareBrace:false` exemption specifically so this stayed allowed.
+    // That exemption was removed (see hasFlagAdjacentBrace()'s own comment,
+    // "fix wave 1") after a full-branch adversarial reviewer pass found it
+    // was also exempting a REAL bypass shape (`rm {,-}rf`, next block) that
+    // is indistinguishable from this one without peeking inside the group —
+    // exactly the classification step this design avoids. This is the
+    // documented, deliberate trade-off, pinned here so a future change can't
+    // silently re-narrow the check back into the fix-wave-1 bypass.
+    expect(check('rm {file1,file2}').blocked).toBe(true);
+  });
+});
+
+// #448 fix wave 1 — full-branch adversarial REVIEWER finding, closed by
+// removing hasFlagAdjacentBrace()'s `allowBareBrace` per-rule narrowing
+// (see that function's own comment for the full history). `recursive-delete`
+// originally passed `allowBareBrace: false` so a bare leading-brace token was
+// flag-adjacent only for force-push/hard-reset/env-branch-delete, reasoning
+// that rm's own non-flag arguments are ordinary bare words too
+// (`rm {file1,file2}`). But a bare-brace token can hide a real `-rf` even
+// when the token's OWN leading character is `{`, not `-`: bash glues
+// whatever comes before/after a group onto EVERY alternative, so an
+// alternative that itself starts with `-` produces a flag-starting word
+// regardless of the token's own first character. Verified against real bash:
+// `bash -c 'echo {,-}rf'` prints `rf -rf`; `bash -c 'echo {-rf,rf}'` prints
+// `-rf rf`. Both are genuine `rm -rf`-class bypasses (GNU rm permutes
+// options anywhere in argv), and both read `blocked: false` before this fix.
+describe('brace expansion (#448 fix wave 1) — a bare-brace token can hide -rf even without a leading dash on the token itself', () => {
+  it('a comma-list bare-brace token whose alternative starts with - blocks recursive-delete', () => {
+    for (const cmd of [
+      'rm {,-}rf /important-secrets',
+      'rm {-rf,rf} /important-secrets',
+      'rm target {,-}rf',
+    ]) {
+      expect(check(cmd), cmd).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    }
+  });
+});
+
+// #448 fix wave 2 — full-branch adversarial SECURITY finding, closed by
+// rewriting the brace-group check from a single regex (`BRACE_GROUP`) to a
+// linear depth-tracking scan (`tokenHasBraceGroup()`). Two independent real
+// problems with the regex version, both closed by the rewrite — see that
+// function's own comment for the full history:
+//
+//  1. NESTING BYPASS: the regex's flat, non-nesting `[^{}\s]*` could not see
+//     a top-level qualifying comma sitting on the far side of a nested,
+//     comma-less brace pair — `--for{ce,c{xy}e}` real-bash-expands to a
+//     literal `--force` (verified: `bash -c "printf '%s\n' --for{ce,c{xy}e}"`
+//     prints `--force` and `--forc{xy}e`) while containing no FLAT `{...}`
+//     substring for the old regex to match.
+//  2. QUADRATIC BACKTRACKING: the regex's two adjacent unbounded runs
+//     backtrack catastrophically on a long comma-bearing run with no closing
+//     `}` ahead — measured at 8.7s on a ~120KB input through the real
+//     check() entry point, breaching AC-448.3's own 500ms ceiling.
+describe('brace expansion (#448 fix wave 2) — nested brace groups are detected, and detection stays linear (no regex backtracking)', () => {
+  it('a nested, comma-less inner group cannot hide an outer top-level comma that completes a flag', () => {
+    expect(check('git push --for{ce,c{xy}e} origin main')).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check('rm -r{f,x{yz}} /opt/danger')).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check('git branch -{D,x{yz}} main')).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+    expect(check('git reset --{hard,x{yz}}')).toMatchObject({ blocked: true, rule: 'hard-reset' });
+  });
+
+  it('a long unclosed brace run (no matching }) completes in linear time and is correctly not treated as expansion syntax', () => {
+    // Deliberately UNCLOSED — real bash never expands an unterminated brace,
+    // so this must resolve to blocked:false, not merely "doesn't throw".
+    // This exact shape (a long run of comma-bearing text with no closing `}`
+    // ahead) is what drove the old BRACE_GROUP regex to quadratic
+    // backtracking; the depth-tracking scan is a single linear pass
+    // regardless of comma count or whether a `}` ever appears.
+    const cmd = 'git push -{' + 'a,'.repeat(60000) + ' origin main';
+    expect(cmd.length, 'sanity: matches the security review\'s ~120KB reproduction').toBeGreaterThan(100000);
+    const started = Date.now();
+    const res = check(cmd);
+    const elapsed = Date.now() - started;
+    expect(elapsed, `took ${elapsed}ms for a ${cmd.length}-byte unclosed-brace input`).toBeLessThan(500);
+    expect(res.blocked).toBe(false);
   });
 });
 
