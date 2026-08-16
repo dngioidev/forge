@@ -905,8 +905,8 @@ export function normalizeShellText(rawCommand) {
           i += oct[0].length;
           continue;
         }
-        // \cX — Control-X. This branch consumes NOTHING beyond `\c` itself,
-        // and that is the entire point.
+        // \cX — Control-X. This branch consumes NOTHING beyond `\c` itself
+        // for almost every operand, and that is almost the entire point.
         //
         // `\c` is the only escape here taking an ARBITRARY operand, so it is
         // the only one whose lookahead can reach past this region's
@@ -919,15 +919,46 @@ export function normalizeShellText(rawCommand) {
         // pass SEPARATE from decoding, and a single-pass scanner cannot mirror
         // that by accumulating exceptions.
         //
-        // So this does not look ahead at all. `\cX` always evaluates to a
-        // CONTROL byte, and every control byte is inert here anyway (see
-        // emitCodePoint) — the operand's value cannot change the outcome.
-        // Leaving it unconsumed costs nothing and lets the main loop dispatch
-        // it normally, so the terminator is found by the same audited path as
-        // everywhere else. That removes the bug class rather than enumerating
-        // its instances. The cost is a slight over-match (`$'\cA'` leaves a
-        // stray `A`), which is the safe direction and cannot spell a flag.
+        // So this does not look ahead in general. `\cX` always evaluates to a
+        // CONTROL byte, and every control byte OTHER than NUL is inert here
+        // (see emitCodePoint) — the operand's value cannot change THAT
+        // outcome. Leaving it unconsumed costs nothing there and lets the
+        // main loop dispatch it normally, so the terminator is found by the
+        // same audited path as everywhere else. The cost is a slight
+        // over-match (`$'\cA'` leaves a stray `A`), the safe direction, since
+        // a stray letter cannot spell a flag on its own.
+        //
+        // ONE narrow, deliberate exception (#470, adversarial security/review
+        // finding): bash's `\cX` computes `CTRL(X)`, and within printable
+        // ASCII exactly three operands evaluate to CTRL-code 0 — a NUL —
+        // verified empirically against real bash across the full 0x20-0x7e
+        // range: SPACE, `@`, and a backtick. `$'\c@'` is bash's own spelling
+        // for the identical dropped-and-fused NUL `emitCodePoint(0)` above
+        // already handles for `\x00`/octal/`\u`/`\U` — leaving it as inert
+        // literal text (as every other `\cX` operand safely is) does NOT
+        // reproduce that fusion: `-u$'\c@'f` really is the fused argv token
+        // `-uf` in real bash, but a literal stray `@` sitting between `u` and
+        // `f` still breaks `shortFlagCluster()`'s contiguous-letter run
+        // exactly like the un-fixed bug this ticket exists to close.
+        // Consuming these three operands (not merely peeking) is what full
+        // fusion requires — and is provably outside the two-bug history
+        // above, because NEITHER prior bug's trigger character (the quote
+        // delimiter `'`, or a protecting backslash `\`) is SPACE, `@`, or a
+        // backtick: none of the three is ever the string's own terminator or
+        // an escape character this scanner tracks, so consuming exactly one
+        // of them can never misread the quote boundary or eat a protecting
+        // backslash the way the historical bugs did. Every OTHER `\cX`
+        // spelling — including operand `'` and operand `\`, the two
+        // characters that WOULD reopen that exact risk (and which, checked
+        // separately, do not decode to NUL anyway: CTRL(`'`) is BEL, CTRL(`\`)
+        // is FS) — keeps the unconsumed, no-lookahead behaviour unchanged.
         if (next === 'c') {
+          const operand = command[i + 2];
+          if (operand === ' ' || operand === '@' || operand === '`') {
+            nulMarkers.push(parts.length);
+            i += 2;
+            continue;
+          }
           emitCodePoint(0x5c); emitCodePoint(0x63); // inert, per emitCodePoint
           i++;
           continue;

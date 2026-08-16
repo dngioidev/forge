@@ -1815,6 +1815,49 @@ describe('a decoded ANSI-C NUL inside a flag cluster still defeats detection (#4
     const D = String.fromCharCode(36), S = String.fromCharCode(39), B = String.fromCharCode(92);
     expect(check(`git push -u${D}${S}${B}x01${S}f origin main`)).toMatchObject({ blocked: false });
   });
+
+  // AC-470.5 — a SECOND decoded-NUL spelling, found during adversarial
+  // review of this ticket's own first fix: bash's `\cX` (Control-X) escape
+  // evaluates to `CTRL(X)`, and within printable ASCII exactly three
+  // operands evaluate to control code 0 (a NUL) — verified empirically
+  // against real bash across the full 0x20-0x7e operand range: SPACE, `@`,
+  // and a backtick. `emitCodePoint(0)`'s delete-and-mark fix alone did not
+  // cover this: the `\c` branch never calls `emitCodePoint()` with the
+  // decoded value at all (by design, to avoid reintroducing two EARLIER,
+  // separately-found `\c`-lookahead bugs — see that branch's own comment),
+  // so `$'\c@'` kept leaving a literal, contiguity-breaking `@` character
+  // behind instead of fusing, an independent live bypass of the exact same
+  // rules AC-470.1/.2 pin, reachable through a different escape spelling.
+  it('AC-470.5: a \\c-spelled decoded NUL (space/@/backtick operand) also fuses a short-flag cluster', () => {
+    const D = String.fromCharCode(36), S = String.fromCharCode(39), B = String.fromCharCode(92);
+    const cNul = (operand) => `${D}${S}${B}c${operand}${S}`;
+    expect(check(`git push -u${cNul('@')}f origin main`)).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check(`git push -u${cNul(' ')}f origin main`)).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check(`git push -u${cNul('`')}f origin main`)).toMatchObject({ blocked: true, rule: 'force-push' });
+    expect(check(`git branch -${cNul('@')}D main`)).toMatchObject({ blocked: true, rule: 'env-branch-delete' });
+    expect(check(`git clean -${cNul('@')}f`)).toMatchObject({ blocked: true, rule: 'git-clean-force' });
+    expect(check(`rm -r${cNul('@')}f /prod-secrets`)).toMatchObject({ blocked: true, rule: 'recursive-delete' });
+    expect(check(`git reset -${cNul('@')}-hard`)).toMatchObject({ blocked: true, rule: 'hard-reset' });
+  });
+
+  // AC-470.6 (regression guard) — the two operand characters that COULD
+  // reopen the two historical `\c`-lookahead bugs (the quote delimiter `'`
+  // itself, and a backslash `\`) are deliberately EXCLUDED from AC-470.5's
+  // new consuming path — neither decodes to NUL anyway (CTRL(`'`) is BEL,
+  // CTRL(`\`) is FS), so there is nothing to fix for them, and this diff's
+  // `\c` branch takes the exact same unconsumed, no-lookahead code path for
+  // both that it always has. Pinned here as its own explicit case rather
+  // than relying only on "the full suite still passes", since this is the
+  // precise boundary the new operand check was scoped around.
+  it("AC-470.6: \\c' and \\c\\ (the two lookahead-risk operands) are untouched by the new fusion path", () => {
+    const D = String.fromCharCode(36), S = String.fromCharCode(39), B = String.fromCharCode(92);
+    // Operand is the quote character itself — this scanner's own `\c`
+    // branch leaves it unconsumed, so the main loop reads it as the
+    // region's own closing quote next, exactly as before this ticket.
+    expect(check(`git push -u${D}${S}${B}c${S}${S}f origin main`).blocked).toBe(false);
+    // Operand is a literal backslash — also unconsumed, also unchanged.
+    expect(check(`git push -u${D}${S}${B}c${B}${S}f origin main`).blocked).toBe(false);
+  });
 });
 
 // #448 — brace expansion can complete a flag the command text never spells.
