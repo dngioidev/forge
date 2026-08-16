@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { signature, clusterEvents, renderReport, archive, ARCHIVE_DIR } from '../../plugin/scripts/learn/distill.mjs';
+import { signature, clusterEvents, renderReport, archive, ARCHIVE_DIR, classifyBlockedEdit } from '../../plugin/scripts/learn/distill.mjs';
 import { JOURNAL_RELPATH } from '../../plugin/scripts/lib/journal.mjs';
 
 const ev = (kind, extra = {}) => ({ ts: '2026-07-17T00:00:00Z', kind, ...extra });
@@ -46,6 +46,113 @@ describe('distill clustering (AC-7.4)', () => {
     expect(signature(ev('cmd-fail', { cmd: 'PATH=/x git push origin main' }))).toBe('git push');
     expect(signature(ev('cmd-fail', { cmd: 'vitest run --coverage' }))).toBe('vitest');
     expect(signature(ev('escalation', { reason: 'design pick: card' }))).toBe('design pick: card');
+  });
+});
+
+// Fixtures below mirror the real shapes from the 2026-08-13 round that
+// produced 119 blocked-edit events and 8 rejected proposals (#465). Each cmd
+// is a paraphrase of a real event's cmd field, kept representative of the
+// actual pattern rather than reproducing it verbatim.
+const HARNESS_CMD = 'cd C:/mywp/forge && node -e "\nconst { check } = await import(\'./plugin/hooks/denylist.mjs\');\nconsole.log(check(\'git push --force origin main\'));\n"';
+const SCRATCH_CMD = 'SCRATCH="C:/Users/x/AppData/Local/Temp/claude/scratchpad/wt-429"\ncd "$SCRATCH" && rm -rf ./gittest && mkdir -p ./gittest';
+const DOC_WRITE_CMD = 'cd C:/mywp/forge && node "scripts/board/comment.mjs" --issue 398 --phase note --body "$(cat <<\'EOF\'\nFindings doc landed. AC.1 verified.\nEOF\n)"';
+const PROBE_ECHO_TAIL_CMD = `git push --force origin main ; echo ${'y'.repeat(200)}`;
+const PROBE_BRACE_CMD = 'git push --force x{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}{a..a}';
+const GENUINE_BARE_CMD = 'git push --force origin main';
+
+describe('blocked-edit guard-testing classification (AC-465.1, AC-465.4)', () => {
+  it('AC-465.4: a check()/denylist.mjs harness invocation classifies as guard-testing', () => {
+    const { guardTesting, reasons } = classifyBlockedEdit(HARNESS_CMD);
+    expect(guardTesting).toBe(true);
+    expect(reasons).toContain('denylist-harness');
+  });
+
+  it('AC-465.4: a scratch/temp-path command classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(SCRATCH_CMD).guardTesting).toBe(true);
+  });
+
+  it('AC-465.4: a --body-file / heredoc doc-write classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(DOC_WRITE_CMD).guardTesting).toBe(true);
+  });
+
+  it('AC-465.4: an adversarial probe with a long echo tail classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(PROBE_ECHO_TAIL_CMD).guardTesting).toBe(true);
+  });
+
+  it('AC-465.4: a brace-expansion probe classifies as guard-testing', () => {
+    expect(classifyBlockedEdit(PROBE_BRACE_CMD).guardTesting).toBe(true);
+  });
+
+  it('AC-465.4: a genuine bare destructive command does NOT classify as guard-testing — do not fix the false positives by suppressing the true ones', () => {
+    const { guardTesting } = classifyBlockedEdit(GENUINE_BARE_CMD);
+    expect(guardTesting).toBe(false);
+  });
+
+  it('AC-465.1: same rule, different classification -> two distinct clusters, not one', () => {
+    const events = [
+      ev('blocked-edit', { rule: 'force-push', cmd: HARNESS_CMD }),
+      ev('blocked-edit', { rule: 'force-push', cmd: SCRATCH_CMD }),
+      ev('blocked-edit', { rule: 'force-push', cmd: GENUINE_BARE_CMD }),
+    ];
+    const clusters = clusterEvents(events);
+    const guardCluster = clusters.find((c) => c.signature.includes('guard-testing'));
+    const unclassifiedCluster = clusters.find((c) => c.signature.includes('unclassified'));
+    expect(guardCluster.count).toBe(2);
+    expect(unclassifiedCluster.count).toBe(1);
+  });
+
+  it('AC-465.1/AC-465.2: report never proposes a role-card edit for a guard-testing cluster; an unclassified cluster is phrased as a question', () => {
+    const events = [
+      ev('blocked-edit', { rule: 'recursive-delete', cmd: HARNESS_CMD }),
+      ev('blocked-edit', { rule: 'recursive-delete', cmd: SCRATCH_CMD }),
+      ev('blocked-edit', { rule: 'force-push', cmd: GENUINE_BARE_CMD }),
+      ev('blocked-edit', { rule: 'force-push', cmd: 'git push --force origin main' }),
+    ];
+    const report = renderReport(clusterEvents(events));
+    expect(report).toContain('no role-card change proposed');
+    expect(report).not.toMatch(/reaching for a denylisted action/);
+    expect(report).toContain('question, not a diagnosis');
+    expect(report).toMatch(/genuine destructive attempt.*\?/);
+  });
+
+  it('AC-465.3: the report surfaces a truncated cmd excerpt inline, not just bare timestamps', () => {
+    const events = [
+      ev('blocked-edit', { rule: 'force-push', cmd: PROBE_ECHO_TAIL_CMD }),
+      ev('blocked-edit', { rule: 'force-push', cmd: PROBE_ECHO_TAIL_CMD }),
+    ];
+    const report = renderReport(clusterEvents(events));
+    expect(report).toMatch(/Sample: `git push --force origin main/);
+    // truncated, not the full ~90-char echo tail
+    expect(report).toContain('…');
+  });
+});
+
+describe('escalation-resolved clustering (AC-465.5)', () => {
+  it('AC-465.5: resolved escalations from different tickets never merge under "unspecified"', () => {
+    // Real shape: escalation-resolved carries `answer`, not `reason` — the
+    // pre-fix signature() read `event.reason` here, which does not exist on
+    // this event kind, so every resolution fell through to 'unspecified'.
+    const events = [
+      ev('escalation-resolved', { issue: 407, id: 'esc-407-msjuouh6', answer: 'approve' }),
+      ev('escalation-resolved', { issue: 446, id: 'esc-446-msqfnq7f', answer: 'ship the 5 closed classes as-is' }),
+      ev('escalation-resolved', { issue: 446, id: 'esc-446-msqh7snx', answer: 'ship #446 as-is' }),
+    ];
+    const clusters = clusterEvents(events);
+    const unspecified = clusters.find((c) => c.signature === 'unspecified');
+    expect(unspecified).toBeUndefined();
+    // three distinct decisions -> three one-off clusters, not one fake 3x pattern
+    expect(clusters.filter((c) => c.kind === 'escalation-resolved')).toHaveLength(3);
+    expect(clusters.every((c) => c.count === 1)).toBe(true);
+  });
+
+  it('AC-465.5: the SAME escalation resolved twice still clusters as a repeat', () => {
+    const events = [
+      ev('escalation-resolved', { issue: 446, id: 'esc-446-msqfnq7f', answer: 'ship' }),
+      ev('escalation-resolved', { issue: 446, id: 'esc-446-msqfnq7f', answer: 'ship, confirmed' }),
+    ];
+    const clusters = clusterEvents(events);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].count).toBe(2);
   });
 });
 
