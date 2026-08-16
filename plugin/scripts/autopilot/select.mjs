@@ -112,6 +112,20 @@ const KIND_PREFIX_RE = new RegExp(`^(${WORK_TYPES.join('|')})(\\([^)]*\\))?: (?!
  * (docs/spike — the only kinds `ratebudget.mjs`'s `estimateTicketCost` has a measured per-kind
  * cost for), else `null`. Never throws on a malformed `title` (non-string, `null`, `undefined`,
  * an object) — returns `null` instead, mirroring `parseBranch`'s fail-to-unknown contract.
+ *
+ * Trust boundary (#526 security pass): a ticket TITLE is editable by anyone with repo issue-
+ * write/triage access — a broader, DIFFERENT permission scope than the Projects-v2 board-write
+ * access required to move a ticket to `ready`. A mistitled ticket (e.g. a `docs:` prefix on
+ * genuinely contested code) therefore CAN under-price that ticket's rate-budget check. This is
+ * an accepted, bounded trust extension, not an oversight: (1) the ground-truth `remaining`
+ * reading is still a real `gh api rate_limit` call, never attacker-supplied — only the
+ * *threshold* is influenced, not the observation; (2) `UNATTRIBUTED_DRAIN_FLOOR`
+ * (`ratebudget.mjs`) still floors every known-kind estimate, so it can never collapse toward
+ * zero; (3) worst case is a degraded/exhausted-mid-delivery run (an availability/robustness
+ * hit on the autopilot loop itself), not data exposure or an auth bypass. Title text is now as
+ * trusted as `run.rateBudgetReadings`/`recentDeltas` for this one purpose — treat a change that
+ * widens `ticketKind`'s recognized vocabulary or removes the drain floor as a trust-boundary
+ * change, not a routine tweak.
  */
 export function ticketKind(title) {
   if (typeof title !== 'string') return null;
@@ -166,7 +180,7 @@ if (isMain) {
     if (process.argv.includes('--dry-run')) {
       const q = actionableQueue(tickets, { area, shape, pendingIssues });
       console.log(`\nqueue (${q.length})${shape ? ' — crazy mode (--shape)' : ''}:`);
-      for (const { ticket, action } of q) console.log(`  #${ticket.number} [${ticket.status}/${ticket.priority ?? '—'}] → ${action} — ${ticket.title}`);
+      for (const { ticket, action } of q) console.log(`  #${ticket.number} [${ticket.status}/${ticket.priority ?? '—'}${ticket.kind ? `/${ticket.kind}` : ''}] → ${action} — ${ticket.title}`);
     }
   });
 }

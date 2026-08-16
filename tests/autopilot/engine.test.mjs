@@ -1959,6 +1959,18 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
       expect(() => ticketKind(hugeTitle)).not.toThrow();
       expect(ticketKind(hugeTitle)).toBe('docs');
     });
+
+    it('SECURITY: a prototype-pollution-shaped kind string never reads Object.prototype through KIND_COST_ESTIMATES', () => {
+      // hasOwnProperty.call(KIND_COST_ESTIMATES, kind) must reject these — a plain object
+      // literal's only OWN keys are 'docs'/'spike', so none of these should ever short-circuit
+      // to a KIND_COST_ESTIMATES[kind] read (which would resolve to an inherited Object.prototype
+      // value/function instead of a number, corrupting the low-water threshold).
+      for (const evilKind of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+        expect(() => estimateTicketCost([975], evilKind)).not.toThrow();
+        expect(estimateTicketCost([975], evilKind)).toBe(975); // unknown-kind path, unaffected
+        expect(typeof estimateTicketCost([975], evilKind)).toBe('number');
+      }
+    });
   });
 });
 

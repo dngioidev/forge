@@ -103,6 +103,15 @@ export const MIN_PLAUSIBLE_DELTA = 500;
  * measured spike+docs-PR cost. Only these two kinds carry evidence — every
  * other WORK_TYPES prefix still falls through to the recentDeltas-based
  * estimate below unchanged (see `ticketKind` in `select.mjs`).
+ *
+ * Trust boundary (#526 security pass): `kind` originates from a ticket TITLE
+ * (`select.mjs` `ticketKind`), which is editable by anyone with repo issue-
+ * write/triage access — a broader scope than the board-write access needed
+ * to reach `ready`. A mistitled ticket can therefore steer this lookup. That
+ * is an accepted, bounded risk (see `ticketKind`'s own docblock for the full
+ * reasoning): the live `remaining` reading this feeds into is never
+ * attacker-controlled, and `UNATTRIBUTED_DRAIN_FLOOR` below still bounds how
+ * low a known-kind result can go.
  */
 export const KIND_COST_ESTIMATES = { docs: 975, spike: 3457 };
 
