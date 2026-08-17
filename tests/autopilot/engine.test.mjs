@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { selectNext, actionFor, actionableQueue, normalize, ticketKind } from '../../plugin/scripts/autopilot/select.mjs';
+import { selectNext, actionFor, actionableQueue, normalize, ticketKind, resolveExclusionSets } from '../../plugin/scripts/autopilot/select.mjs';
+import { recordDependency, pendingDependencies } from '../../plugin/scripts/lib/dependencies.mjs';
 import { WORK_TYPES } from '../../plugin/scripts/lib/ticket.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
 import {
@@ -119,6 +120,89 @@ describe('#499: selection consults pending decisions, not just board status', ()
 
   it('blocked status stays hard-excluded even with no pending decision (the blanket exclusion is deliberately retained, not dropped)', () => {
     expect(selectNext([t(1, 'blocked')], { pendingIssues: new Set() })).toBeNull();
+  });
+});
+
+describe('#487: a sequenced-behind triage verdict has a resting state selectNext honours', () => {
+  it('AC.1/AC.2 — the observed #449 loop: a shaped backlog ticket triage skipped with a sequencing verdict is NOT the next actionable ticket on the following pass', () => {
+    // #449's own shape: still `backlog`, shaped (readiness unaffected), but a
+    // dependency record now exists because triage concluded "sequenced behind #457".
+    const tickets = [t(449, 'backlog', 'p1')];
+    expect(selectNext(tickets, { dependencyIssues: new Set([449]) })).toBeNull();
+    // #457 lands (closes) → resolveDependencies clears the record → caller's
+    // dependencyIssues set no longer contains 449 → selectable again, same as before.
+    expect(selectNext(tickets, { dependencyIssues: new Set() }).ticket.number).toBe(449);
+    expect(selectNext(tickets).ticket.number).toBe(449); // dependencyIssues defaults to empty
+  });
+
+  it('AC.2: exclusion holds regardless of board status, not just backlog', () => {
+    for (const status of ['inProgress', 'inReview', 'ready', 'backlog']) {
+      expect(selectNext([t(1, status)], { dependencyIssues: new Set([1]) })).toBeNull();
+    }
+  });
+
+  it('a dependency record only excludes ITS OWN ticket, not others in the pool', () => {
+    const tickets = [t(1, 'ready', 'p0'), t(2, 'ready', 'p0')];
+    const pick = selectNext(tickets, { dependencyIssues: new Set([1]) });
+    expect(pick.ticket.number).toBe(2);
+  });
+
+  it('dependencyIssues is threaded in, never mutated or read from elsewhere — same Set, repeatable, pure (mirrors AC-499.4)', () => {
+    const dependencyIssues = new Set([9]);
+    const tickets = [t(9, 'backlog')];
+    expect(selectNext(tickets, { dependencyIssues })).toBeNull();
+    expect(selectNext(tickets, { dependencyIssues })).toBeNull(); // idempotent — no hidden state advances
+    expect(dependencyIssues).toEqual(new Set([9])); // untouched by the call
+  });
+
+  it('an empty/omitted dependencyIssues degrades safely — nothing is blocked and selection is unchanged (mirrors AC-499.3)', () => {
+    const tickets = [t(1, 'ready', 'p0'), t(2, 'backlog', 'p1')];
+    expect(selectNext(tickets, { dependencyIssues: new Set() }).ticket.number).toBe(1);
+    expect(selectNext(tickets).ticket.number).toBe(1);
+    expect(actionableQueue(tickets, { dependencyIssues: new Set() }).map((q) => q.ticket.number)).toEqual([1, 2]);
+  });
+
+  it('AC.4: a pending decision and a sequenced-behind dependency are distinct exclusion reasons — either alone excludes, and they compose', () => {
+    const tickets = [t(1, 'backlog'), t(2, 'backlog'), t(3, 'backlog')];
+    // ticket 1 excluded only via pendingIssues (a human decision), ticket 2 only via
+    // dependencyIssues (another ticket must land) — each store excludes independently
+    // of the other, and neither over- or under-excludes the ticket the OTHER store names.
+    const pick = selectNext(tickets, { pendingIssues: new Set([1]), dependencyIssues: new Set([2]) });
+    expect(pick.ticket.number).toBe(3);
+    expect(selectNext([t(1, 'backlog')], { pendingIssues: new Set([1]), dependencyIssues: new Set() })).toBeNull();
+    expect(selectNext([t(2, 'backlog')], { pendingIssues: new Set(), dependencyIssues: new Set([2]) })).toBeNull();
+  });
+});
+
+describe('#487 fix-wave (forge:reviewer round 1): --dry-run must change nothing', () => {
+  async function tmp() {
+    return mkdtemp(join(tmpdir(), 'forge-select-dryrun-'));
+  }
+
+  it('resolveExclusionSets({dryRun:true}) never calls gh and never clears a resolvable dependency — dryRun:false does both', async () => {
+    const cwd = await tmp();
+    await recordDependency(cwd, { issue: 449, dependsOn: 457, reason: 'sequenced behind #457' });
+    let ghCalls = 0;
+    const gh = async () => { ghCalls++; return { ok: true, json: { state: 'CLOSED' } }; };
+
+    const dry = await resolveExclusionSets(cwd, { gh, dryRun: true });
+    expect(ghCalls).toBe(0); // no network call under --dry-run
+    expect(dry.dependencyIssues.has(449)).toBe(true); // still excluded — nothing was cleared
+    expect(await pendingDependencies(cwd)).toHaveLength(1); // record untouched on disk
+
+    const live = await resolveExclusionSets(cwd, { gh, dryRun: false });
+    expect(ghCalls).toBe(1); // the real (non-dry-run) pass does call gh
+    expect(live.dependencyIssues.has(449)).toBe(false); // and clears the now-closed dependency
+    expect(await pendingDependencies(cwd)).toHaveLength(0);
+  });
+
+  it('resolveExclusionSets defaults dryRun to false (the pre-#487-fix-wave behaviour, unchanged for a caller that omits it)', async () => {
+    const cwd = await tmp();
+    await recordDependency(cwd, { issue: 1, dependsOn: 2 });
+    let ghCalls = 0;
+    const gh = async () => { ghCalls++; return { ok: true, json: { state: 'CLOSED' } }; };
+    await resolveExclusionSets(cwd, { gh });
+    expect(ghCalls).toBe(1);
   });
 });
 

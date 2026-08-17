@@ -11,6 +11,7 @@ import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { isShaped } from './readiness.mjs';
 import { pendingDecisions } from '../lib/situation.mjs';
+import { pendingDependencies, resolveDependencies } from '../lib/dependencies.mjs';
 import { WORK_TYPES } from '../lib/ticket.mjs';
 
 // Tier: lower runs first. Resume-in-flight beats fresh work; ready beats backlog.
@@ -60,12 +61,25 @@ export function actionFor(status, { shape = false, ready = null } = {}) {
  * its usual shadow. Callers build this set from `pendingDecisions()`
  * (`lib/situation.mjs`), which already degrades a missing/unreadable
  * `.forge/decisions/` to "no pending decisions" (AC-499.3).
+ *
+ * `dependencyIssues` (#487 AC.1/AC.2): a `Set<number>` of tickets carrying an
+ * unresolved entry in `.forge/autopilot/dependencies/` — a "sequenced behind
+ * #N" triage verdict, threaded in by the caller from `lib/dependencies.mjs`
+ * `pendingDependencies()` the same way `pendingIssues` is threaded in from
+ * `pendingDecisions()` (never read from disk here — same hermetic/pure
+ * contract). Kept as a DISTINCT parameter from `pendingIssues` rather than
+ * merged into it (AC.4): the two exclusion reasons have different unblock
+ * mechanics — a pending decision needs a human answer (`forge-decisions`
+ * monitor), a dependency clears automatically once `dependsOn` closes
+ * (`resolveDependencies`, checked every `select.mjs` invocation) — so a
+ * reader/tester can always tell which store excluded a given ticket.
  */
-export function selectNext(tickets, { area = null, shape = false, pendingIssues = new Set() } = {}) {
+export function selectNext(tickets, { area = null, shape = false, pendingIssues = new Set(), dependencyIssues = new Set() } = {}) {
   const actionable = tickets
     .filter((t) => !SKIP.has(t.status) && TIER[t.status] !== undefined)
     .filter((t) => !UMBRELLA_TYPES.has(t.type)) // #175: umbrella items are containers, never deliverable
     .filter((t) => !pendingIssues.has(t.number)) // #499 AC-499.1: pending decision excludes regardless of status
+    .filter((t) => !dependencyIssues.has(t.number)) // #487 AC.1/AC.2: sequenced-behind dependency excludes regardless of status
     .filter((t) => (area ? t.area === area : true))
     .sort((a, b) =>
       (TIER[a.status] - TIER[b.status]) ||
@@ -183,6 +197,37 @@ export function normalize(ctx, item) {
   };
 }
 
+/**
+ * The two exclusion sets `selectNext` needs, gathered in one place so the CLI
+ * main below stays thin (#487 fix-wave — forge:reviewer round 1 caught the
+ * mutating `resolveDependencies` call running unconditionally ahead of the
+ * `--dry-run` gate; extracting this made the ordering unit-testable without
+ * standing up a full `makeBoardCtx`).
+ *
+ * `--dry-run`'s own documented contract (§ Selection) is "change nothing":
+ * `resolveDependencies` performs real `gh issue view` calls AND deletes
+ * on-disk records, so it is skipped entirely under `dryRun` — the set is
+ * still built from whatever `pendingDependencies` currently holds, just
+ * without the mutating re-check first (a dry-run may show a ticket parked
+ * one pass longer than a live run would, never the reverse).
+ */
+export async function resolveExclusionSets(cwd, { gh, dryRun = false } = {}) {
+  // #499 AC-499.1: exclude any ticket with a pending decision, independent of board status.
+  const pending = await pendingDecisions(cwd);
+  // Number(): a hand-edited/migrated decision file's `issue` isn't schema-enforced the
+  // way the CLI/MCP writers are (Number.isInteger / {type:'integer'}) — normalize so a
+  // stray string id can't silently fail the Set.has() match below and fail OPEN (#499 security pass).
+  const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
+  // #487 AC.3: re-check every recorded "sequenced behind #N" dependency FIRST, so a
+  // dependency that closed since the last pass is discovered and cleared before this
+  // pass's selection reads the store — the ticket becomes selectable again the very
+  // iteration its blocker lands, not one pass late. Skipped under --dry-run (see above).
+  if (!dryRun) await resolveDependencies(cwd, { gh });
+  const dependencies = await pendingDependencies(cwd);
+  const dependencyIssues = new Set(dependencies.map((d) => Number(d.issue)));
+  return { pendingIssues, dependencyIssues };
+}
+
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isMain) {
   const gh = makeGh(run);
@@ -191,6 +236,7 @@ if (isMain) {
     const area = process.argv.includes('--area') ? process.argv[process.argv.indexOf('--area') + 1] : null;
     if (area && !ctx.fields.area) console.warn(`autopilot: --area ${area} given but this board has no Area field — forge:init maps one when the project has an "Area" single-select; nothing will match until then.`);
     const shape = process.argv.includes('--shape'); // crazy mode
+    const dryRun = process.argv.includes('--dry-run');
     const list = await ctx.listItems();
     if (!list.ok) { console.error(list.error); process.exit(1); }
     const tickets = list.items.map((i) => normalize(ctx, i)).filter((t) => t.number != null);
@@ -202,17 +248,12 @@ if (isMain) {
       const view = await ctx.gh(['issue', 'view', String(t.number), '--json', 'body'], { parseJson: true });
       t.ready = view.ok ? isShaped(view.json?.body, ctx.config) : null;
     }
-    // #499 AC-499.1: exclude any ticket with a pending decision, independent of board status.
-    const pending = await pendingDecisions(ctx.cwd);
-    // Number(): a hand-edited/migrated decision file's `issue` isn't schema-enforced the
-    // way the CLI/MCP writers are (Number.isInteger / {type:'integer'}) — normalize so a
-    // stray string id can't silently fail the Set.has() match below and fail OPEN (#499 security pass).
-    const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
-    const next = selectNext(tickets, { area, shape, pendingIssues });
+    const { pendingIssues, dependencyIssues } = await resolveExclusionSets(ctx.cwd, { gh: ctx.gh, dryRun });
+    const next = selectNext(tickets, { area, shape, pendingIssues, dependencyIssues });
     if (!next) { console.log('autopilot: no actionable ticket — board is clear'); process.exit(0); }
     console.log(`next: #${next.ticket.number} [${next.ticket.status}/${next.ticket.priority ?? '—'}] → ${next.action} — ${next.ticket.title}`);
-    if (process.argv.includes('--dry-run')) {
-      const q = actionableQueue(tickets, { area, shape, pendingIssues });
+    if (dryRun) {
+      const q = actionableQueue(tickets, { area, shape, pendingIssues, dependencyIssues });
       console.log(`\nqueue (${q.length})${shape ? ' — crazy mode (--shape)' : ''}:`);
       for (const { ticket, action } of q) console.log(`  #${ticket.number} [${ticket.status}/${ticket.priority ?? '—'}${ticket.kind ? `/${ticket.kind}` : ''}] → ${action} — ${ticket.title}`);
     }
