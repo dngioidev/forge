@@ -133,5 +133,24 @@ input sizes the original test measured (150000 and 300000 quote-pairs). This:
 - **Keeps both measured sizes** (not collapsed to one), so a regression that
   only shows up at scale still has something to blow up against — the only
   thing removed is the division between them.
-- **No test deleted, no assertion weakened, no coverage of the regression
-  class dropped** — AC.4 is satisfied by construction, not by omission.
+- **No test deleted, no assertion weakened, and the #452 quadratic-regression
+  class this test exists to pin is still caught** — AC.4 is satisfied by
+  construction for that class, not by omission.
+
+**Named tradeoff (found by the adversarial `forge:security` pass on this
+ticket's branch, not glossed over).** The old ratio, on the runs where it
+didn't flake, was *incidentally* more sensitive than a fixed ceiling to a
+*milder*, sub-catastrophic superlinear regression (something like O(n^1.2))
+that stays comfortably under 2000ms at these two fixed sample sizes but would
+still have nudged the ratio upward. The new assertion, by design, only fires
+reliably on the catastrophic end of the spectrum the #452 bug actually
+occupied (7s/32s vs. a 2000ms ceiling — multiple orders of magnitude of
+margin). This is accepted, not accidental: a test sensitive enough to catch
+that intermediate band from two fixed-size samples is inherently noise-prone
+— that sensitivity is exactly the mechanism AC.1 diagnosed as the flake's
+cause, so keeping it would trade the flake for a different flake. Catching a
+milder superlinear drift, if ever wanted, belongs to a differently-shaped
+test (e.g. more sample points, or a dedicated algorithmic-complexity check on
+`normalizeShellText()` directly) — out of scope for a flake fix, and not what
+AC.4's "no reduction in coverage of the regression class" was written to
+promise beyond the class the test was actually built for.
