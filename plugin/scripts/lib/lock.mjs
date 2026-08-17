@@ -154,7 +154,12 @@ const RECLAIM_MARKER_STALE_MS = 30_000;
  */
 async function reclaimStaleLock(path, { pid, hostname, now, staleMs, isAlive, _beforeMarkerAttempt }) {
   const marker = `${path}.reclaiming`;
-  await _beforeMarkerAttempt?.(); // test-only seam (#482) — never set by real callers
+  // Test-only seam (#482), hardened per security review: gated on `VITEST`
+  // (set automatically by the test runner) so a future consumer that merges
+  // external/CLI-derived config into `acquireLock`'s options bag can't
+  // accidentally wire an arbitrary async callback into this locking
+  // primitive outside of tests.
+  if (process.env.VITEST) await _beforeMarkerAttempt?.();
   let markerHandle;
   try {
     markerHandle = await open(marker, 'wx');
@@ -209,11 +214,12 @@ async function reclaimStaleLock(path, { pid, hostname, now, staleMs, isAlive, _b
  *
  * `_beforeMarkerAttempt` is a test-only seam (#482): an optional hook invoked
  * inside `reclaimStaleLock`, right before every attempt (including retries)
- * to grab the `.reclaiming` marker. Real callers never set it; it exists so
- * a test can deterministically pause one racer there while a second,
- * independent reclaim of the same lock runs to completion, exercising the
- * bug-3 race window (see `reclaimStaleLock`'s doc comment) without relying
- * on scheduling luck.
+ * to grab the `.reclaiming` marker, but ONLY when `process.env.VITEST` is
+ * set — never under a real run, even if a future caller mistakenly passes
+ * it. Real callers never set it; it exists so a test can deterministically
+ * pause one racer there while a second, independent reclaim of the same
+ * lock runs to completion, exercising the bug-3 race window (see
+ * `reclaimStaleLock`'s doc comment) without relying on scheduling luck.
  */
 export async function acquireLock(path, { pid = process.pid, hostname = osHostname(), now = Date.now, staleMs = DEFAULT_STALE_MS, isAlive = isProcessAlive, _beforeMarkerAttempt } = {}) {
   await mkdir(dirname(path), { recursive: true });
