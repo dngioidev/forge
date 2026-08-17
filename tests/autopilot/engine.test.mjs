@@ -122,6 +122,57 @@ describe('#499: selection consults pending decisions, not just board status', ()
   });
 });
 
+describe('#487: a sequenced-behind triage verdict has a resting state selectNext honours', () => {
+  it('AC.1/AC.2 — the observed #449 loop: a shaped backlog ticket triage skipped with a sequencing verdict is NOT the next actionable ticket on the following pass', () => {
+    // #449's own shape: still `backlog`, shaped (readiness unaffected), but a
+    // dependency record now exists because triage concluded "sequenced behind #457".
+    const tickets = [t(449, 'backlog', 'p1')];
+    expect(selectNext(tickets, { dependencyIssues: new Set([449]) })).toBeNull();
+    // #457 lands (closes) → resolveDependencies clears the record → caller's
+    // dependencyIssues set no longer contains 449 → selectable again, same as before.
+    expect(selectNext(tickets, { dependencyIssues: new Set() }).ticket.number).toBe(449);
+    expect(selectNext(tickets).ticket.number).toBe(449); // dependencyIssues defaults to empty
+  });
+
+  it('AC.2: exclusion holds regardless of board status, not just backlog', () => {
+    for (const status of ['inProgress', 'inReview', 'ready', 'backlog']) {
+      expect(selectNext([t(1, status)], { dependencyIssues: new Set([1]) })).toBeNull();
+    }
+  });
+
+  it('a dependency record only excludes ITS OWN ticket, not others in the pool', () => {
+    const tickets = [t(1, 'ready', 'p0'), t(2, 'ready', 'p0')];
+    const pick = selectNext(tickets, { dependencyIssues: new Set([1]) });
+    expect(pick.ticket.number).toBe(2);
+  });
+
+  it('dependencyIssues is threaded in, never mutated or read from elsewhere — same Set, repeatable, pure (mirrors AC-499.4)', () => {
+    const dependencyIssues = new Set([9]);
+    const tickets = [t(9, 'backlog')];
+    expect(selectNext(tickets, { dependencyIssues })).toBeNull();
+    expect(selectNext(tickets, { dependencyIssues })).toBeNull(); // idempotent — no hidden state advances
+    expect(dependencyIssues).toEqual(new Set([9])); // untouched by the call
+  });
+
+  it('an empty/omitted dependencyIssues degrades safely — nothing is blocked and selection is unchanged (mirrors AC-499.3)', () => {
+    const tickets = [t(1, 'ready', 'p0'), t(2, 'backlog', 'p1')];
+    expect(selectNext(tickets, { dependencyIssues: new Set() }).ticket.number).toBe(1);
+    expect(selectNext(tickets).ticket.number).toBe(1);
+    expect(actionableQueue(tickets, { dependencyIssues: new Set() }).map((q) => q.ticket.number)).toEqual([1, 2]);
+  });
+
+  it('AC.4: a pending decision and a sequenced-behind dependency are distinct exclusion reasons — either alone excludes, and they compose', () => {
+    const tickets = [t(1, 'backlog'), t(2, 'backlog'), t(3, 'backlog')];
+    // ticket 1 excluded only via pendingIssues (a human decision), ticket 2 only via
+    // dependencyIssues (another ticket must land) — each store excludes independently
+    // of the other, and neither over- or under-excludes the ticket the OTHER store names.
+    const pick = selectNext(tickets, { pendingIssues: new Set([1]), dependencyIssues: new Set([2]) });
+    expect(pick.ticket.number).toBe(3);
+    expect(selectNext([t(1, 'backlog')], { pendingIssues: new Set([1]), dependencyIssues: new Set() })).toBeNull();
+    expect(selectNext([t(2, 'backlog')], { pendingIssues: new Set(), dependencyIssues: new Set([2]) })).toBeNull();
+  });
+});
+
 describe('umbrella-type exclusion (#175, AC1/AC2)', () => {
   const u = (number, status, type) => ({ ...t(number, status), type });
 

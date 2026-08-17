@@ -11,6 +11,7 @@ import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { isShaped } from './readiness.mjs';
 import { pendingDecisions } from '../lib/situation.mjs';
+import { pendingDependencies, resolveDependencies } from '../lib/dependencies.mjs';
 import { WORK_TYPES } from '../lib/ticket.mjs';
 
 // Tier: lower runs first. Resume-in-flight beats fresh work; ready beats backlog.
@@ -60,12 +61,25 @@ export function actionFor(status, { shape = false, ready = null } = {}) {
  * its usual shadow. Callers build this set from `pendingDecisions()`
  * (`lib/situation.mjs`), which already degrades a missing/unreadable
  * `.forge/decisions/` to "no pending decisions" (AC-499.3).
+ *
+ * `dependencyIssues` (#487 AC.1/AC.2): a `Set<number>` of tickets carrying an
+ * unresolved entry in `.forge/autopilot/dependencies/` — a "sequenced behind
+ * #N" triage verdict, threaded in by the caller from `lib/dependencies.mjs`
+ * `pendingDependencies()` the same way `pendingIssues` is threaded in from
+ * `pendingDecisions()` (never read from disk here — same hermetic/pure
+ * contract). Kept as a DISTINCT parameter from `pendingIssues` rather than
+ * merged into it (AC.4): the two exclusion reasons have different unblock
+ * mechanics — a pending decision needs a human answer (`forge-decisions`
+ * monitor), a dependency clears automatically once `dependsOn` closes
+ * (`resolveDependencies`, checked every `select.mjs` invocation) — so a
+ * reader/tester can always tell which store excluded a given ticket.
  */
-export function selectNext(tickets, { area = null, shape = false, pendingIssues = new Set() } = {}) {
+export function selectNext(tickets, { area = null, shape = false, pendingIssues = new Set(), dependencyIssues = new Set() } = {}) {
   const actionable = tickets
     .filter((t) => !SKIP.has(t.status) && TIER[t.status] !== undefined)
     .filter((t) => !UMBRELLA_TYPES.has(t.type)) // #175: umbrella items are containers, never deliverable
     .filter((t) => !pendingIssues.has(t.number)) // #499 AC-499.1: pending decision excludes regardless of status
+    .filter((t) => !dependencyIssues.has(t.number)) // #487 AC.1/AC.2: sequenced-behind dependency excludes regardless of status
     .filter((t) => (area ? t.area === area : true))
     .sort((a, b) =>
       (TIER[a.status] - TIER[b.status]) ||
@@ -208,11 +222,18 @@ if (isMain) {
     // way the CLI/MCP writers are (Number.isInteger / {type:'integer'}) — normalize so a
     // stray string id can't silently fail the Set.has() match below and fail OPEN (#499 security pass).
     const pendingIssues = new Set(pending.map((d) => Number(d.issue)));
-    const next = selectNext(tickets, { area, shape, pendingIssues });
+    // #487 AC.3: re-check every recorded "sequenced behind #N" dependency FIRST, so a
+    // dependency that closed since the last pass is discovered and cleared before this
+    // pass's selection reads the store — the ticket becomes selectable again the very
+    // iteration its blocker lands, not one pass late.
+    await resolveDependencies(ctx.cwd, { gh: ctx.gh });
+    const dependencies = await pendingDependencies(ctx.cwd);
+    const dependencyIssues = new Set(dependencies.map((d) => Number(d.issue)));
+    const next = selectNext(tickets, { area, shape, pendingIssues, dependencyIssues });
     if (!next) { console.log('autopilot: no actionable ticket — board is clear'); process.exit(0); }
     console.log(`next: #${next.ticket.number} [${next.ticket.status}/${next.ticket.priority ?? '—'}] → ${next.action} — ${next.ticket.title}`);
     if (process.argv.includes('--dry-run')) {
-      const q = actionableQueue(tickets, { area, shape, pendingIssues });
+      const q = actionableQueue(tickets, { area, shape, pendingIssues, dependencyIssues });
       console.log(`\nqueue (${q.length})${shape ? ' — crazy mode (--shape)' : ''}:`);
       for (const { ticket, action } of q) console.log(`  #${ticket.number} [${ticket.status}/${ticket.priority ?? '—'}${ticket.kind ? `/${ticket.kind}` : ''}] → ${action} — ${ticket.title}`);
     }

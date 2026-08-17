@@ -10,7 +10,7 @@ describe('forge:triage skill (#469, AC-1/AC-2/AC-3/AC-4/AC-5)', () => {
   it('AC-1: gains a Report contract section with the exact terminal JSON shape', async () => {
     const s = await read('plugin/skills/triage/SKILL.md');
     expect(s).toMatch(/^## Report contract$/m);
-    expect(s).toContain('{"issue":<n>,"verdict":"pass|fail","outcome":"ready|escalated"}');
+    expect(s).toContain('{"issue":<n>,"verdict":"pass|fail","outcome":"ready|escalated|skipped","sequencedBehind":<n>|null,"reason":<string>|null}');
   });
 
   it('AC-2: documents verdict:pass -> outcome:ready re-entering the autopilot queue via ledger.mjs applyOutcome stage:triage', async () => {
@@ -33,7 +33,7 @@ describe('forge:triage skill (#469, AC-1/AC-2/AC-3/AC-4/AC-5)', () => {
     // Re-assert both load-bearing strings directly (independent of the AC-1 test)
     // so this test alone pins the contract per the ticket's own wording.
     expect(s).toMatch(/## Report contract/);
-    expect(s).toContain('{"issue":<n>,"verdict":"pass|fail","outcome":"ready|escalated"}');
+    expect(s).toContain('{"issue":<n>,"verdict":"pass|fail","outcome":"ready|escalated|skipped","sequencedBehind":<n>|null,"reason":<string>|null}');
     // placed at the end of the file, same placement as shape/SKILL.md's own section:
     // no other '## ' heading follows it.
     const headings = [...s.matchAll(/^## .+$/gm)].map((m) => m[0]);
@@ -47,5 +47,28 @@ describe('forge:triage skill (#469, AC-1/AC-2/AC-3/AC-4/AC-5)', () => {
       expect(OUTCOMES, 'ledger.mjs OUTCOMES').toContain(outcome);
       expect(RESOLVED_OUTCOMES, 'watchdog.mjs RESOLVED_OUTCOMES').toContain(outcome);
     }
+  });
+});
+
+describe('forge:triage skill (#487) — the third pairing: verdict:pass -> outcome:skipped (sequenced behind)', () => {
+  it('documents verdict:pass -> outcome:skipped, distinct from both ready and escalated, carrying sequencedBehind/reason', async () => {
+    const s = await read('plugin/skills/triage/SKILL.md');
+    expect(s).toMatch(/`verdict:"pass"`\s*→\s*`outcome:"skipped"`/);
+    expect(s).toMatch(/sequencedBehind/);
+    expect(s).toMatch(/recordDependency/);
+    // never a product decision — this is triage's own ordering call, not an escalation trigger
+    expect(s).toMatch(/not a product decision/i);
+  });
+
+  it('warns against misusing skipped for anything other than a pollable work-ordering dependency', async () => {
+    const s = await read('plugin/skills/triage/SKILL.md');
+    expect(s).toMatch(/Never use `outcome:"skipped"`/);
+  });
+
+  it('runtime contract: ledger.mjs OUTCOMES and watchdog.mjs RESOLVED_OUTCOMES both already admit skipped (no code change needed for this pairing to be recordable)', async () => {
+    const { OUTCOMES } = await import('../../plugin/scripts/autopilot/ledger.mjs');
+    const { RESOLVED_OUTCOMES } = await import('../../plugin/scripts/autopilot/watchdog.mjs');
+    expect(OUTCOMES, 'ledger.mjs OUTCOMES').toContain('skipped');
+    expect(RESOLVED_OUTCOMES, 'watchdog.mjs RESOLVED_OUTCOMES').toContain('skipped');
   });
 });
