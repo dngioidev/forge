@@ -137,9 +137,29 @@ const RECLAIM_MARKER_STALE_MS = 30_000;
  *    `open(path,'w')` (create-or-truncate, non-exclusive — safe here
  *    specifically because the marker already proved sole reclaimer status),
  *    with no unlink/recreate gap in between.
+ * 3. (found via #482 — flaky on GitHub-hosted Windows CI, empirically
+ *    reproduced locally under heavier concurrency than the original test
+ *    used) The marker only proves no OTHER caller is inside this critical
+ *    section AT THE SAME TIME — it says nothing about whether `path` is
+ *    STILL the stale lock this caller originally observed. A straggler that
+ *    read the same originally-stale `path` before a faster racer finished
+ *    can win the marker AFTER that racer has already written its own fresh
+ *    lock and released the marker, then (pre-fix) blindly overwrote it —
+ *    two "winners" again, just via a slower interleaving than bug 1's.
+ *    Fixed by re-reading and re-validating `path` for staleness (with the
+ *    caller's own `staleMs`/`isAlive`) immediately after winning the marker
+ *    and before overwriting — if it's no longer stale, someone else already
+ *    reclaimed it while this caller was racing to get here, so this caller
+ *    backs off with `{ok:false, heldBy}` instead of clobbering it.
  */
-async function reclaimStaleLock(path, { pid, hostname, now }) {
+async function reclaimStaleLock(path, { pid, hostname, now, staleMs, isAlive, _beforeMarkerAttempt }) {
   const marker = `${path}.reclaiming`;
+  // Test-only seam (#482), hardened per security review: gated on `VITEST`
+  // (set automatically by the test runner) so a future consumer that merges
+  // external/CLI-derived config into `acquireLock`'s options bag can't
+  // accidentally wire an arbitrary async callback into this locking
+  // primitive outside of tests.
+  if (process.env.VITEST) await _beforeMarkerAttempt?.();
   let markerHandle;
   try {
     markerHandle = await open(marker, 'wx');
@@ -159,11 +179,19 @@ async function reclaimStaleLock(path, { pid, hostname, now }) {
       return { ok: false, error: `lock ${path} — a concurrent reclaim is already in progress` };
     }
     await unlink(marker).catch(() => {});
-    return reclaimStaleLock(path, { pid, hostname, now });
+    return reclaimStaleLock(path, { pid, hostname, now, staleMs, isAlive, _beforeMarkerAttempt });
   }
   try {
     await markerHandle.close();
-    const handle = await open(path, 'w'); // exclusively-marked reclaimer — safe to overwrite, `path` never goes missing
+    // Bug 3 fix: re-validate `path` is STILL stale before overwriting — the
+    // marker only guarantees exclusivity among callers racing RIGHT NOW, not
+    // that nobody already finished reclaiming this exact lock in the time it
+    // took this caller to get here (see doc comment above).
+    const current = await readLock(path);
+    if (!isStale(current, { now: now(), staleMs, isAlive })) {
+      return { ok: false, error: `lock ${path} held by pid ${current?.pid ?? '?'} (${current?.hostname ?? 'unknown host'})`, heldBy: current };
+    }
+    const handle = await open(path, 'w'); // exclusively-marked reclaimer, freshness re-checked above — safe to overwrite, `path` never goes missing
     try {
       await handle.writeFile(lockContents(pid, hostname, now()), 'utf8');
     } finally {
@@ -183,8 +211,17 @@ async function reclaimStaleLock(path, { pid, hostname, now }) {
  * than wedging forever on a crashed holder. `release()` on the success result
  * is idempotent and safe to call from a `finally` even if the file is already
  * gone.
+ *
+ * `_beforeMarkerAttempt` is a test-only seam (#482): an optional hook invoked
+ * inside `reclaimStaleLock`, right before every attempt (including retries)
+ * to grab the `.reclaiming` marker, but ONLY when `process.env.VITEST` is
+ * set — never under a real run, even if a future caller mistakenly passes
+ * it. Real callers never set it; it exists so a test can deterministically
+ * pause one racer there while a second, independent reclaim of the same
+ * lock runs to completion, exercising the bug-3 race window (see
+ * `reclaimStaleLock`'s doc comment) without relying on scheduling luck.
  */
-export async function acquireLock(path, { pid = process.pid, hostname = osHostname(), now = Date.now, staleMs = DEFAULT_STALE_MS, isAlive = isProcessAlive } = {}) {
+export async function acquireLock(path, { pid = process.pid, hostname = osHostname(), now = Date.now, staleMs = DEFAULT_STALE_MS, isAlive = isProcessAlive, _beforeMarkerAttempt } = {}) {
   await mkdir(dirname(path), { recursive: true });
   let handle;
   try {
@@ -195,7 +232,7 @@ export async function acquireLock(path, { pid = process.pid, hostname = osHostna
     if (!isStale(existing, { now: now(), staleMs, isAlive })) {
       return { ok: false, error: `lock ${path} held by pid ${existing?.pid ?? '?'} (${existing?.hostname ?? 'unknown host'})`, heldBy: existing };
     }
-    const reclaimed = await reclaimStaleLock(path, { pid, hostname, now });
+    const reclaimed = await reclaimStaleLock(path, { pid, hostname, now, staleMs, isAlive, _beforeMarkerAttempt });
     if (!reclaimed.ok) return reclaimed;
     return releasable(path);
   }
