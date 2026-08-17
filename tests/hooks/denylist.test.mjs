@@ -160,7 +160,7 @@ describe('denylist hook (AC-3.4)', () => {
     expect(check(123).blocked).toBe(false);
   });
 
-  it('AC-3.4: normalisation stays linear on large, quote-heavy input', () => {
+  it('AC-3.4/AC-486.2/AC-486.4: normalisation stays fast on large, quote-heavy input (absolute ceiling, not a ratio — #486)', () => {
     // A hang is as much a failure of this hook as a miss: it runs on every
     // Bash call, and agy's PreToolUse timeout FAILS OPEN at ten seconds (#428),
     // so a slow check is a skipped check. This nearly shipped — asking a
@@ -170,9 +170,33 @@ describe('denylist hook (AC-3.4)', () => {
     // no adversarial shape needed — a long JSON payload in a `curl -d` has
     // exactly the alternating quote/text pattern that triggers it.
     //
-    // Asserted as a SCALING property rather than a fixed millisecond budget,
-    // so it stays meaningful on slower CI hardware: quadratic behaviour shows
-    // up as ~4x per doubling, linear as ~2x.
+    // #486 — this used to assert a SCALING RATIO (large/small < 3) instead of
+    // a fixed budget, reasoning that a ratio would stay meaningful across
+    // hardware speeds. In practice it flaked on GitHub-hosted CI runners: the
+    // "small" sample is the fast, ~30-90ms end of the measurement, so a
+    // single scheduler stall or GC pause landing inside JUST that window (not
+    // the large one) can shrink the denominator enough to push the ratio past
+    // 3 with no regression present at all — quantified locally (8 runs on
+    // ordinary dev hardware, not even shared-tenancy CI) at a 1.26-2.72
+    // observed range against a threshold of 3, i.e. already close on a quiet
+    // machine. A ratio of two wall-clock samples is fundamentally the wrong
+    // shape for CI: it is MORE sensitive to jitter than either sample alone,
+    // because jitter in the smaller, faster measurement is amplified rather
+    // than absorbed.
+    //
+    // Fixed per the policy this ticket names (see
+    // docs/plans/2026-08-17-486-timing-assertion-ci-policy.md, and #448's
+    // AC-448.3 for the reference implementation this follows): assert
+    // ABSOLUTE wall-clock ceilings, generous enough to swallow ordinary CI
+    // jitter, but still tight enough to catch the real regression class. The
+    // margin here is enormous in both directions — observed linear time on
+    // this machine is ~30-90ms, pre-fix quadratic time for the same sizes was
+    // 7s/32s — so a 2000ms ceiling (the same value the sibling JSON-payload
+    // assertion below already uses) has ~20x headroom over normal runs while
+    // still failing hard, and fast, on a quadratic regression. Two sizes are
+    // still measured (not collapsed to one) so a regression that only shows
+    // up at scale still has something to blow up against, without ever
+    // dividing one sample by another.
     const timeFor = (pairs) => {
       const cmd = `echo ${'"a"a'.repeat(pairs)}`;
       const started = Date.now();
@@ -180,9 +204,10 @@ describe('denylist hook (AC-3.4)', () => {
       return Date.now() - started;
     };
     timeFor(20000); // warm up, so JIT does not skew the first sample
-    const small = Math.max(timeFor(150000), 1);
-    const large = Math.max(timeFor(300000), 1);
-    expect(large / small, 'doubling the input must not quadruple the time').toBeLessThan(3);
+    const small = timeFor(150000);
+    expect(small, `${150000}-pair input took ${small}ms`).toBeLessThan(2000);
+    const large = timeFor(300000);
+    expect(large, `${300000}-pair input took ${large}ms`).toBeLessThan(2000);
     // ...and a realistically-shaped quote-heavy payload stays quick outright.
     const json = Array.from({ length: 20000 }, (_, i) => `"k${i}":"v${i}"`).join(',');
     const started = Date.now();
