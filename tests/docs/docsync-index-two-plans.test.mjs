@@ -16,7 +16,13 @@ describe('#535 — docsync: two plan docs not linked in docs/README.md', () => {
   });
 
   it('AC-535.2: the real doc-sync gate passes clean against this repo', async () => {
-    const res = await runDocSync({ cwd: repoRoot, log: () => {} });
+    // Stub execFn (matches the AC-309 tests' `noAdds` convention below): the
+    // added-skills diff step is irrelevant to this fix and depends on a local
+    // `main` ref, which CI's shallow single-branch checkout does not have
+    // (actions/checkout defaults to fetch-depth 1, no other refs fetched) —
+    // real git would fail here in CI with "unknown revision: main...HEAD".
+    const noAdds = async () => ({ ok: true, stdout: '', stderr: '' });
+    const res = await runDocSync({ cwd: repoRoot, execFn: noAdds, log: () => {} });
     expect(res.ok).toBe(true);
     expect(res.routeGaps).toEqual([]);
   });
