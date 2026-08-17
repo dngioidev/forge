@@ -47,12 +47,30 @@
  * "poll an issue number" before it could cover it too.
  */
 import { readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { readJson, writeJson } from './jsonfile.mjs';
+import { run, makeGh } from './exec.mjs';
 
 export const DEPENDENCIES_RELDIR = join('.forge', 'autopilot', 'dependencies');
 
+/**
+ * #487 security fix-wave (forge:security): `issue` reaches this join()
+ * unvalidated on every prior draft — a non-integer value (e.g. a triage
+ * subagent's malformed/adversarial `issue`/`sequencedBehind` field, echoed
+ * straight through by a future caller that doesn't itself validate) turns
+ * into a path-traversal write ('../../../../Windows/Temp/pwned' resolves
+ * OUTSIDE `.forge/autopilot/dependencies/`, and `writeJson`'s `mkdir`+write
+ * creates it unconditionally). Every path built from a caller-supplied issue
+ * number now funnels through this single validated constructor — mirrors
+ * `board/escalate.mjs`'s `Number.isInteger(args.issue)` gate for the sibling
+ * `.forge/decisions/` store, applied here at the lowest common point (not
+ * just at one call site) so no future caller of `fileFor` can bypass it.
+ */
 function fileFor(cwd, issue) {
+  if (!Number.isInteger(issue) || issue <= 0) {
+    throw new Error(`dependencies.mjs: issue must be a positive integer, got ${JSON.stringify(issue)}`);
+  }
   return join(cwd, DEPENDENCIES_RELDIR, `${issue}.json`);
 }
 
@@ -63,10 +81,20 @@ function fileFor(cwd, issue) {
  * reaching the same verdict is idempotent, and one reaching a *different*
  * verdict (a different blocking ticket, or a revised reason) naturally
  * supersedes the stale record instead of accumulating stale duplicates.
+ *
+ * Throws on a non-integer `issue`/`dependsOn` — same fail-closed posture as
+ * `fileFor` (`issue` goes through it directly; `dependsOn` is validated here
+ * too, since it never touches `fileFor` but IS later interpolated into a
+ * `gh issue view <dependsOn>` argv element by `resolveDependencies` and
+ * persisted to disk — reject it at the point of entry rather than letting a
+ * malformed value travel through the store unnoticed).
  */
 export async function recordDependency(cwd, { issue, dependsOn, reason = null }) {
+  if (!Number.isInteger(dependsOn) || dependsOn <= 0) {
+    throw new Error(`dependencies.mjs: dependsOn must be a positive integer, got ${JSON.stringify(dependsOn)}`);
+  }
   const record = { issue, dependsOn, reason, recordedAt: new Date().toISOString() };
-  await writeJson(fileFor(cwd, issue), record);
+  await writeJson(fileFor(cwd, issue), record); // fileFor validates `issue`
   return record;
 }
 
@@ -85,6 +113,18 @@ export async function clearDependency(cwd, issue) {
  * individual record file: same degrade-safely posture as `lib/situation.mjs`
  * `pendingDecisions` — a hand-edited or half-written record must not crash
  * selection, it is simply skipped rather than propagating.
+ *
+ * A record whose embedded `issue` field doesn't match the filename it was
+ * read from is ALSO treated as corrupt and skipped (#487 fix-wave,
+ * forge:reviewer round 1): `clearDependency`/`resolveDependencies` delete by
+ * the embedded `issue`, reconstructing the path via `fileFor` rather than
+ * unlinking the exact file this function read — a mismatch (only reachable
+ * via manual tampering/a renamed file today, since `recordDependency` always
+ * writes `<issue>.json` using that same `issue`) would otherwise leave the
+ * real file on disk forever while `resolveDependencies` reports it cleared,
+ * permanently re-excluding a ticket with no visible trace. Filtering it out
+ * here — before it ever reaches `resolveDependencies`/`selectNext` — closes
+ * that gap at the read boundary instead of trusting the two to stay in sync.
  */
 export async function pendingDependencies(cwd) {
   const dir = join(cwd, DEPENDENCIES_RELDIR);
@@ -98,7 +138,10 @@ export async function pendingDependencies(cwd) {
   for (const f of files.filter((f) => f.endsWith('.json'))) {
     try {
       const d = await readJson(join(dir, f));
-      if (d && Number.isInteger(d.issue) && Number.isInteger(d.dependsOn)) records.push(d);
+      const stem = f.slice(0, -'.json'.length);
+      if (d && Number.isInteger(d.issue) && Number.isInteger(d.dependsOn) && String(d.issue) === stem) {
+        records.push(d);
+      }
     } catch { /* unreadable/corrupt record — ignore, same tolerance as pendingDecisions */ }
   }
   return records;
@@ -125,6 +168,17 @@ export async function pendingDependencies(cwd) {
  * untouched — fails safe toward "still blocked" rather than risking an
  * incorrect early clear on a transient read error.
  *
+ * Rate-budget note (#487 fix-wave, forge:reviewer): this issues one
+ * un-batched `gh issue view` call per PENDING dependency, on every
+ * `select.mjs` invocation, ahead of and independent from `ratebudget.mjs`'s
+ * `budgetCheckDue`-gated periodic recheck. Bounded by the number of
+ * currently-open sequenced-behind tickets (typically small; zero pending
+ * dependencies costs zero calls), but not itself budget-aware — a board with
+ * many parked dependencies would add that many `gh` calls per iteration,
+ * unaccounted for by `ratebudget.mjs`'s cost model. Acceptable for this
+ * ticket's scope; a future ticket should fold this into the rate-budget
+ * estimate if it proves material in practice.
+ *
  * @param {object} opts
  * @param {function} opts.gh injected gh wrapper (`lib/exec.mjs` `makeGh`), same
  *   shape `boardctx.mjs` `ctx.gh` already uses elsewhere in this file's callers.
@@ -140,4 +194,54 @@ export async function resolveDependencies(cwd, { gh }) {
     }
   }
   return { cleared, stillPending: pending.filter((d) => !cleared.some((c) => c.issue === d.issue)) };
+}
+
+/**
+ * CLI entry point (#487 security fix-wave, forge:security round 1): before
+ * this, `recordDependency` had no invocable surface anywhere in the repo —
+ * `autopilot/SKILL.md`/`triage/SKILL.md` prose told a triage subagent (a
+ * spawned Claude Code session with Bash access, not a JS import context) to
+ * "call `recordDependency(...)`" with no actual command to run, which both
+ * left the mechanism unusable in practice and meant any real invocation
+ * would have to hand-roll unvalidated path/argument construction. Mirrors
+ * `lib/outbox.mjs`'s precedent for a `lib/` file carrying its own thin CLI,
+ * and `board/escalate.mjs`'s `Number()`-coercing argument parsing — every
+ * arg is validated by `recordDependency`/`fileFor` before it touches disk.
+ *
+ *   record --issue <n> --depends-on <n> [--reason <text>]
+ *   list
+ */
+export function parseArgs(argv) {
+  const a = { issue: null, dependsOn: null, reason: null };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--issue') a.issue = Number(argv[++i]);
+    else if (argv[i] === '--depends-on') a.dependsOn = Number(argv[++i]);
+    else if (argv[i] === '--reason') a.reason = argv[++i];
+  }
+  return a;
+}
+
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isMain) {
+  const sub = process.argv[2];
+  const cwd = process.cwd();
+  if (sub === 'record') {
+    const args = parseArgs(process.argv.slice(3));
+    recordDependency(cwd, args)
+      .then((rec) => console.log(`dependencies: recorded #${rec.issue} sequenced behind #${rec.dependsOn}${rec.reason ? ` — ${rec.reason}` : ''}`))
+      .catch((err) => { console.error(`dependencies: ${err.message}`); process.exit(1); });
+  } else if (sub === 'list') {
+    pendingDependencies(cwd).then((records) => {
+      if (records.length === 0) { console.log('dependencies: none pending'); return; }
+      for (const d of records) console.log(`#${d.issue} → sequenced behind #${d.dependsOn}${d.reason ? ` — ${d.reason}` : ''} (recorded ${d.recordedAt})`);
+    });
+  } else if (sub === 'resolve') {
+    resolveDependencies(cwd, { gh: makeGh(run) }).then((res) => {
+      for (const d of res.cleared) console.log(`dependencies: cleared #${d.issue} — #${d.dependsOn} closed`);
+      console.log(`dependencies: ${res.cleared.length} cleared, ${res.stillPending.length} still pending`);
+    });
+  } else {
+    console.error('usage: dependencies.mjs record --issue <n> --depends-on <n> [--reason <text>] | list | resolve');
+    process.exit(1);
+  }
 }

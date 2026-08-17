@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { selectNext, actionFor, actionableQueue, normalize, ticketKind } from '../../plugin/scripts/autopilot/select.mjs';
+import { selectNext, actionFor, actionableQueue, normalize, ticketKind, resolveExclusionSets } from '../../plugin/scripts/autopilot/select.mjs';
+import { recordDependency, pendingDependencies } from '../../plugin/scripts/lib/dependencies.mjs';
 import { WORK_TYPES } from '../../plugin/scripts/lib/ticket.mjs';
 import { evaluateMergeBar, autoMergeEnabled, ciGreen, runMerge, BAR_SIGNALS, classifyCiFailure, forceNewSha, failedDuringSetup } from '../../plugin/scripts/autopilot/merge.mjs';
 import {
@@ -170,6 +171,38 @@ describe('#487: a sequenced-behind triage verdict has a resting state selectNext
     expect(pick.ticket.number).toBe(3);
     expect(selectNext([t(1, 'backlog')], { pendingIssues: new Set([1]), dependencyIssues: new Set() })).toBeNull();
     expect(selectNext([t(2, 'backlog')], { pendingIssues: new Set(), dependencyIssues: new Set([2]) })).toBeNull();
+  });
+});
+
+describe('#487 fix-wave (forge:reviewer round 1): --dry-run must change nothing', () => {
+  async function tmp() {
+    return mkdtemp(join(tmpdir(), 'forge-select-dryrun-'));
+  }
+
+  it('resolveExclusionSets({dryRun:true}) never calls gh and never clears a resolvable dependency — dryRun:false does both', async () => {
+    const cwd = await tmp();
+    await recordDependency(cwd, { issue: 449, dependsOn: 457, reason: 'sequenced behind #457' });
+    let ghCalls = 0;
+    const gh = async () => { ghCalls++; return { ok: true, json: { state: 'CLOSED' } }; };
+
+    const dry = await resolveExclusionSets(cwd, { gh, dryRun: true });
+    expect(ghCalls).toBe(0); // no network call under --dry-run
+    expect(dry.dependencyIssues.has(449)).toBe(true); // still excluded — nothing was cleared
+    expect(await pendingDependencies(cwd)).toHaveLength(1); // record untouched on disk
+
+    const live = await resolveExclusionSets(cwd, { gh, dryRun: false });
+    expect(ghCalls).toBe(1); // the real (non-dry-run) pass does call gh
+    expect(live.dependencyIssues.has(449)).toBe(false); // and clears the now-closed dependency
+    expect(await pendingDependencies(cwd)).toHaveLength(0);
+  });
+
+  it('resolveExclusionSets defaults dryRun to false (the pre-#487-fix-wave behaviour, unchanged for a caller that omits it)', async () => {
+    const cwd = await tmp();
+    await recordDependency(cwd, { issue: 1, dependsOn: 2 });
+    let ghCalls = 0;
+    const gh = async () => { ghCalls++; return { ok: true, json: { state: 'CLOSED' } }; };
+    await resolveExclusionSets(cwd, { gh });
+    expect(ghCalls).toBe(1);
   });
 });
 
