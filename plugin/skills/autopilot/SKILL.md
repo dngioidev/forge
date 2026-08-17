@@ -196,7 +196,7 @@ A `backlog` ticket routes on its **readiness** (`readiness.mjs` → does it carr
 
 Triage can return `outcome:"skipped"` (`triage/SKILL.md` § Report contract): well-specified but genuinely not actionable yet — sequenced behind another open ticket (`sequencedBehind: <N>`). Before #487 that verdict had nowhere to live: the board stayed `backlog`, so the next pass re-picked the same ticket as `triage` and re-derived the same conclusion, one full triage subagent per iteration (observed three times in one run).
 
-**A file, not a board status:** `lib/dependencies.mjs` records `{issue, dependsOn, reason}` under `.forge/autopilot/dependencies/<issue>.json`, mirroring #499's `pendingIssues` shape. `selectNext` takes a `dependencyIssues` set excluding any ticket in it regardless of status. Self-clearing: `select.mjs` calls `resolveDependencies(cwd,{gh})` first every invocation, dropping a record once `dependsOn` closes — no human, no re-triage.
+**A file, not a board status:** `lib/dependencies.mjs` records `{issue, dependsOn, reason}` under `.forge/autopilot/dependencies/<issue>.json`, mirroring #499's `pendingIssues` shape. `selectNext` takes a `dependencyIssues` set excluding any ticket in it regardless of status. Self-clearing: every non-`--dry-run` invocation calls `resolveDependencies(cwd,{gh})` first, dropping a record once `dependsOn` closes — no human, no re-triage.
 
 **Distinct from a pending decision (AC.4):** a decision needs a human answer; a dependency clears by polling, no human. Separate stores, threaded into `selectNext` independently.
 
