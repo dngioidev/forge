@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.4.0 — 2026-08-17
+
+### Docs
+
+- index both unlinked plan docs (#448, #472) in the route index (#547) ([#448](https://github.com/dngioidev/forge/issues/448) [#472](https://github.com/dngioidev/forge/issues/472) [#547](https://github.com/dngioidev/forge/issues/547))
+- synchronous adversarial passes vs spawn-and-await (#475) (#541) ([#475](https://github.com/dngioidev/forge/issues/475) [#541](https://github.com/dngioidev/forge/issues/541))
+- add Report contract section for {issue,verdict,outcome} (#536) ([#536](https://github.com/dngioidev/forge/issues/536))
+- hooks/scripts resolution — working tree vs cache (#519) (#520) ([#519](https://github.com/dngioidev/forge/issues/519) [#520](https://github.com/dngioidev/forge/issues/520))
+- annotate ADR-0006/0005 and runner-adoption as hosted-only since #426 (#518) ([#426](https://github.com/dngioidev/forge/issues/426) [#518](https://github.com/dngioidev/forge/issues/518))
+- brace-expansion guard direction findings (#515) (#516) ([#515](https://github.com/dngioidev/forge/issues/515) [#516](https://github.com/dngioidev/forge/issues/516))
+- redact the live #459 bypass payload from the route index (#511) ([#459](https://github.com/dngioidev/forge/issues/459) [#511](https://github.com/dngioidev/forge/issues/511))
+- give the permission model a Claude-facing home (#510) ([#510](https://github.com/dngioidev/forge/issues/510))
+- agy file-write gating — matcher widening evidence, not a fix (#436) (#479) ([#436](https://github.com/dngioidev/forge/issues/436) [#479](https://github.com/dngioidev/forge/issues/479))
+- tokenize-then-judge argv model for the denylist hook (#451) (#458) ([#451](https://github.com/dngioidev/forge/issues/451) [#458](https://github.com/dngioidev/forge/issues/458))
+- surface the allowlist outside autopilot, verify #429's AC.1/2/4 (#443) ([#429](https://github.com/dngioidev/forge/issues/429) [#443](https://github.com/dngioidev/forge/issues/443))
+- give agy-only adopters a complete install + update path (#433) (#441) ([#433](https://github.com/dngioidev/forge/issues/433) [#441](https://github.com/dngioidev/forge/issues/441))
+- confirm agy's PreToolUse allow decision auto-approves (#428) (#435) ([#428](https://github.com/dngioidev/forge/issues/428) [#435](https://github.com/dngioidev/forge/issues/435))
+- surface Antigravity (agy) alongside Claude Code (#423) (#424) ([#423](https://github.com/dngioidev/forge/issues/423) [#424](https://github.com/dngioidev/forge/issues/424))
+
+### Fixes
+
+- give a sequenced-behind triage verdict a resting board state (#545) ([#545](https://github.com/dngioidev/forge/issues/545))
+- assert absolute ceilings, not a ratio, in denylist's perf test (#486) (#543) ([#486](https://github.com/dngioidev/forge/issues/486) [#543](https://github.com/dngioidev/forge/issues/543))
+- close a TOCTOU race in lock.mjs's stale-lock reclaim (#482) (#542) ([#482](https://github.com/dngioidev/forge/issues/482) [#542](https://github.com/dngioidev/forge/issues/542))
+- watchdog relays held review verdicts to a stalled subagent automatically (#540) ([#540](https://github.com/dngioidev/forge/issues/540))
+- judge a NUL-fused safe-word/dash continuation instead of filtering it as a flag (#472) (#539) ([#472](https://github.com/dngioidev/forge/issues/472) [#539](https://github.com/dngioidev/forge/issues/539))
+- detect brace-expansion syntax that can complete a hidden flag (#448) (#534) ([#448](https://github.com/dngioidev/forge/issues/448) [#534](https://github.com/dngioidev/forge/issues/534))
+- derive ticket kind from the board type field, not a title prefix (#532) ([#532](https://github.com/dngioidev/forge/issues/532))
+- gate the rate-budget check on the next ticket's kind, not the run's worst case (#526) (#529) ([#526](https://github.com/dngioidev/forge/issues/526) [#529](https://github.com/dngioidev/forge/issues/529))
+- relocate SKILL.md lookup content to reference docs (#527) ([#527](https://github.com/dngioidev/forge/issues/527))
+- classify blocked-edit clusters by guard-testing vs unclassified (#525) ([#525](https://github.com/dngioidev/forge/issues/525))
+- watchdog escalates a malformed report with no PR instead of blindly respawning (#522) (#523) ([#522](https://github.com/dngioidev/forge/issues/522) [#523](https://github.com/dngioidev/forge/issues/523))
+- calibrate ratebudget low-water from recent deltas (#517) (#521) ([#517](https://github.com/dngioidev/forge/issues/517) [#521](https://github.com/dngioidev/forge/issues/521))
+- narrow node <path> guard to the workspace (#438) (#514) ([#438](https://github.com/dngioidev/forge/issues/438) [#514](https://github.com/dngioidev/forge/issues/514))
+- environment preflight — the third RUN START gate (#504) (#512) ([#504](https://github.com/dngioidev/forge/issues/504) [#512](https://github.com/dngioidev/forge/issues/512))
+- selection consults pending decisions, not just board status (#499) (#500) ([#499](https://github.com/dngioidev/forge/issues/499) [#500](https://github.com/dngioidev/forge/issues/500))
+- recursive-delete rm-boundary + POSIX -- end-of-options (#454, absorbs #456) (#496) ([#454](https://github.com/dngioidev/forge/issues/454) [#456](https://github.com/dngioidev/forge/issues/456) [#496](https://github.com/dngioidev/forge/issues/496))
+- readiness gate honors qualified headings and dot-separated AC ids (#491) (#494) ([#491](https://github.com/dngioidev/forge/issues/491) [#494](https://github.com/dngioidev/forge/issues/494))
+- mechanically verify fork-PR approval policy on self-hosted-runner-registered public repos (#489) (#493) ([#489](https://github.com/dngioidev/forge/issues/489) [#493](https://github.com/dngioidev/forge/issues/493))
+- anchor the runaway backstop to run-start board size (#488) (#492) ([#488](https://github.com/dngioidev/forge/issues/488) [#492](https://github.com/dngioidev/forge/issues/492))
+- allowlist git add with a positive-model argument guard (#483) ([#483](https://github.com/dngioidev/forge/issues/483))
+- drop hooks.json command quoting that broke Windows module resolution (#478) (#481) ([#478](https://github.com/dngioidev/forge/issues/478) [#481](https://github.com/dngioidev/forge/issues/481))
+- watchdog classifies the stalled-before-PR return shape (#464) (#476) ([#464](https://github.com/dngioidev/forge/issues/464) [#476](https://github.com/dngioidev/forge/issues/476))
+- close the NUL-in-flag-cluster bypass across four rules (#452) (#473) ([#452](https://github.com/dngioidev/forge/issues/452) [#473](https://github.com/dngioidev/forge/issues/473))
+- orchestrate-only for every stage, not just deliver (#466) (#468) ([#466](https://github.com/dngioidev/forge/issues/466) [#468](https://github.com/dngioidev/forge/issues/468))
+- correct agy install command, framing, and gate count (#460) (#463) ([#460](https://github.com/dngioidev/forge/issues/460) [#463](https://github.com/dngioidev/forge/issues/463))
+- honor POSIX -- end-of-options in recursive-delete targets (#455) ([#455](https://github.com/dngioidev/forge/issues/455))
+- anchor SAFE_RM_TARGETS to path components and judge each rm target on its own (#446) (#453) ([#446](https://github.com/dngioidev/forge/issues/446) [#453](https://github.com/dngioidev/forge/issues/453))
+- close reordered/bundled/short-flag spellings in hard-reset and env-branch-delete (#445) ([#445](https://github.com/dngioidev/forge/issues/445))
+- stop the emitted agy package telling agents to write a Claude-only settings file (#430) (#440) ([#430](https://github.com/dngioidev/forge/issues/430) [#440](https://github.com/dngioidev/forge/issues/440))
+- flip the PreToolUse hook default from allow to ask (#429) (#439) ([#429](https://github.com/dngioidev/forge/issues/429) [#439](https://github.com/dngioidev/forge/issues/439))
+- stop hardcoding pnpm/action-setup's pinned SHA in AC-343.1 (#421) ([#421](https://github.com/dngioidev/forge/issues/421))
+
+### Features
+
+- agent-liveness detection — a subagent that never returns is now visible (#505) (#513) ([#505](https://github.com/dngioidev/forge/issues/505) [#513](https://github.com/dngioidev/forge/issues/513))
+- argv tokenizer, Phase 1 of tokenize-then-judge (#457) (#498) ([#457](https://github.com/dngioidev/forge/issues/457) [#498](https://github.com/dngioidev/forge/issues/498))
+- denylist-staleness diagnostic check + docs (#447) (#485) ([#447](https://github.com/dngioidev/forge/issues/447) [#485](https://github.com/dngioidev/forge/issues/485))
+- teach forge:doctor to check the emitted agy adapter (#442) ([#442](https://github.com/dngioidev/forge/issues/442))
+
+### Chores
+
+- reconcile stale self-hosted runner block with hosted-CI reality (#427) ([#427](https://github.com/dngioidev/forge/issues/427))
+- migrate to vitest 4 (#339) (#425) ([#339](https://github.com/dngioidev/forge/issues/339) [#425](https://github.com/dngioidev/forge/issues/425))
+
 ## v1.3.0 — 2026-08-08
 
 ### Fixes
