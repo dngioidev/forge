@@ -115,10 +115,13 @@ describe('lib/lock (#414, per #387 design) — shared exclusive-lockfile helper'
   // unlink()+recreate reclaim let two concurrent callers BOTH judge the same
   // stale lock reclaimable and BOTH end up believing they hold it — the exact
   // #387 lost-update race this lockfile exists to prevent. The fix reclaims
-  // via an atomic rename (only one racer's rename can ever succeed); this
-  // pins that AT MOST ONE concurrent acquirer ever wins a race over one
-  // stale lock, run repeatedly since a race is inherently non-deterministic.
-  it('AC — concurrent acquireLock calls racing to reclaim the SAME stale lock: exactly one wins, never both', async () => {
+  // exclusively via a `.reclaiming` marker file (`open(marker,'wx')` — an
+  // atomic-rename attempt was tried first and empirically ALSO failed under
+  // concurrent load on this platform's filesystem, see lock.mjs's own doc
+  // comment); this pins that AT MOST ONE concurrent acquirer ever wins a race
+  // over one stale lock, run repeatedly since a race is inherently
+  // non-deterministic.
+  it('AC-482.2 — concurrent acquireLock calls racing to reclaim the SAME stale lock: exactly one wins, never both', async () => {
     for (let iter = 0; iter < 25; iter++) {
       const dir = await tmp();
       const path = join(dir, 'x.lock');
@@ -135,6 +138,58 @@ describe('lib/lock (#414, per #387 design) — shared exclusive-lockfile helper'
       expect(winners[0].ok).toBe(true);
       await winners[0].release();
     }
+  });
+
+  // #482 — the flaky-on-CI race, reproduced deterministically via a seam
+  // instead of relying on scheduling luck / a bigger stress loop. The
+  // `.reclaiming` marker (previous test) only serializes racers that attempt
+  // it AT THE SAME TIME; it does not, on its own, stop a STRAGGLER — one that
+  // independently read the SAME originally-stale lock earlier but is slow to
+  // reach its own marker attempt — from winning the marker AFTER a faster
+  // racer already finished a full reclaim and released it. Empirically
+  // reproduced on this machine under heavier concurrency (12-way, hundreds of
+  // iterations) than the test above uses: a handful of double-wins where the
+  // straggler blindly overwrote the fresh winner's lock with no re-check.
+  // This test forces exactly that interleaving with `_beforeMarkerAttempt`
+  // (a test-only seam in reclaimStaleLock) instead of hoping for it.
+  it('AC-482.3 — a straggler that observed the same stale lock before another racer already reclaimed it backs off instead of clobbering the fresh lock', async () => {
+    const dir = await tmp();
+    const path = join(dir, 'x.lock');
+    const now = Date.now();
+    await writeFile(path, JSON.stringify({ pid: 999999, startedAt: new Date(now).toISOString(), hostname: 'crashed-host' }), 'utf8');
+    const isAlive = (pid) => pid !== 999999;
+
+    // The straggler: paused right before its own marker attempt, i.e. after
+    // it has already (independently) judged the ORIGINAL stale lock
+    // reclaimable, exactly mirroring the real race window.
+    let releaseStraggler;
+    const stragglerPaused = new Promise((resolve) => { releaseStraggler = resolve; });
+    const stragglerPromise = acquireLock(path, {
+      pid: 2000,
+      hostname: 'straggler-host',
+      now: () => now,
+      isAlive,
+      _beforeMarkerAttempt: () => stragglerPaused,
+    });
+
+    // A full, independent reclaim of the same lock completes while the
+    // straggler is paused — this is the racer the straggler must defer to.
+    const winner = await acquireLock(path, { pid: 1000, hostname: 'winner-host', now: () => now, isAlive });
+    expect(winner.ok).toBe(true);
+
+    // Now let the straggler proceed: the marker is free again, but the lock
+    // it would overwrite is no longer stale.
+    releaseStraggler();
+    const straggler = await stragglerPromise;
+
+    expect(straggler.ok).toBe(false); // must back off, never a second winner
+    expect(straggler.heldBy).toMatchObject({ pid: 1000, hostname: 'winner-host' });
+
+    // the on-disk lock is untouched by the straggler — still the winner's
+    const raw = JSON.parse(await readFile(path, 'utf8'));
+    expect(raw).toMatchObject({ pid: 1000, hostname: 'winner-host' });
+
+    await winner.release();
   });
 
   // #414 review — symlink-safety on the READ side, mirroring
