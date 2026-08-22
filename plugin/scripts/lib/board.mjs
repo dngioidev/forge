@@ -37,6 +37,25 @@ export const STANDARD_FIELDS = {
   ],
 };
 
+/**
+ * #550 — GitHub Projects v2 now reserves the literal field name "Type" for
+ * its built-in issue-type field, so `createProjectV2Field` rejects any
+ * attempt to mint a NEW field called "Type" ("Name cannot have a reserved
+ * value, Name has already been taken"). forge's kind dimension (config key
+ * `type`) is therefore created under the non-reserved name "Kind" on new
+ * boards. Boards bootstrapped before this fix (or any board carrying a
+ * hand-created custom field literally named "Type" — that custom field is
+ * NOT the same object as GitHub's built-in reserved field and is untouched
+ * by the reservation) keep working: see the alias in `getProjectFields`
+ * below. `priority`/`size` need no override — their names were never
+ * reserved — so this map only needs the one exception.
+ */
+export const STANDARD_FIELD_NAMES = {
+  priority: 'Priority',
+  size: 'Size',
+  type: 'Kind',
+};
+
 /** "In progress" -> inProgress; "Blocked / Needs decision" -> blocked; "Won't do" -> wontDo. */
 export function optionKey(name) {
   const lower = name.toLowerCase().trim();
@@ -148,6 +167,14 @@ export async function getProjectFields(gh, projectId, { refresh = false } = {}) 
   for (const f of node.fields.nodes) {
     if (f && f.name) fields[f.name.toLowerCase()] = f;
   }
+  // #550: name -> config-key alias. forge's kind dimension is created as
+  // "Kind" (see STANDARD_FIELD_NAMES) because GitHub now reserves "Type" for
+  // its built-in issue-type field, but the config key consumers read is
+  // still `type` (lib/config.mjs FIELD_KEYS, board/create.mjs, boardctx.mjs)
+  // and must never change. Prefer a legacy `Type` field when a board somehow
+  // carries both, so an established board's field id is never displaced by
+  // a later "Kind" field it didn't ask for.
+  if (!fields['type'] && fields['kind']) fields['type'] = fields['kind'];
   const value = { ok: true, itemsCount: node.items.totalCount, fields };
   const cache = byKey ?? new Map();
   cache.set(key, value);
