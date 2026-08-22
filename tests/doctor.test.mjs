@@ -525,6 +525,62 @@ describe('runDoctor — failure classes (AC-1.4)', () => {
     expect(board.msg).toContain('status.options.inProgress');
   });
 
+  it('AC-550.4 (#550): a board missing the kind field under BOTH names is a distinct, named ✗ (not silent, not folded into a vaguer message)', async () => {
+    const cwd = await tmpCwd();
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+    await writeFile(join(cwd, '.gitignore'), '.forge/\n', 'utf8');
+
+    // live board resolves status/priority/size fine but has neither "Kind" nor "Type"
+    const liveFields = [
+      { id: committed.board.fields.status.id, name: 'Status', options: Object.entries(committed.board.fields.status.options).map(([n, id]) => ({ id, name: n })) },
+      { id: committed.board.fields.priority.id, name: 'Priority', options: Object.entries(committed.board.fields.priority.options).map(([n, id]) => ({ id, name: n })) },
+      { id: committed.board.fields.size.id, name: 'Size', options: Object.entries(committed.board.fields.size.options).map(([n, id]) => ({ id, name: n })) },
+    ];
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(14, liveFields)],
+      [() => true, { ok: false, stderr: '404' }],
+    ]);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const kind = byName(res, 'kind-field')[0];
+    expect(kind.level).toBe('fail');
+    expect(kind.msg).toMatch(/no kind field/i);
+    expect(kind.msg).toMatch(/"Kind"/);
+    expect(kind.msg).toMatch(/"Type"/);
+    expect(kind.hint).toMatch(/re-run \/forge:init/);
+    expect(kind.hint).toMatch(/reserves the literal name "Type"/);
+    expect(res.ok).toBe(false);
+  });
+
+  it('AC-550.4 (#550): a board with a grandfathered "Type" field (this repo\'s own board #8 shape) resolves the kind field cleanly → ok', async () => {
+    const cwd = await tmpCwd();
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed), 'utf8');
+    await writeFile(join(cwd, '.gitignore'), '.forge/\n', 'utf8');
+
+    const liveFields = Object.entries(committed.board.fields).map(([key, f]) => ({
+      id: f.id,
+      name: key[0].toUpperCase() + key.slice(1), // 'type' -> 'Type', the grandfathered legacy name
+      options: Object.entries(f.options).map(([n, id]) => ({ id, name: n })),
+    }));
+    const { gh } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(14, liveFields)],
+      ['issue view 15', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      [() => true, { ok: false, stderr: '404' }],
+    ]);
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const kind = byName(res, 'kind-field')[0];
+    expect(kind.level).toBe('ok');
+    expect(kind.msg).toContain('Type');
+    expect(res.results.filter((r) => r.level === 'fail').map((r) => r.name)).not.toContain('kind-field');
+  });
+
   it('missing .forge/ gitignore entry is a ✗', async () => {
     const { gh } = fakeGh([['auth status', AUTH_OK], ['repo view', REPO_VIEW], [() => true, { ok: false, stderr: 'x' }]]);
     const res = await runDoctor({ gh, cwd: await tmpCwd(), log: noop });

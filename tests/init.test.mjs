@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInit, parseArgs } from '../plugin/scripts/init.mjs';
 import { readJson } from '../plugin/scripts/lib/jsonfile.mjs';
+import { getProjectFields } from '../plugin/scripts/lib/board.mjs';
 import { fakeGh, fieldsResponse, REPO_VIEW, AUTH_OK } from './helpers/fakegh.mjs';
 
 const noop = () => {};
@@ -31,7 +32,9 @@ const FRESH_FULL_FIELDS = [
     { id: 's4', name: 'In review' }, { id: 's5', name: 'Blocked / Needs decision' }, { id: 's6', name: 'Done' }, { id: 's7', name: "Won't do" }] },
   { id: 'PVTSSF_new2', name: 'Priority', options: [{ id: 'p1', name: 'P0' }, { id: 'p2', name: 'P1' }, { id: 'p3', name: 'P2' }] },
   { id: 'PVTSSF_new3', name: 'Size', options: [{ id: 'z1', name: 'XS' }, { id: 'z2', name: 'S' }] },
-  { id: 'PVTSSF_new4', name: 'Type', options: [{ id: 't1', name: 'Epic' }, { id: 't2', name: 'Item' }] },
+  // #550: GitHub now reserves "Type" for its built-in issue-type field, so
+  // forge creates the kind dimension under the non-reserved name "Kind".
+  { id: 'PVTSSF_new4', name: 'Kind', options: [{ id: 't1', name: 'Epic' }, { id: 't2', name: 'Item' }] },
 ];
 
 async function tmpCwd() {
@@ -220,6 +223,127 @@ describe('runInit — fresh bootstrap (AC-1.2)', () => {
     expect(res.ok).toBe(true);
     const creates = calls.filter((c) => c.includes('createProjectV2Field'));
     expect(creates.length).toBe(2); // size + type only — priority not recreated
+  });
+
+  // #550 AC-1: reproduces the field's-first-name-only bug report through the
+  // injected `gh` double — a project with no type/kind node yet, whose
+  // createProjectV2Field call for the kind field is rejected with GitHub's
+  // real reserved-name error. Before the fix this aborted the whole run
+  // (init failed, forge.json never written, adopt-mode re-runs died at the
+  // same step). After the fix it degrades to a warning: init still
+  // succeeds, remaining fields (priority/size) are still created, and
+  // forge.json is written (without a `type` entry, since nothing resolved).
+  it('AC-550.1/AC-550.3 (#550): a reserved-name field-create rejection degrades to a warning, not an abort', async () => {
+    const cwd = await tmpCwd();
+    const RESERVED_ERR = "gh: Name cannot have a reserved value, Name has already been taken";
+    let fieldsCall = 0;
+    const logs = [];
+    const { gh, calls } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project create', { stdout: JSON.stringify({ id: 'PVT_new', number: 16, title: 'FinSol' }) }],
+      ['project link', { stdout: '' }],
+      [(j) => j.startsWith('api graphql') && j.includes('fields(first: 50)'), () => {
+        fieldsCall += 1;
+        // no `type`/`kind` node ever appears — priority/size succeed and get
+        // added on re-discovery, but the kind field never resolves live.
+        return fieldsCall === 1
+          ? fieldsResponse(0, [{ id: 'PVTSSF_new1', name: 'Status', options: [{ id: 'a', name: 'Todo' }, { id: 'b', name: 'In Progress' }, { id: 'c', name: 'Done' }] }])
+          : fieldsResponse(0, FRESH_FULL_FIELDS.filter((f) => f.name !== 'Kind'));
+      }],
+      [(j) => j.includes('updateProjectV2Field'), { stdout: JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: { id: 'PVTSSF_new1', options: [] } } } }) }],
+      [(j) => j.includes('createProjectV2Field') && j.includes('"Kind"'), { ok: false, stderr: RESERVED_ERR }],
+      [(j) => j.includes('createProjectV2Field'), { stdout: JSON.stringify({ data: { createProjectV2Field: { projectV2Field: { id: 'PVTSSF_x', options: [] } } } }) }],
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/42\n' }],
+    ]);
+    const res = await runInit({ gh, cwd, log: (m) => logs.push(m), args: parseArgs(['--create-project', 'FinSol', '--skip-doctor']) });
+
+    // init still succeeds end-to-end, unlike today's abort-on-first-rejection
+    expect(res.ok).toBe(true);
+    // priority + size still got created despite the kind-field rejection
+    expect(calls.filter((c) => c.includes('createProjectV2Field')).length).toBe(3);
+    // the rejection is surfaced as a clear warning, not swallowed
+    expect(logs.join(' ')).toMatch(/WARNING could not create "Kind".*reserved value/i);
+
+    // forge.json is written — bootstrap is never bricked, adopt-mode re-runs
+    // can pick up from here instead of dying at the same step every time.
+    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
+    expect(cfg.board.projectNumber).toBe(16);
+    expect(cfg.board.fields.priority).toBeTruthy();
+    expect(cfg.board.fields.size).toBeTruthy();
+    // the kind field never resolved live, so it's simply omitted (not a crash) —
+    // doctor's dedicated kind-field check (AC-4) is what calls this out on a re-run.
+    expect(cfg.board.fields.type).toBeUndefined();
+  });
+});
+
+describe('runInit — kind field naming + aliasing (#550 AC-2/AC-5)', () => {
+  it('AC-550.2: getProjectFields aliases a NEW "Kind" field to config key `type`', async () => {
+    const { gh } = fakeGh([
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(3, [
+        { id: 'PVTSSF_k', name: 'Kind', options: [{ id: 'e1', name: 'Epic' }] },
+      ])],
+    ]);
+    const pf = await getProjectFields(gh, 'PVT_x');
+    expect(pf.ok).toBe(true);
+    expect(pf.fields['type']).toMatchObject({ id: 'PVTSSF_k', name: 'Kind' });
+    expect(pf.fields['kind']).toMatchObject({ id: 'PVTSSF_k', name: 'Kind' });
+  });
+
+  it('AC-550.2: getProjectFields aliases a grandfathered "Type" field to config key `type` (back-compat, board #8 shape)', async () => {
+    const { gh } = fakeGh([
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(14, [
+        { id: 'PVTSSF_t', name: 'Type', options: [{ id: 'e1', name: 'Epic' }] },
+      ])],
+    ]);
+    const pf = await getProjectFields(gh, 'PVT_x');
+    expect(pf.ok).toBe(true);
+    expect(pf.fields['type']).toMatchObject({ id: 'PVTSSF_t', name: 'Type' });
+  });
+
+  it('AC-550.2: a legacy "Type" field is preferred over a "Kind" field if a board somehow has both', async () => {
+    const { gh } = fakeGh([
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(1, [
+        { id: 'PVTSSF_t', name: 'Type', options: [] },
+        { id: 'PVTSSF_k', name: 'Kind', options: [] },
+      ])],
+    ]);
+    const pf = await getProjectFields(gh, 'PVT_x');
+    expect(pf.fields['type'].id).toBe('PVTSSF_t'); // legacy wins — established board id never displaced
+  });
+
+  it('AC-550.5: fresh --create-project produces Status/Priority/Size/Kind, mapped to config keys status/priority/size/type', async () => {
+    const cwd = await tmpCwd();
+    const { gh } = fakeGh(freshRoutes());
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--create-project', 'forge', '--skip-doctor']) });
+    expect(res.ok).toBe(true);
+    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
+    expect(cfg.board.fields.status).toBeTruthy();
+    expect(cfg.board.fields.priority).toBeTruthy();
+    expect(cfg.board.fields.size).toBeTruthy();
+    expect(cfg.board.fields.type).toEqual({ id: 'PVTSSF_new4', options: { epic: 't1', item: 't2' } }); // live name "Kind" -> config key `type`
+  });
+
+  it('AC-550.5: adopt-mode against a board with a grandfathered "Type" field completes without attempting a create', async () => {
+    const cwd = await tmpCwd();
+    const committed = JSON.parse(await readFile(join(process.cwd(), '.claude', 'forge.json'), 'utf8'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(committed, null, 2), 'utf8');
+
+    const { gh, calls } = fakeGh([
+      ['auth status', AUTH_OK],
+      ['repo view', REPO_VIEW],
+      ['project view 8', { stdout: JSON.stringify({ id: BOARD8.projectId, number: 8, title: 'forge - AI dev platform' }) }],
+      [(j) => j.includes('fields(first: 50)'), fieldsResponse(14, BOARD8.fields)], // BOARD8's type field is literally named "Type"
+      ['issue list', { stdout: '[]' }],
+      ['issue create', { stdout: 'https://github.com/dngioidev/forge/issues/15\n' }],
+    ]);
+    const res = await runInit({ gh, cwd, log: noop, args: parseArgs(['--skip-doctor']) });
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('createProjectV2Field'))).toBe(false); // no create attempted — the legacy field aliases straight through
+    const cfg = await readJson(join(cwd, '.claude', 'forge.json'));
+    expect(cfg.board.fields.type).toEqual(committed.board.fields.type);
   });
 });
 

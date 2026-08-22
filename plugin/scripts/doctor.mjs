@@ -93,27 +93,48 @@ export async function runDoctor(ctx) {
     results.push(ok('config', `${CONFIG_RELPATH} valid`));
   }
 
-  // board ids resolve
-  if (cfg.ok) {
-    const pf = await getProjectFields(gh, cfg.config.board.projectId);
+  // board ids resolve + kind-field presence (#550 AC-4). The kind-field check
+  // runs off the LIVE project fields whenever board.projectId itself is
+  // present and well-shaped — independent of whether the rest of forge.json
+  // validated — so a board that never got (or lost) its kind field is called
+  // out by name with actionable guidance, instead of only surfacing as a
+  // generic "board.fields.type: missing" config error with no explanation of
+  // why (GitHub's Type-name reservation) or how to recover.
+  const projectId = cfg.config?.board?.projectId;
+  if (typeof projectId === 'string' && /^PVT_/.test(projectId)) {
+    const pf = await getProjectFields(gh, projectId);
     if (!pf.ok) {
       results.push(fail('board', `projectId does not resolve: ${pf.error}`, 're-run /forge:init'));
     } else {
-      const dangling = [];
-      for (const [key, f] of Object.entries(cfg.config.board.fields)) {
-        const live = Object.values(pf.fields).find((x) => x.id === f.id);
-        if (!live) { dangling.push(`${key}.id`); continue; }
-        const liveOptionIds = new Set((live.options ?? []).map((o) => o.id));
-        for (const [optName, optId] of Object.entries(f.options)) {
-          if (!liveOptionIds.has(optId)) dangling.push(`${key}.options.${optName}`);
+      if (cfg.ok) {
+        const dangling = [];
+        for (const [key, f] of Object.entries(cfg.config.board.fields)) {
+          const live = Object.values(pf.fields).find((x) => x.id === f.id);
+          if (!live) { dangling.push(`${key}.id`); continue; }
+          const liveOptionIds = new Set((live.options ?? []).map((o) => o.id));
+          for (const [optName, optId] of Object.entries(f.options)) {
+            if (!liveOptionIds.has(optId)) dangling.push(`${key}.options.${optName}`);
+          }
         }
+        if (dangling.length) results.push(fail('board', `dangling ids: ${dangling.join(', ')}`, 're-run /forge:init to re-discover'));
+        else results.push(ok('board', 'project + all field/option ids resolve'));
       }
-      if (dangling.length) results.push(fail('board', `dangling ids: ${dangling.join(', ')}`, 're-run /forge:init to re-discover'));
-      else results.push(ok('board', 'project + all field/option ids resolve'));
+
+      // getProjectFields already aliases a legacy "Type" field to the `type`
+      // key (#550), so this one check covers both names.
+      if (!pf.fields['type']) {
+        results.push(fail(
+          'kind-field',
+          'project has no kind field (checked "Kind" and legacy "Type")',
+          're-run /forge:init to create it — GitHub reserves the literal name "Type" for its built-in issue-type field, so forge creates "Kind"',
+        ));
+      } else {
+        results.push(ok('kind-field', `kind field resolved (${pf.fields['type'].name})`));
+      }
     }
 
     // delivery log
-    if (cfg.config.board.deliveryLogIssue != null) {
+    if (cfg.ok && cfg.config.board.deliveryLogIssue != null) {
       const dl = await gh(['issue', 'view', String(cfg.config.board.deliveryLogIssue), '--json', 'state'], { parseJson: true });
       if (!dl.ok) results.push(warn('delivery-log', `issue #${cfg.config.board.deliveryLogIssue} not found`, 're-run /forge:init'));
       else if (dl.json.state !== 'OPEN') results.push(warn('delivery-log', `issue #${cfg.config.board.deliveryLogIssue} is closed`, 'reopen it'));

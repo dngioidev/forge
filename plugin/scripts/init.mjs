@@ -10,7 +10,7 @@ import { run, makeGh } from './lib/exec.mjs';
 import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
 import { mergeJson } from './lib/jsonfile.mjs';
 import {
-  STANDARD_STATUS, STANDARD_FIELDS, getRepoInfo, getProject, createProject, linkProject,
+  STANDARD_STATUS, STANDARD_FIELDS, STANDARD_FIELD_NAMES, getRepoInfo, getProject, createProject, linkProject,
   getProjectFields, createSingleSelectField, replaceStatusOptions,
   findIssueByTitle, createIssue, toConfigField,
 } from './lib/board.mjs';
@@ -121,12 +121,16 @@ export async function runInit(ctx) {
     say('status: standard set already present');
   }
 
+  // #550 AC-3: a single field-create rejection (e.g. GitHub rejecting a
+  // reserved/duplicate name) no longer aborts the whole run — it degrades to
+  // a warning, remaining fields are still attempted, and steps 5-10 below
+  // still execute so forge.json gets written and a re-run stays resumable.
   for (const [key, defs] of Object.entries(STANDARD_FIELDS)) {
-    if (!pf.fields[key]) {
-      const r = await createSingleSelectField(gh, project.id, key[0].toUpperCase() + key.slice(1), defs);
-      if (!r.ok) return { ok: false, error: r.error, actions };
-      say(`fields: created ${key}`);
-    }
+    if (pf.fields[key]) continue; // getProjectFields already aliases a legacy `Type` to `type` (#550)
+    const fieldName = STANDARD_FIELD_NAMES[key];
+    const r = await createSingleSelectField(gh, project.id, fieldName, defs);
+    if (r.ok) say(`fields: created ${key}`);
+    else say(`fields: WARNING could not create "${fieldName}" (${key}) — ${r.error} — create it manually in the project UI, then re-run /forge:init to pick it up`);
   }
 
   // Re-discover so config reflects reality (also covers resume-after-partial-failure).
@@ -152,13 +156,18 @@ export async function runInit(ctx) {
     }
   }
 
-  // 6. Write forge.json (merge — never clobber consumer customizations)
-  const fields = {
-    status: toConfigField(pf.fields['status']),
-    priority: toConfigField(pf.fields['priority']),
-    size: toConfigField(pf.fields['size']),
-    type: toConfigField(pf.fields['type']),
-  };
+  // 6. Write forge.json (merge — never clobber consumer customizations).
+  // #550 AC-3: priority/size/type are only written when the live field
+  // actually resolved (present pre-existing, or just created) — a field
+  // whose creation was rejected and degraded to a warning above is simply
+  // omitted here rather than crashing toConfigField(undefined). doctor's
+  // config-shape check (and its dedicated kind-field check, AC-4) then
+  // surfaces the gap as a named, actionable finding instead of this
+  // silently writing a broken config or aborting the whole run.
+  const fields = { status: toConfigField(pf.fields['status']) };
+  for (const key of Object.keys(STANDARD_FIELDS)) {
+    if (pf.fields[key]) fields[key] = toConfigField(pf.fields[key]);
+  }
   // #114: map an optional consumer-defined Phase single-select when present
   // (forge never creates it — it's opt-in roadmap tracking).
   if (pf.fields['phase']) {
