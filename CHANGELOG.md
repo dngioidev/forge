@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.1 — 2026-08-22
+
+### Fixes
+
+- create the kind field as "Kind", not the now-reserved "Type" (#552) ([#552](https://github.com/dngioidev/forge/issues/552))
+
 ## v1.4.0 — 2026-08-17
 
 ### Docs
