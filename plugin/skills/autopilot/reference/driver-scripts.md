@@ -27,4 +27,44 @@ Two more supporting pieces, not autopilot-only but load-bearing for #407:
 - `lib/outbox.mjs` (#414) — the local GitHub outbox: `enqueue`/`pendingCount`/`drain`/`attemptOrDefer`, `node lib/outbox.mjs drain` as a thin CLI. The five queue-eligible `board/*.mjs` `run*` functions call `attemptOrDefer` themselves (§ Monitor notifications, `forge-outbox`) — this module is never called directly by the orchestrator except to read `pendingCount` for the report line / `board_status` field, or to trigger an opportunistic drain.
 - `lib/lock.mjs` (#414, per #387's design) — `acquireLock(path)`/`isStale(lock)`: the shared exclusive-lockfile helper (`fs.open(path,'wx')`, `{pid,startedAt,hostname}`, PID-liveness + age-staleness reclaim, `release()` in try/finally). `lib/outbox.mjs` is its first real consumer (`.forge/autopilot/outbox.lock`); #387's eventual `run.lock` should reuse it rather than duplicate the idiom.
 
+## Why every action gets its own spawn, not delivery alone (#466)
+
+Reference for `plugin/skills/autopilot/SKILL.md` § Orchestration (#561 — relocated, not
+deleted). Before #466, `shape` had no spawn rule at all and ran inline in the main
+window — the most context-hungry stage forge has (`docs/product/**`, linked spec/ADR,
+code-graph payloads, then a nested `ideate`/`brainstorm`/`spike`/`design` run) — which is
+exactly what drove a long `--shape` run to 100% context. Generalizing the earlier
+delivery-only spawn rule (#156) to all four spawnable actions (`resume`/`deliver`/
+`triage`/`shape`) closed that gap: every action now runs in its own discardable context,
+so the main window stays ~O(1) regardless of which action a given iteration selects.
+
+## Loop backstop (#488) — cap anchor & disk-sourced hardening
+
+Reference for `plugin/skills/autopilot/SKILL.md` § Stop conditions & safety rails,
+"Loop backstop" bullet (#561 — relocated, not deleted).
+
+**Why the cap anchors to the board size at run start, not the live count.** PR #468's
+no-fused-routes rule made every `select.mjs` action its own spawn with its own recorded
+outcome, so a triaged ticket now costs 2 iterations and an unshaped `--shape` ticket costs
+up to 3 — a *perfect* full clear used to land exactly on the old `boardSize × 2` cap, and
+the cap fell as the board shrank while `run.iterations` only rose, so a healthy run
+tripped a false positive. The fix: `startRun` persists the board size at run start as
+`run.boardSizeAtStart`, backward compatible with an older ledger that predates the field
+(the anchor backfills itself on the next `startRun` call once a `boardSize` opt is
+supplied). The default multiplier (`DEFAULT_RUNAWAY_FACTOR`, currently 4) sits strictly
+above the worst known per-ticket cost (3, an unshaped ticket under `--shape`) so a healthy
+clear never lands exactly on the cap, while a run resolving fewer than one ticket per 4
+iterations is still unambiguously not converging — the guard is **not** blunted, only
+recalibrated: a genuine runaway (file-a-ticket-per-iteration, or #487's
+same-ticket-reselected-forever loop) still trips it, just after the corrected number of
+iterations.
+
+**Disk-sourced state can never disable the guard.** `run.json` is written by the loop
+itself but is still the trust boundary a corrupted or hand-edited file would cross — a
+`boardSizeAtStart`/`iterations` value that isn't a finite positive number (e.g.
+`Infinity` from a `1e999` literal) is never trusted verbatim: `resolveAnchorBoardSize`/
+`sanitizeIterations` reject anything non-finite/non-positive, falling back to the live
+argument or a conservative default, and a corrupted `iterations` FAILS CLOSED (treated as
+`Infinity`, forcing an immediate trip) rather than silently disabling the backstop.
+
 The orchestrator holds the ship/gate/reviewer/security verdicts and passes them to the merge bar; the scripts never spawn subagents or drive the loop themselves.
