@@ -309,11 +309,26 @@ export function convergence(run, { startingOpen, currentOpen }) {
   return { closed, filed, netDelta, verdict, startingOpen, currentOpen };
 }
 
-/** #506 AC.4: disk-sourced streak — fails closed to 0 (not "trust it"), mirroring this
- * file's other disk-state sanitizers (`sanitizePositiveInt`/`sanitizeIterations`) —
- * never lets a corrupted/non-integer streak silently jam above or below the trip line. */
-function sanitizeDivergingStreak(value) {
-  return Number.isInteger(value) && value >= 0 ? value : 0;
+/**
+ * #506 AC.4 security fix-wave (forge:security round 1, HIGH): disk-sourced streak — fails
+ * CLOSED, mirroring `sanitizeIterations`'s fail-to-`Infinity`, NOT "trust it as 0". The
+ * first pass sanitized any corrupted/non-integer value to `0`, which is the UNSAFE
+ * direction: a hand-edited or half-written `run.divergingStreak` (`-1`, `NaN`, `Infinity`,
+ * a string, ...) read as "no prior diverging wave ever happened", so a genuinely-diverging
+ * SECOND wave scored as if it were the first, and the two-consecutive trip could never
+ * fire — silently defeating the exact escalation guarantee this function exists to make.
+ * Sanitizing to `2` (the trip threshold itself, not `Infinity` — `Infinity` isn't valid
+ * JSON and must never be what `recordConvergence` persists back to disk) means the VERY
+ * NEXT diverging wave trips immediately instead of being silently absorbed; a non-
+ * diverging wave still cures it back to a clean `0` regardless, same as always. This can,
+ * at most, cost one extra (safe-direction) escalation — on the very first wave checked
+ * after resuming a pre-#506 ledger that also happens to be diverging — which this file's
+ * own established posture already accepts as the correct tradeoff (see `sanitizeIterations`
+ * above): a false-positive halt+escalate on corrupt/absent state, never a silently
+ * disabled backstop.
+ */
+export function sanitizeDivergingStreak(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 2;
 }
 
 /**

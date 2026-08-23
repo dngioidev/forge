@@ -12,7 +12,7 @@ import {
   applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun,
   RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR, sanitizePositiveInt, sanitizeIterations,
   applyBudgetReading, recentBudgetDeltas, recordBudgetReading, MAX_BUDGET_READINGS,
-  convergence, convergenceGuard, recordConvergence, recordFiled,
+  convergence, convergenceGuard, recordConvergence, recordFiled, sanitizeDivergingStreak,
 } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME, matchHeldVerdicts } from '../../plugin/scripts/autopilot/watchdog.mjs';
@@ -2049,6 +2049,44 @@ describe('autopilot convergence verdict (#506, epic #503)', () => {
     run = applyFiled(run, { issue: 5, kind: 'bug', from: 1 });
     dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 4 });
     expect(dec).toMatchObject({ verdict: 'diverging', divergingStreak: 1, stop: false, escalate: false });
+  });
+
+  // forge:security fix-wave (round 1, HIGH): the first pass of sanitizeDivergingStreak
+  // failed OPEN — any corrupted/non-integer run.divergingStreak sanitized to 0, i.e. "no
+  // prior diverging wave", so a genuinely-diverging SECOND wave scored as the first and
+  // the two-consecutive trip could never fire. Must fail CLOSED instead, mirroring
+  // sanitizeIterations' fail-to-Infinity: corruption reads as "streak already at the trip
+  // threshold," so the very next diverging wave trips immediately.
+  it('AC-506.4 SEC1: sanitizeDivergingStreak fails CLOSED on corrupted input (negative/NaN/Infinity/string) — never silently 0', () => {
+    expect(sanitizeDivergingStreak(0)).toBe(0);
+    expect(sanitizeDivergingStreak(1)).toBe(1);
+    expect(sanitizeDivergingStreak(-1)).toBe(2);
+    expect(sanitizeDivergingStreak(NaN)).toBe(2);
+    expect(sanitizeDivergingStreak(Infinity)).toBe(2);
+    expect(sanitizeDivergingStreak('2')).toBe(2);
+    expect(sanitizeDivergingStreak(undefined)).toBe(2);
+    expect(sanitizeDivergingStreak(null)).toBe(2);
+    expect(sanitizeDivergingStreak(1.5)).toBe(2);
+  });
+
+  it('AC-506.4 SEC2: a corrupted run.divergingStreak trips on the VERY NEXT diverging wave — the exact live-fixed regression (a prior implementation silently reset to 0 and never tripped)', () => {
+    for (const corrupted of [-1, NaN, Infinity, '2', undefined]) {
+      let run = { ...freshRun(), divergingStreak: corrupted };
+      run = applyFiled(run, { issue: 700, kind: 'bug', from: 1 });
+      run = applyFiled(run, { issue: 701, kind: 'bug', from: 1 }); // closed 0, filed 2 — diverging
+      const dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 6 });
+      expect(dec, `corrupted divergingStreak ${JSON.stringify(corrupted)} must still trip`).toMatchObject({
+        verdict: 'diverging', stop: true, escalate: true,
+      });
+      expect(dec.reason).toMatch(/2 consecutive diverging waves/);
+    }
+  });
+
+  it('AC-506.4 SEC3: a corrupted run.divergingStreak still cures cleanly on a non-diverging wave (corruption never forces a false trip when the wave itself is healthy)', () => {
+    let run = { ...freshRun(), divergingStreak: NaN };
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' }); // closed 1, filed 0 — converging
+    const dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 4 });
+    expect(dec).toMatchObject({ verdict: 'converging', divergingStreak: 0, stop: false, escalate: false });
   });
 
   it('AC-506.4: recordConvergence persists divergingStreak to disk so the streak survives a resume', async () => {
