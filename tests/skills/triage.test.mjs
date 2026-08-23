@@ -13,11 +13,14 @@ describe('forge:triage skill (#469, AC-1/AC-2/AC-3/AC-4/AC-5)', () => {
     expect(s).toContain('{"issue":<n>,"verdict":"pass|fail","outcome":"ready|escalated|skipped","sequencedBehind":<n>|null,"reason":<string>|null}');
   });
 
-  it('AC-2: documents verdict:pass -> outcome:ready re-entering the autopilot queue via ledger.mjs applyOutcome stage:triage', async () => {
+  it('AC-2: documents verdict:pass -> outcome:ready re-entering the autopilot queue via ledger.mjs recordOutcome stage:triage', async () => {
+    // #556: `applyOutcome`/`stage:"triage"` (double-quoted) described a mechanism that never
+    // actually promoted the board — `recordOutcome(...,{ctx})`/`stage:'triage'` (the real,
+    // fixed call shape) replaces it; the re-entry claim itself is unchanged and still asserted.
     const s = await read('plugin/skills/triage/SKILL.md');
     expect(s).toMatch(/`verdict:"pass"`\s*→\s*`outcome:"ready"`/);
-    expect(s).toMatch(/applyOutcome/);
-    expect(s).toMatch(/stage:"triage"/);
+    expect(s).toMatch(/recordOutcome/);
+    expect(s).toMatch(/stage:'triage'/);
     expect(s).toMatch(/re-enters the autopilot queue/i);
   });
 

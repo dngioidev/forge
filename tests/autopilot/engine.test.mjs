@@ -38,6 +38,7 @@ import { CONFIG_RELPATH } from '../../plugin/scripts/lib/config.mjs';
 import { makeGh } from '../../plugin/scripts/lib/exec.mjs';
 import { writeCiWatchState, CI_WATCH_RELPATH } from '../../plugin/scripts/monitors/ci-watch.mjs';
 import { isFreshGreenTransition } from '../../plugin/scripts/autopilot/merge.mjs';
+import { makeBoardCtx } from '../../plugin/scripts/lib/boardctx.mjs';
 
 const t = (number, status, priority = 'p1') => ({ number, status, priority, title: `#${number}` });
 
@@ -171,6 +172,139 @@ describe('#487: a sequenced-behind triage verdict has a resting state selectNext
     expect(pick.ticket.number).toBe(3);
     expect(selectNext([t(1, 'backlog')], { pendingIssues: new Set([1]), dependencyIssues: new Set() })).toBeNull();
     expect(selectNext([t(2, 'backlog')], { pendingIssues: new Set(), dependencyIssues: new Set([2]) })).toBeNull();
+  });
+});
+
+describe('#556: a triage outcome:"ready" verdict must promote board status, or the ticket is re-triaged forever', () => {
+  // Minimal board-context harness (mirrors tests/board.test.mjs's CFG/statefulItems/ctxWith,
+  // trimmed to just the status field the reproduction needs) so this reproduces the REAL
+  // failure mode — `select.mjs` reads LIVE board status, not an in-memory flag — rather than
+  // asserting against a mock that can't actually demonstrate the loop.
+  const CFG = {
+    board: {
+      projectNumber: 8,
+      projectId: 'PVT_test',
+      fields: {
+        status: { id: 'PVTSSF_s', options: { backlog: 'sb', ready: 'sr', inProgress: 'sp', inReview: 'sv', blocked: 'sk', done: 'sd', wontDo: 'sw' } },
+        priority: { id: 'PVTSSF_p', options: { p0: 'a', p1: 'b', p2: 'c' } },
+        size: { id: 'PVTSSF_z', options: { xs: '1', s: '2', m: '3', l: '4', xl: '5' } },
+        type: { id: 'PVTSSF_t', options: { epic: 'e', item: 'i', bug: 'g', test: 't' } },
+      },
+      deliveryLogIssue: 15,
+    },
+    team: { members: [{ github: 'dngioidev', roles: ['maintainer'] }] },
+  };
+  const OPT_TO_NAME = { sb: 'Backlog', sr: 'Ready' };
+
+  async function ctxAt(issue, statusOptId) {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-556-'));
+    await mkdir(join(cwd, '.claude'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'forge.json'), JSON.stringify(CFG), 'utf8');
+    const state = { id: 'ITEM_1', number: issue, status: OPT_TO_NAME[statusOptId] };
+    const routes = [
+      ['repo view', { stdout: JSON.stringify({ owner: { login: 'dngioidev' }, name: 'forge', defaultBranchRef: { name: 'main' } }) }],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: state.id, content: { number: state.number }, status: state.status }] }) })],
+      [(j) => j.startsWith('project item-edit'), (j, args) => {
+        const optId = args[args.indexOf('--single-select-option-id') + 1];
+        if (OPT_TO_NAME[optId]) state.status = OPT_TO_NAME[optId];
+        return { stdout: '' };
+      }],
+    ];
+    const ctx = await makeBoardCtx({ gh: fakeGhFor(routes), cwd });
+    expect(ctx.ok).toBe(true);
+    return { cwd, ctx, state };
+  }
+
+  // Tiny local scripted gh (same shape as tests/helpers/fakegh.mjs's fakeGh) — kept inline
+  // rather than imported so this describe block has no path-fragile cross-directory import.
+  function fakeGhFor(routes) {
+    const execFn = async (cmd, args) => {
+      const joined = args.join(' ');
+      for (const [pred, res] of routes) {
+        const hit = typeof pred === 'string' ? joined.startsWith(pred) : pred(joined, args);
+        if (hit) {
+          const r = typeof res === 'function' ? res(joined, args) : res;
+          return { ok: r.ok ?? true, code: r.code ?? (r.ok === false ? 1 : 0), stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+        }
+      }
+      return { ok: false, code: 1, stdout: '', stderr: `fakeGh: unrouted call: gh ${joined}` };
+    };
+    return makeGh(execFn);
+  }
+
+  async function liveStatus(ctx) {
+    const items = await ctx.listItems({ refresh: true });
+    return ctx.itemFieldKey(items.items[0], 'status');
+  }
+
+  it('AC-1: reproduces the loop — a triage {verdict:"pass", outcome:"ready"} report, recorded WITHOUT the board ctx (the pre-#556 call shape), leaves the ticket at backlog so selectNext yields "triage" again for the same issue', async () => {
+    const { cwd, ctx } = await ctxAt(490, 'sb');
+    await recordOutcome(cwd, { issue: 490, outcome: 'ready', stage: 'triage' }); // no {ctx} — the old call shape
+    const status = await liveStatus(ctx);
+    expect(status).toBe('backlog'); // never promoted
+    expect(selectNext([t(490, status, 'p2')]).action).toBe('triage'); // re-selected as triage, same as before any fix
+  });
+
+  it('AC-2: recording the SAME report WITH the board ctx promotes backlog→ready, so the next selectNext returns "deliver" for it', async () => {
+    const { cwd, ctx } = await ctxAt(490, 'sb');
+    await recordOutcome(cwd, { issue: 490, outcome: 'ready', stage: 'triage' }, { ctx, log: () => {} });
+    const status = await liveStatus(ctx);
+    expect(status).toBe('ready');
+    expect(selectNext([t(490, status, 'p2')]).action).toBe('deliver'); // the loop this ticket fixes
+  });
+
+  it('security fix-wave: a non-integer/zero/negative entry.issue is rejected before it ever reaches the board mutation', async () => {
+    const { cwd, ctx } = await ctxAt(490, 'sb');
+    for (const bad of [NaN, 1.5, 0, -1, '490', null, undefined]) {
+      await expect(
+        recordOutcome(cwd, { issue: bad, outcome: 'ready', stage: 'triage' }, { ctx, log: () => {} }),
+        `issue=${bad}`,
+      ).rejects.toThrow(/positive integer/);
+    }
+    expect(await liveStatus(ctx)).toBe('backlog'); // no partial/rejected mutation ever reached the board
+  });
+
+  it('AC-3: recording the same ready outcome twice is idempotent — still ready, never throws', async () => {
+    const { cwd, ctx } = await ctxAt(550, 'sb');
+    await recordOutcome(cwd, { issue: 550, outcome: 'ready', stage: 'triage' }, { ctx, log: () => {} });
+    await expect(recordOutcome(cwd, { issue: 550, outcome: 'ready', stage: 'triage' }, { ctx, log: () => {} })).resolves.toBeTruthy();
+    expect(await liveStatus(ctx)).toBe('ready');
+  });
+
+  it('AC-4: a triage outcome:"skipped" is unaffected — board stays backlog even with ctx passed', async () => {
+    const { cwd, ctx } = await ctxAt(449, 'sb');
+    await recordOutcome(cwd, { issue: 449, outcome: 'skipped', stage: 'triage' }, { ctx, log: () => {} });
+    expect(await liveStatus(ctx)).toBe('backlog');
+  });
+
+  it('AC-4: a triage outcome:"escalated" is unaffected — board stays backlog even with ctx passed (escalate.mjs, not recordOutcome, owns the move to blocked)', async () => {
+    const { cwd, ctx } = await ctxAt(451, 'sb');
+    await recordOutcome(cwd, { issue: 451, outcome: 'escalated', stage: 'triage' }, { ctx, log: () => {} });
+    expect(await liveStatus(ctx)).toBe('backlog');
+  });
+
+  it("a shape outcome:'ready' (stage:'shape') is unaffected by this promotion path — shape's own subagent already performs its own move", async () => {
+    const { cwd, ctx } = await ctxAt(140, 'sb');
+    await recordOutcome(cwd, { issue: 140, outcome: 'ready', stage: 'shape' }, { ctx, log: () => {} });
+    expect(await liveStatus(ctx)).toBe('backlog'); // untouched — not this code path's job
+  });
+
+  it('a ctx-less call for every OTHER existing (stage, outcome) shape is completely unaffected (back-compat)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-556-compat-'));
+    await expect(recordOutcome(cwd, { issue: 1, outcome: 'merged', ref: 'PR#10', stage: 'deliver' })).resolves.toBeTruthy();
+    await expect(recordOutcome(cwd, { issue: 2, outcome: 'escalated' })).resolves.toBeTruthy();
+    await expect(recordOutcome(cwd, { issue: 140, outcome: 'ready', stage: 'shape' })).resolves.toBeTruthy();
+  });
+
+  it('AC-5: autopilot/SKILL.md and triage/SKILL.md now describe the real recordOutcome+ctx promotion mechanism, not the old (never-true) claim that a triage ready verdict alone re-enters the queue', async () => {
+    const autopilotSkill = await readFile(join(process.cwd(), 'plugin/skills/autopilot/SKILL.md'), 'utf8');
+    const triageSkill = await readFile(join(process.cwd(), 'plugin/skills/triage/SKILL.md'), 'utf8');
+    // the fixed mechanism is named in both skill docs
+    expect(autopilotSkill).toMatch(/recordOutcome\(.*\{ctx\}\)/);
+    expect(triageSkill).toMatch(/recordOutcome\(cwd, \{issue, outcome:'ready', stage:'triage'\}, \{ctx\}\)/);
+    // both explicitly say the promotion is real (backlog→ready), not merely a queue re-entry claim
+    expect(autopilotSkill).toMatch(/promotes? .*backlog.*ready/);
+    expect(triageSkill).toMatch(/promote the board status from `backlog` to `ready`/);
   });
 });
 
