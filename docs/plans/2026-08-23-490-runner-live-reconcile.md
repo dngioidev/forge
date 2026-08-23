@@ -14,19 +14,19 @@ flipped the config.
 
 ## Tasks
 
-**T1 — failing tests (AC.1, AC.3, AC.4, AC.5)**
+**T1 — failing tests (AC-490.1, AC-490.3, AC-490.4, AC-490.5)**
 **Files:** tests/runner-check.test.mjs, tests/doctor.test.mjs
 
-**T2 — reconcileRunnerRegistrations (AC.1, AC.3, AC.5)**
+**T2 — reconcileRunnerRegistrations (AC-490.1, AC-490.3, AC-490.5)**
 **Files:** plugin/scripts/lib/runner-checks.mjs
 
-**T3 — wire into runner-check (AC.1, AC.3)**
+**T3 — wire into runner-check (AC-490.1, AC-490.3)**
 **Files:** plugin/scripts/runner/check.mjs
 
-**T4 — wire into doctor (AC.1, AC.5)**
+**T4 — wire into doctor (AC-490.1, AC-490.5)**
 **Files:** plugin/scripts/doctor.mjs
 
-**T5 — cross-reference existing AC.2/AC.4 coverage**
+**T5 — cross-reference existing AC-490.2/AC-490.4 coverage**
 **Files:** tests/doctor.test.mjs, tests/runner-check.test.mjs
 
 **T6 — docs sync**
@@ -37,15 +37,15 @@ flipped the config.
 A new check, `runner-reconcile`, added to `plugin/scripts/lib/runner-checks.mjs`
 as `reconcileRunnerRegistrations()`, wired into both consumers:
 
-- **`plugin/scripts/runner/check.mjs`** (AC.1, AC.3) — reuses the visibility
+- **`plugin/scripts/runner/check.mjs`** (AC-490.1, AC-490.3) — reuses the visibility
   already resolved by check 1 and the runners list already fetched for
   check 5's online probe; adds its own `runner-reconcile` row.
-- **`plugin/scripts/doctor.mjs`** (AC.1, AC.5) — runs unconditionally,
+- **`plugin/scripts/doctor.mjs`** (AC-490.1, AC-490.5) — runs unconditionally,
   independent of `runner.enabled` (unlike the pre-existing `checkRunner()`
   block, which stays enabled-gated and untouched), reusing the owner/name
   already resolved for the neighboring `fork-pr-exposure` check.
 
-### Mismatch classes (AC.1)
+### Mismatch classes (AC-490.1)
 
 - `registered-but-config-disabled` — config disabled/absent, ≥1 live
   registration exists.
@@ -59,7 +59,7 @@ All rows are `warn` or `ok`, never `fail` — additive to, and non-colliding
 with, the existing hard-fail paths (`runner-block`/`runner-online`'s
 adoption gate, `fork-pr-exposure`'s public-repo fail from #489).
 
-### Degrade-safe (AC.3)
+### Degrade-safe (AC-490.3)
 
 If the live `actions/runners` lookup itself fails (no network, no `gh`
 auth, insufficient scope, unqueryable repo), the check returns `warn`
@@ -67,14 +67,14 @@ naming "could not verify" rather than a false green or a hard failure —
 mirrors the idiom already used by `checkDenylistStaleness` and the
 rate-budget preflight.
 
-### Silence for the ordinary consumer (AC.5)
+### Silence for the ordinary consumer (AC-490.5)
 
 `runner.enabled: false`/absent with zero live registrations returns `null`
 — no row at all, matching the precedent set by #447's staleness check.
 
-### AC.2 / part of AC.4 — already shipped by #489
+### AC-490.2 / part of AC-490.4 — already shipped by #489
 
-The public-repo + registered-runner security case (AC.2) and its hermetic
+The public-repo + registered-runner security case (AC-490.2) and its hermetic
 coverage were already implemented by `checkForkPrExposure` (#489, wired
 into both `doctor.mjs` and `runner/check.mjs`, tested in both suites).
 #489's own plan doc explicitly scoped that ticket as excluding "#490's
@@ -82,7 +82,7 @@ broader doctor/runner-check work." This ticket cross-references those
 existing tests to `AC-490.2`/`AC-490.4` rather than re-implementing a
 second, potentially conflicting check.
 
-### Hermetic tests (AC.4)
+### Hermetic tests (AC-490.4)
 
 `tests/runner-check.test.mjs` and `tests/doctor.test.mjs` cover, against
 mocked `gh` responses only (no live API calls): public+registered,
@@ -95,5 +95,5 @@ time in the same run).
 
 ## Out of scope
 
-Re-implementing or modifying `checkForkPrExposure`'s existing AC.2 logic;
+Re-implementing or modifying `checkForkPrExposure`'s existing AC-490.2 logic;
 changes to the `runner.enabled`-gated `checkRunner()` block in `doctor.mjs`.
