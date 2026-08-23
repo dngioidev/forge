@@ -284,6 +284,17 @@ describe('#556: a triage outcome:"ready" verdict must promote board status, or t
     await expect(recordOutcome(cwd, { issue: 2, outcome: 'escalated' })).resolves.toBeTruthy();
     await expect(recordOutcome(cwd, { issue: 140, outcome: 'ready', stage: 'shape' })).resolves.toBeTruthy();
   });
+
+  it('AC-5: autopilot/SKILL.md and triage/SKILL.md now describe the real recordOutcome+ctx promotion mechanism, not the old (never-true) claim that a triage ready verdict alone re-enters the queue', async () => {
+    const autopilotSkill = await readFile(join(process.cwd(), 'plugin/skills/autopilot/SKILL.md'), 'utf8');
+    const triageSkill = await readFile(join(process.cwd(), 'plugin/skills/triage/SKILL.md'), 'utf8');
+    // the fixed mechanism is named in both skill docs
+    expect(autopilotSkill).toMatch(/recordOutcome\(.*\{ctx\}\)/);
+    expect(triageSkill).toMatch(/recordOutcome\(cwd, \{issue, outcome:'ready', stage:'triage'\}, \{ctx\}\)/);
+    // both explicitly say the promotion is real (backlog→ready), not merely a queue re-entry claim
+    expect(autopilotSkill).toMatch(/promotes? .*backlog.*ready/);
+    expect(triageSkill).toMatch(/promote the board status from `backlog` to `ready`/);
+  });
 });
 
 describe('#487 fix-wave (forge:reviewer round 1): --dry-run must change nothing', () => {
