@@ -12,6 +12,26 @@ produced zero rows from either tool — the exact shape that let three
 registrations on a public repo (#489) go unmentioned for weeks after #426
 flipped the config.
 
+## Tasks
+
+**T1 — failing tests (AC.1, AC.3, AC.4, AC.5)**
+**Files:** tests/runner-check.test.mjs, tests/doctor.test.mjs
+
+**T2 — reconcileRunnerRegistrations (AC.1, AC.3, AC.5)**
+**Files:** plugin/scripts/lib/runner-checks.mjs
+
+**T3 — wire into runner-check (AC.1, AC.3)**
+**Files:** plugin/scripts/runner/check.mjs
+
+**T4 — wire into doctor (AC.1, AC.5)**
+**Files:** plugin/scripts/doctor.mjs
+
+**T5 — cross-reference existing AC.2/AC.4 coverage**
+**Files:** tests/doctor.test.mjs, tests/runner-check.test.mjs
+
+**T6 — docs sync**
+**Files:** plugin/commands/runner-check.md, docs/README.md, docs/plans/2026-08-23-490-runner-live-reconcile.md
+
 ## What shipped
 
 A new check, `runner-reconcile`, added to `plugin/scripts/lib/runner-checks.mjs`
