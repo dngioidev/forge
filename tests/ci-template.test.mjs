@@ -133,3 +133,45 @@ describe('license gate CI wiring (#343)', () => {
     expect(good.violations).toEqual([]);
   });
 });
+
+// Coordinated major upgrade of the two GitHub Actions this repo pins directly
+// (#555, bundling Dependabot majors #422 and #548).
+describe('ci(deps): pnpm/action-setup 4->6, astral-sh/setup-uv 9->10 (#555)', () => {
+  const PNPM_ACTION_SETUP_SHA = '0977fd99725f1db4007ccb2928dbb4e90d06cc86';
+  const SETUP_UV_SHA = '20cfd1bf945f4377ade1205e4dbc17946fc9a30d';
+
+  it('AC-555.1: all four call sites are pinned to the target major SHAs with matching version comments', async () => {
+    const wf = await readFile(join(REPO_ROOT, '.github', 'workflows', 'verify.yml'), 'utf8');
+    const pnpmPins = wf.match(new RegExp(`pnpm/action-setup@${PNPM_ACTION_SETUP_SHA} # v6\\.0\\.10`, 'g')) ?? [];
+    expect(pnpmPins.length).toBe(3); // test-linux, test-windows, license
+    expect(wf).toContain(`astral-sh/setup-uv@${SETUP_UV_SHA} # v10.0.1`);
+    // No stale v4/v9 pin left behind anywhere in the file.
+    expect(wf).not.toContain('pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda');
+    expect(wf).not.toContain('astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9');
+  });
+
+  it("AC-555.3: pnpm's version still resolves from packageManager, and no call site introduces a conflicting version: input", async () => {
+    const pkg = JSON.parse(await readFile(join(REPO_ROOT, 'package.json'), 'utf8'));
+    expect(pkg.packageManager).toBe('pnpm@10.14.0');
+
+    const wf = await readFile(join(REPO_ROOT, '.github', 'workflows', 'verify.yml'), 'utf8');
+    // Every pnpm/action-setup step is bare — the next non-blank line is a new step
+    // (`- uses:`/`- name:`/`- run:`), never a `with:` block feeding it a version.
+    const lines = wf.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes('pnpm/action-setup@')) continue;
+      const next = (lines[i + 1] ?? '').trim();
+      expect(next === '' || next.startsWith('- ')).toBe(true);
+    }
+  });
+
+  it('AC-555.4: the SHA-pin assertion for the license job stays a shape check, not re-tightened to a literal SHA (#420 regression)', async () => {
+    const testSrc = await readFile(join(REPO_ROOT, 'tests', 'ci-template.test.mjs'), 'utf8');
+    const licenseJobAssertion = testSrc.match(/expect\(licenseJob\)\.toMatch\(\/pnpm\\\/action-setup@[^)]+\)/)?.[0] ?? '';
+    // Still a shape regex (hex-class repetition), and does NOT hardcode either the
+    // old (v4.1.0) or the new (v6.0.10) literal SHA as an exact-match string.
+    expect(licenseJobAssertion).toMatch(/\[0-9a-f\]\{40\}/);
+    expect(licenseJobAssertion).not.toContain('a7487c7e89a18df4991f7f222e4898a00d66ddda');
+    expect(licenseJobAssertion).not.toContain(PNPM_ACTION_SETUP_SHA);
+  });
+});
