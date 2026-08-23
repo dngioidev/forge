@@ -586,6 +586,48 @@ describe('comment (AC-2.3)', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain('valid:');
   });
+
+  it('AC-557.1/.2: --body-file loads the comment body from a file (#557)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-comment-bodyfile-'));
+    const bf = join(dir, 'body.md');
+    await writeFile(bf, 'Body loaded from file, not inline.', 'utf8');
+    let comments = [];
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('api repos/') && j.includes('/comments?'), () => ({ stdout: JSON.stringify(comments) })],
+      [(j) => j.startsWith('api repos/') && j.endsWith('/comments') === false && j.includes('-f'), () => {
+        comments = [{ id: 99, body: '<!-- forge:trail:note -->' }];
+        return { stdout: JSON.stringify({ id: 99 }) };
+      }],
+    ]);
+    const res = await runComment(ctx, commentArgs(['--issue', '4', '--phase', 'note', '--body-file', bf]), noop);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('Body loaded from file, not inline.'))).toBe(true);
+  });
+
+  it('AC-557.2: a --body-file read error has the same message shape as create.mjs (#104)', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runComment(ctx, commentArgs(['--issue', '4', '--phase', 'note', '--body-file', 'C:/definitely/not/a/real/path.md']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/^--body-file: cannot read/);
+    expect(calls.some((c) => c.startsWith('api'))).toBe(false); // nothing posted
+  });
+
+  it('AC-557.3: --body and --body-file together fail fast — never a silent winner', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runComment(ctx, commentArgs(['--issue', '4', '--phase', 'note', '--body', 'inline', '--body-file', 'C:/whatever.md']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('mutually exclusive');
+    expect(calls.some((c) => c.startsWith('api'))).toBe(false);
+  });
+
+  it('AC-557.4: unrecognized flags fail fast on comment.mjs, matching create.mjs (#104)', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runComment(ctx, commentArgs(['--issue', '4', '--phase', 'note', '--body', 'x', '--bogus']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unrecognized flag/);
+    expect(res.error).toContain('--bogus');
+    expect(calls.some((c) => c.startsWith('api'))).toBe(false);
+  });
 });
 
 describe('close (AC-117)', () => {

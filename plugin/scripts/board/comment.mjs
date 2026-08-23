@@ -3,6 +3,7 @@
  * board comment — ticket-trail comment, idempotent per phase marker
  * (spec §6 ticket-trail law; plan T4, AC-2.3).
  */
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
@@ -12,22 +13,46 @@ import { attemptOrDefer } from '../lib/outbox.mjs';
 
 export const PHASES = ['started', 'spec', 'plan', 'pr', 'gate-fail', 'escalation', 'ci-green', 'merged', 'note'];
 
+const KNOWN_FLAGS = '--issue --phase --body --body-file --actor --session';
+
 export function parseArgs(argv) {
-  const a = { issue: null, phase: null, body: null, actor: null, session: null };
+  const a = { issue: null, phase: null, body: null, bodyFile: null, actor: null, session: null, unknownFlags: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--issue') a.issue = Number(argv[++i]);
-    else if (argv[i] === '--phase') a.phase = argv[++i];
-    else if (argv[i] === '--body') a.body = argv[++i];
-    else if (argv[i] === '--actor') a.actor = argv[++i];
-    else if (argv[i] === '--session') a.session = argv[++i];
+    const k = argv[i];
+    if (k === '--issue') a.issue = Number(argv[++i]);
+    else if (k === '--phase') a.phase = argv[++i];
+    else if (k === '--body') a.body = argv[++i];
+    else if (k === '--body-file') a.bodyFile = argv[++i];
+    else if (k === '--actor') a.actor = argv[++i];
+    else if (k === '--session') a.session = argv[++i];
+    else a.unknownFlags.push(k); // #557 (AC-4): never silently drop — mirrors create.mjs (#104)
   }
   return a;
 }
 
 export async function runComment(ctx, args, log = console.log) {
+  // #557 (AC-4): fail-fast on unrecognized flags rather than dropping them
+  // silently, matching create.mjs's existing behaviour (#104).
+  if (args.unknownFlags?.length) {
+    return { ok: false, error: `unrecognized flag(s): ${args.unknownFlags.join(', ')} — supported: ${KNOWN_FLAGS}` };
+  }
   if (!Number.isInteger(args.issue)) return { ok: false, error: '--issue <number> is required' };
   if (!PHASES.includes(args.phase)) return { ok: false, error: `unknown phase '${args.phase}' — valid: ${PHASES.join(', ')}` };
-  if (!args.body) return { ok: false, error: '--body is required' };
+  // #557 (AC-3): --body and --body-file are mutually exclusive, resolved as a
+  // hard error rather than one silently winning — a caller who passes both
+  // gets told immediately instead of guessing which one landed.
+  if (args.body && args.bodyFile) {
+    return { ok: false, error: '--body and --body-file are mutually exclusive — pass one, not both' };
+  }
+  // #557 (AC-2): --body-file reads the comment body from a file, same
+  // semantics (and the same read-error message shape) as create.mjs's
+  // --body-file (#104) — this is the mechanism the denylist literal-string
+  // mitigation every skill prescribes actually depends on for a trail comment.
+  if (args.bodyFile) {
+    try { args = { ...args, body: await readFile(args.bodyFile, 'utf8') }; }
+    catch (e) { return { ok: false, error: `--body-file: cannot read ${args.bodyFile}: ${e.message}` }; }
+  }
+  if (!args.body) return { ok: false, error: '--body or --body-file is required' };
 
   // #108: optional actor + session so a picked ticket records who + which session.
   const meta = [args.actor && `by @${args.actor}`, args.session && `session \`${args.session}\``].filter(Boolean).join(' · ');
