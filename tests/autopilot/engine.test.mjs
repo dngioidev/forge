@@ -12,6 +12,7 @@ import {
   applyOutcome, applyFiled, guardTripped, nextIteration, renderReport, freshRun, startRun, recordOutcome, loadRun,
   RUN_RELPATH, DEFAULT_RUNAWAY_FACTOR, sanitizePositiveInt, sanitizeIterations,
   applyBudgetReading, recentBudgetDeltas, recordBudgetReading, MAX_BUDGET_READINGS,
+  convergence, convergenceGuard, recordConvergence, recordFiled, sanitizeDivergingStreak,
 } from '../../plugin/scripts/autopilot/ledger.mjs';
 import { mergeAuthPreflight, isAutoMergeMode, MERGE_MODES } from '../../plugin/scripts/autopilot/preflight.mjs';
 import { resolveReturnedTicket, STALL_OUTCOME, RESOLVED_OUTCOMES, NONCONFORMING_OUTCOME, matchHeldVerdicts } from '../../plugin/scripts/autopilot/watchdog.mjs';
@@ -1924,6 +1925,239 @@ describe('autopilot run ledger (#129, AC-6)', () => {
     await recordOutcome(cwd, { issue: 9, outcome: 'merged', ref: 'PR#9' });
     const onDisk = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
     expect(onDisk.outcomes).toHaveLength(1);
+  });
+});
+
+describe('autopilot convergence verdict (#506, epic #503)', () => {
+  it('AC-506.1: convergence is pure — closed (merged outcomes) vs filed (run.filed), no board access', () => {
+    let run = freshRun();
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    run = applyOutcome(run, { issue: 2, outcome: 'merged', ref: 'PR#2' });
+    run = applyOutcome(run, { issue: 3, outcome: 'escalated' }); // never counted as "closed" — didn't merge
+    run = applyFiled(run, { issue: 10, kind: 'bug', from: 1 });
+    const wave = convergence(run, { startingOpen: 40, currentOpen: 39 });
+    expect(wave).toMatchObject({ closed: 2, filed: 1, netDelta: 1, verdict: 'converging' });
+  });
+
+  it('AC-506.1: the exact reported false-positive — 11 merged, 13 filed reads as diverging, not "good"', () => {
+    let run = freshRun();
+    for (let i = 0; i < 11; i++) run = applyOutcome(run, { issue: 100 + i, outcome: 'merged', ref: `PR#${i}` });
+    for (let i = 0; i < 13; i++) run = applyFiled(run, { issue: 200 + i, kind: 'bug', from: 1 });
+    const wave = convergence(run, { startingOpen: 50, currentOpen: 52 });
+    expect(wave).toMatchObject({ closed: 11, filed: 13, netDelta: -2, verdict: 'diverging' });
+  });
+
+  it('AC-506.1: netDelta 0 (equal closed/filed) verdicts flat', () => {
+    let run = freshRun();
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    run = applyFiled(run, { issue: 2, kind: 'item', from: 1 });
+    expect(convergence(run, { startingOpen: 5, currentOpen: 5 })).toMatchObject({ netDelta: 0, verdict: 'flat' });
+  });
+
+  it('AC-506.2: startRun persists startingOpen once, resume-safe (parity with boardSizeAtStart)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    const started = await startRun(cwd, { boardSize: 18, startingOpen: 18 });
+    expect(started.startingOpen).toBe(18);
+    await recordOutcome(cwd, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    // the open count moved live — resume must NOT recompute the anchor.
+    const resumed = await startRun(cwd, { boardSize: 5, startingOpen: 12 });
+    expect(resumed.startingOpen).toBe(18);
+  });
+
+  it('AC-506.2: a pre-#506 ledger with no startingOpen field backfills on resume, then never re-anchors', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    await writeJson(join(cwd, RUN_RELPATH), {
+      version: 1, startedAt: '2026-08-11T18:44:15.973Z', iterations: 3, outcomes: [], filed: [],
+      mergeMode: 'auto-merge', mergeReason: null, boardSizeAtStart: 18,
+    });
+    const resumed = await startRun(cwd, { startingOpen: 15 });
+    expect(resumed.startingOpen).toBe(15);
+    const resumedAgain = await startRun(cwd, { startingOpen: 3 });
+    expect(resumedAgain.startingOpen).toBe(15); // never re-anchored
+  });
+
+  it('AC-506.2: a corrupted startingOpen opt (Infinity/NaN/0/negative) is never persisted — startRun rejects it, same as boardSize', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    expect((await startRun(cwd, { startingOpen: Infinity })).startingOpen).toBeNull();
+    const cwd2 = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    expect((await startRun(cwd2, { startingOpen: NaN })).startingOpen).toBeNull();
+    const cwd3 = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    expect((await startRun(cwd3, { startingOpen: 0 })).startingOpen).toBeNull();
+  });
+
+  it('AC-506.3: renderReport includes a convergence line — closed, filed, net delta, open-now vs open-at-start', () => {
+    let run = { ...freshRun(), startingOpen: 40 };
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    run = applyFiled(run, { issue: 2, kind: 'bug', from: 1 });
+    run = applyFiled(run, { issue: 3, kind: 'bug', from: 1 });
+    const out = renderReport(run, { currentOpen: 41 });
+    expect(out).toMatch(/convergence: closed 1, filed 2, net -1 \(diverging\)/);
+    expect(out).toMatch(/open now 41 vs 40 at start/);
+  });
+
+  it('AC-506.3: the convergence line is additive-only — omitted when currentOpen (or startingOpen) is unavailable, pre-#506 reports unchanged', () => {
+    const run = applyOutcome(freshRun(), { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    expect(renderReport(run)).not.toContain('convergence:'); // no currentOpen passed
+    expect(renderReport(run, { currentOpen: 10 })).not.toContain('convergence:'); // run.startingOpen still null
+  });
+
+  it('AC-506.4: ONE diverging wave does not stop the loop', () => {
+    let run = freshRun();
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    run = applyFiled(run, { issue: 2, kind: 'bug', from: 1 });
+    run = applyFiled(run, { issue: 3, kind: 'bug', from: 1 }); // closed 1, filed 2 — diverging
+    const dec = convergenceGuard(run, { startingOpen: 10, currentOpen: 11 });
+    expect(dec.verdict).toBe('diverging');
+    expect(dec.divergingStreak).toBe(1);
+    expect(dec.stop).toBe(false);
+    expect(dec.escalate).toBe(false);
+    expect(dec.reason).toBeNull();
+  });
+
+  it('AC-506.4: TWO CONSECUTIVE diverging waves stop the loop and escalate, naming the filed tickets', () => {
+    let run = { ...freshRun(), divergingStreak: 1 }; // as if wave 1 already came back diverging
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' });
+    run = applyFiled(run, { issue: 556, kind: 'bug', from: 1 });
+    run = applyFiled(run, { issue: 557, kind: 'bug', from: 1 }); // closed 1, filed 2 — diverging again
+    const dec = convergenceGuard(run, { startingOpen: 10, currentOpen: 11 });
+    expect(dec.verdict).toBe('diverging');
+    expect(dec.divergingStreak).toBe(2);
+    expect(dec.stop).toBe(true);
+    expect(dec.escalate).toBe(true);
+    expect(dec.reason).toMatch(/2 consecutive diverging waves/);
+    expect(dec.reason).toMatch(/#556/);
+    expect(dec.reason).toMatch(/#557/);
+  });
+
+  it('AC-506.4: a converging (or flat) wave resets the streak — a diverging wave after it does not trip', () => {
+    // wave 1: diverging (streak -> 1)
+    let run = freshRun();
+    run = applyFiled(run, { issue: 1, kind: 'bug', from: 1 }); // closed 0, filed 1 — diverging
+    let dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 6 });
+    expect(dec).toMatchObject({ verdict: 'diverging', divergingStreak: 1, stop: false });
+    run = { ...run, divergingStreak: dec.divergingStreak };
+
+    // wave 2: converging — resets the streak to 0
+    run = applyOutcome(run, { issue: 2, outcome: 'merged', ref: 'PR#2' });
+    run = applyOutcome(run, { issue: 3, outcome: 'merged', ref: 'PR#3' });
+    dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 3 });
+    expect(dec).toMatchObject({ verdict: 'converging', divergingStreak: 0, stop: false });
+    run = { ...run, divergingStreak: dec.divergingStreak };
+
+    // wave 3: diverging again — this is only the FIRST diverging wave since the reset, must not trip
+    run = applyFiled(run, { issue: 4, kind: 'bug', from: 1 });
+    run = applyFiled(run, { issue: 5, kind: 'bug', from: 1 });
+    dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 4 });
+    expect(dec).toMatchObject({ verdict: 'diverging', divergingStreak: 1, stop: false, escalate: false });
+  });
+
+  // forge:security fix-wave (round 1, HIGH): the first pass of sanitizeDivergingStreak
+  // failed OPEN — any corrupted/non-integer run.divergingStreak sanitized to 0, i.e. "no
+  // prior diverging wave", so a genuinely-diverging SECOND wave scored as the first and
+  // the two-consecutive trip could never fire. Must fail CLOSED instead, mirroring
+  // sanitizeIterations' fail-to-Infinity: corruption reads as "streak already at the trip
+  // threshold," so the very next diverging wave trips immediately.
+  it('AC-506.4 SEC1: sanitizeDivergingStreak fails CLOSED on corrupted input (negative/NaN/Infinity/string) — never silently 0', () => {
+    expect(sanitizeDivergingStreak(0)).toBe(0);
+    expect(sanitizeDivergingStreak(1)).toBe(1);
+    expect(sanitizeDivergingStreak(-1)).toBe(2);
+    expect(sanitizeDivergingStreak(NaN)).toBe(2);
+    expect(sanitizeDivergingStreak(Infinity)).toBe(2);
+    expect(sanitizeDivergingStreak('2')).toBe(2);
+    expect(sanitizeDivergingStreak(undefined)).toBe(2);
+    expect(sanitizeDivergingStreak(null)).toBe(2);
+    expect(sanitizeDivergingStreak(1.5)).toBe(2);
+  });
+
+  it('AC-506.4 SEC2: a corrupted run.divergingStreak trips on the VERY NEXT diverging wave — the exact live-fixed regression (a prior implementation silently reset to 0 and never tripped)', () => {
+    for (const corrupted of [-1, NaN, Infinity, '2', undefined]) {
+      let run = { ...freshRun(), divergingStreak: corrupted };
+      run = applyFiled(run, { issue: 700, kind: 'bug', from: 1 });
+      run = applyFiled(run, { issue: 701, kind: 'bug', from: 1 }); // closed 0, filed 2 — diverging
+      const dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 6 });
+      expect(dec, `corrupted divergingStreak ${JSON.stringify(corrupted)} must still trip`).toMatchObject({
+        verdict: 'diverging', stop: true, escalate: true,
+      });
+      expect(dec.reason).toMatch(/2 consecutive diverging waves/);
+    }
+  });
+
+  it('AC-506.4 SEC3: a corrupted run.divergingStreak still cures cleanly on a non-diverging wave (corruption never forces a false trip when the wave itself is healthy)', () => {
+    let run = { ...freshRun(), divergingStreak: NaN };
+    run = applyOutcome(run, { issue: 1, outcome: 'merged', ref: 'PR#1' }); // closed 1, filed 0 — converging
+    const dec = convergenceGuard(run, { startingOpen: 5, currentOpen: 4 });
+    expect(dec).toMatchObject({ verdict: 'converging', divergingStreak: 0, stop: false, escalate: false });
+  });
+
+  it('AC-506.4: recordConvergence persists divergingStreak to disk so the streak survives a resume', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+    await startRun(cwd);
+    let run = await loadRun(cwd);
+    run = applyFiled(run, { issue: 1, kind: 'bug', from: 1 });
+    await writeJson(join(cwd, RUN_RELPATH), run); // simulate the wave's filing already landed on disk
+    const dec1 = await recordConvergence(cwd, { startingOpen: 3, currentOpen: 4 });
+    expect(dec1).toMatchObject({ verdict: 'diverging', divergingStreak: 1, stop: false });
+    const onDisk1 = JSON.parse(await readFile(join(cwd, RUN_RELPATH), 'utf8'));
+    expect(onDisk1.divergingStreak).toBe(1);
+
+    let run2 = await loadRun(cwd);
+    run2 = applyFiled(run2, { issue: 2, kind: 'bug', from: 1 });
+    await writeJson(join(cwd, RUN_RELPATH), run2);
+    const dec2 = await recordConvergence(cwd, { startingOpen: 3, currentOpen: 5 });
+    expect(dec2).toMatchObject({ divergingStreak: 2, stop: true, escalate: true });
+  });
+
+  // AC-506.5: AC.1/AC.4 are driven from constructed `run` objects with no board access —
+  // demonstrated structurally: both calls below are synchronous (no Promise, no injected
+  // `gh`/ctx), and every test above in this describe block already proves it in practice.
+  it('AC-506.5: convergence and convergenceGuard are synchronous pure functions over a constructed run — no board/gh access', () => {
+    const run = { ...freshRun(), divergingStreak: 1, filed: [{ issue: 9, kind: 'bug', from: 1 }] };
+    const waveResult = convergence(run, { startingOpen: 2, currentOpen: 3 });
+    const guardResult = convergenceGuard(run, { startingOpen: 2, currentOpen: 3 });
+    expect(waveResult).not.toBeInstanceOf(Promise);
+    expect(guardResult).not.toBeInstanceOf(Promise);
+    expect(guardResult.stop).toBe(true); // streak was already 1, this wave (0 closed, 1 filed) makes 2
+  });
+
+  describe('AC-506.6: recordFiled/applyFiled wiring — fileWork actually reaches run.filed', () => {
+    it('applyFiled fails LOUD on a malformed entry instead of silently writing a phantom that jams the dedup — the live #506 trap (recordFiled(cwd, 556))', () => {
+      const run = freshRun();
+      // the exact live trap: a bare issue number destructures to {issue: undefined, ...}
+      expect(() => applyFiled(run, /** @type {any} */(556))).toThrow(/positive integer/);
+      expect(() => applyFiled(run, { issue: undefined, kind: 'bug', from: 1 })).toThrow(/positive integer/);
+      expect(() => applyFiled(run, { issue: -1, kind: 'bug', from: 1 })).toThrow(/positive integer/);
+      expect(() => applyFiled(run, { issue: 'abc', kind: 'bug', from: 1 })).toThrow(/positive integer/);
+    });
+
+    it('fileWork records the filed ticket into run.json THROUGH THE REAL PATH the loop uses — not a direct applyFiled call', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      await startRun(cwd);
+      const create = async (_ctx, spec) => { void spec; return { ok: true, number: 601 }; };
+      const res = await fileWork({ cwd }, { title: 'race in queue', kind: 'bug', from: 506, parent: 503 }, create, () => {});
+      expect(res).toMatchObject({ ok: true, number: 601, kind: 'bug' });
+      // this is the assertion AC.6 exists for: run.filed reflects reality, sourced from
+      // disk (loadRun), not from an in-memory object the test already holds a reference to.
+      const run = await loadRun(cwd);
+      expect(run.filed).toEqual([{ issue: 601, kind: 'bug', from: 506 }]);
+    });
+
+    it('fileWork never throws when the ledger write fails (best-effort) — the board ticket already exists, a duplicate-on-retry would be worse', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'forge-autopilot-'));
+      // RUN_RELPATH itself is a directory, not a file — loadRun/writeJson inside
+      // recordFiled both fail against it (mirrors AC-204.2's EISDIR technique above).
+      await mkdir(join(cwd, RUN_RELPATH), { recursive: true });
+      const create = async () => ({ ok: true, number: 602 });
+      const logs = [];
+      const res = await fileWork({ cwd }, { title: 'x', kind: 'bug', from: 1 }, create, (m) => logs.push(m));
+      expect(res).toMatchObject({ ok: true, number: 602 }); // filing itself still reports success
+      expect(logs.some((l) => /failed to record it in the run ledger/.test(l))).toBe(true);
+    });
+
+    it('fileWork with no ctx.cwd (existing pre-#506 call shape) skips ledger recording without throwing', async () => {
+      const create = async (_ctx, spec) => { void spec; return { ok: true, number: 603 }; };
+      const res = await fileWork({}, { title: 'race in queue', kind: 'bug', from: 12, parent: 125 }, create, () => {});
+      expect(res).toMatchObject({ ok: true, number: 603, kind: 'bug' });
+    });
   });
 });
 

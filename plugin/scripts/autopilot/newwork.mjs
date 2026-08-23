@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { runCreate } from '../board/create.mjs';
+import { recordFiled } from './ledger.mjs';
 
 // Delivery kinds → board type options (epic/item/bug/test). No 'spike' type — a
 // spike is tracked as an item whose body says "spike:" (deliver's spike route).
@@ -38,7 +39,22 @@ export async function fileWork(ctx, spec, create = runCreate, log = console.log)
     unknownFlags: [],
   }, log);
   if (!res.ok) return res;
-  return { ok: true, number: res.number, kind: spec.kind ?? 'item' };
+  const kind = spec.kind ?? 'item';
+  // #506 AC.6: this is THE choke point every real filing (CLI or MCP) passes through
+  // — before this, `recordFiled`/`applyFiled` had ZERO callers, so `run.filed` was
+  // always empty in practice no matter how much a run actually filed (verified live:
+  // a run that filed #556/#557/#561/#562/#566 reported `run.filed: []`). Best-effort
+  // (log, don't throw): the board ticket above is ALREADY created — surfacing a ledger
+  // write failure as a `fileWork` failure would invite the caller to retry and file a
+  // DUPLICATE ticket, which is worse than an under-recorded (but honestly logged) run.
+  if (ctx?.cwd) {
+    try {
+      await recordFiled(ctx.cwd, { issue: res.number, kind, from: spec.from ?? null });
+    } catch (err) {
+      log(`warning: filed #${res.number} but failed to record it in the run ledger: ${err.message}`);
+    }
+  }
+  return { ok: true, number: res.number, kind };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
