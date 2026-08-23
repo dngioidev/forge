@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { readJson, writeJson } from '../lib/jsonfile.mjs';
 import { mergeAuthPreflight } from './preflight.mjs';
 import { pendingCount as outboxPendingCount } from '../lib/outbox.mjs';
+import { runMove } from '../board/move.mjs';
 
 export const RUN_RELPATH = join('.forge', 'autopilot', 'run.json');
 // 'ready' (#466 AC-6) is the terminal outcome of a successful `forge:shape` —
@@ -286,9 +287,51 @@ export function renderReport(run, { outboxPending = 0 } = {}) {
 }
 
 // IO wrappers the loop calls.
-export async function recordOutcome(cwd, entry) {
+/**
+ * #556: a triage `outcome:"ready"` verdict never landed on the board. `forge:triage`
+ * deliberately places tickets at `--status backlog` by design (triage/SKILL.md — an
+ * intentional, protected contract, AC-2 forbids changing it), and — before this fix —
+ * nothing else ever promoted the status once triage returned `pass`/`ready`. `select.mjs`
+ * routes purely on LIVE board status, so the very next `selectNext` pass re-picked the SAME
+ * ticket as `triage` again: one full triage subagent burned per iteration, forever
+ * (reproduced live for #490 and #550 — both needed a manual `move.mjs --status ready`
+ * before `select.mjs` would return `deliver`).
+ *
+ * `recordOutcome` is already the one choke point every triage report passes through on its
+ * way to `run.json` — this is where the promotion is wired in, so it can't be forgotten at a
+ * call site, and WITHOUT requiring the triage subagent itself to change its placement
+ * contract (the orchestrator's record step performs it from the outside, per AC-2's explicit
+ * either/or).
+ *
+ * Narrowly scoped (AC-4): only a triage `outcome:"ready"` verdict promotes anything.
+ * `outcome:"skipped"` still rests on the `dependencies/` record at `backlog` (#487) and
+ * `outcome:"escalated"` still parks at `blocked` via `escalate.mjs` — neither's entry shape
+ * matches `stage==='triage' && outcome==='ready'`, so neither ever reaches `runMove` below.
+ * A `shape` `outcome:"ready"` entry (`stage:'shape'`) also never reaches it: shape's own
+ * subagent already performs its OWN board promotion as part of "promotes it Backlog→Ready"
+ * (shape/SKILL.md) — re-promoting here would be redundant, so the stage check excludes it
+ * on purpose rather than relying on `runMove`'s no-op being merely harmless.
+ *
+ * Idempotent (AC-3): `runMove` itself already no-ops (`changed:false`, no mutation, no
+ * error) when the ticket is already at the target status, so recording the same `ready`
+ * outcome twice — e.g. a resumed session re-processing a report it already handled — never
+ * errors and never re-fires a redundant board mutation beyond that safe idempotent re-check.
+ *
+ * `ctx` (a `makeBoardCtx` board context, the same shape every `board/*.mjs` script already
+ * takes) is optional and defaults to `null`: omitting it degrades to the pre-fix behavior
+ * (record to `run.json` only, no board call), so every existing 2-arg `recordOutcome` call
+ * site — deliver's `merged`/`escalated`/`awaiting-human`, shape's own `ready`/`escalated` —
+ * is completely unaffected. A real orchestrator run passes `ctx` so the promotion actually
+ * happens; a `runMove` failure is fail-loud (throws) rather than silently leaving the ticket
+ * unpromoted (§ Auto-triage front door — autopilot never silently drops a resolved verdict).
+ */
+export async function recordOutcome(cwd, entry, { ctx = null, log = console.log } = {}) {
   const run = applyOutcome(await loadRun(cwd), entry);
   await writeJson(join(cwd, RUN_RELPATH), run);
+  if (ctx && entry.stage === 'triage' && entry.outcome === 'ready') {
+    const moved = await runMove(ctx, { issue: entry.issue, status: 'ready' }, log);
+    if (!moved.ok) throw new Error(`recordOutcome: triage ready → board promotion failed for #${entry.issue} — ${moved.error}`);
+  }
   return run;
 }
 export async function recordFiled(cwd, entry) {
