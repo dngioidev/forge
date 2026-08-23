@@ -45,11 +45,32 @@ export async function fetchRepoVisibility(gh) {
 }
 
 /**
+ * Raw live-registrations fetch (repo endpoint by default, org endpoint when
+ * `runner.sharing==='org'`, decision 2), factored out of `probeRunnerOnline` so
+ * `reconcileRunnerRegistrations` (#490) can share exactly one gh call with it
+ * instead of re-querying the same endpoint. per_page=100 so a box with many
+ * registrations isn't truncated. Returns `{ ok:false, isOrg, stderr }` on a gh
+ * failure OR an unexpected response shape (mirrors `checkForkPrExposure`'s own
+ * shape guard — a malformed body must never read as "confirmed zero", the same
+ * "could not verify" degrade a hard gh failure gets), else `{ ok:true, isOrg,
+ * list }` with `list` a genuine array from the API.
+ */
+export async function fetchRunnersList({ gh, owner, name, runner, legNote = '' }) {
+  const isOrg = runner?.sharing === 'org';
+  const base = isOrg ? `orgs/${owner}/actions/runners` : `repos/${owner}/${name}/actions/runners`;
+  const api = await gh(['api', `${base}?per_page=100`], { parseJson: true });
+  if (!api.ok) return { ok: false, isOrg, stderr: firstLine(api.stderr) || 'gh api failed' };
+  if (!Array.isArray(api.json?.runners)) return { ok: false, isOrg, stderr: 'unexpected response shape (could not confirm registrations)' };
+  return { ok: true, isOrg, list: api.json.runners };
+}
+
+const labelNamesOf = (r) => new Set((r.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean).map((s) => s.toLowerCase()));
+
+/**
  * The registration + online probe (ADR-0005 decision 3 label routing). Queries the
  * repo runners endpoint by default, the org endpoint when `runner.sharing==='org'`
  * (decision 2), and matches the configured `labels` case-insensitively (GitHub does
- * too). per_page=100 so a box with many registrations isn't truncated to a false
- * "not registered". Returns a single result object with the given `checkName`.
+ * too). Returns a single result object with the given `checkName`.
  *
  * `labels` overrides `runner.labels` (the Windows leg passes its windows label set
  * when `runner.windows==='native'`). `offlineLevel` sets the severity when the API
@@ -57,20 +78,23 @@ export async function fetchRepoVisibility(gh) {
  * line, 'fail' for the adoption-readiness gate (#245). A gh-api FAILURE always
  * degrades to a warn regardless (graceful degradation, never a hard fail on a
  * transient gh/scope error).
+ *
+ * `fetched` accepts an already-resolved `fetchRunnersList()` result so a caller
+ * that queried the same endpoint moments ago (e.g. #490's reconciliation) can
+ * share it instead of triggering a second, redundant gh call; omitted, this
+ * fetches for itself.
  */
-export async function probeRunnerOnline({ gh, owner, name, runner, checkName = 'runner', labels = runner.labels, legNote = '', offlineLevel = 'warn' }) {
+export async function probeRunnerOnline({ gh, owner, name, runner, checkName = 'runner', labels = runner.labels, legNote = '', offlineLevel = 'warn', fetched }) {
   const notReady = offlineLevel === 'fail' ? fail : warn;
-  const isOrg = runner.sharing === 'org';
-  const base = isOrg ? `orgs/${owner}/actions/runners` : `repos/${owner}/${name}/actions/runners`;
-  const api = await gh(['api', `${base}?per_page=100`], { parseJson: true });
+  const api = fetched ?? await fetchRunnersList({ gh, owner, name, runner, legNote });
+  const isOrg = api.isOrg ?? (runner.sharing === 'org');
   const wanted = labels.map((l) => l.toLowerCase());
   const suffix = legNote ? ` ${legNote}` : '';
   if (!api.ok) {
-    return warn(checkName, `could not query ${isOrg ? 'org' : 'repo'} runners${suffix} (${firstLine(api.stderr) || 'gh api failed'})`, "grant the token repo/admin:org scope, or confirm the runner is registered");
+    return warn(checkName, `could not query ${isOrg ? 'org' : 'repo'} runners${suffix} (${api.stderr || 'gh api failed'})`, "grant the token repo/admin:org scope, or confirm the runner is registered");
   }
-  const list = Array.isArray(api.json?.runners) ? api.json.runners : [];
-  const labelNames = (r) => new Set((r.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean).map((s) => s.toLowerCase()));
-  const matches = list.filter((r) => { const ns = labelNames(r); return wanted.every((w) => ns.has(w)); });
+  const list = api.list;
+  const matches = list.filter((r) => { const ns = labelNamesOf(r); return wanted.every((w) => ns.has(w)); });
   if (matches.length === 0) {
     return notReady(checkName, `no self-hosted runner registered with labels [${labels.join(', ')}]${suffix}`, 'register the local runner (/forge:init --runner, then the printed enable steps)');
   }
@@ -79,6 +103,54 @@ export async function probeRunnerOnline({ gh, owner, name, runner, checkName = '
     return ok(checkName, `registered + online (${online}/${matches.length} matching runner${matches.length === 1 ? '' : 's'} online)${suffix}`);
   }
   return notReady(checkName, `runner registered but offline (labels [${labels.join(', ')}])${suffix}`, 'start the runner service on the host');
+}
+
+/**
+ * Live-registration reconciliation (#490 AC.1/AC.3/AC.5). Distinct from
+ * `probeRunnerOnline`: that probe judges the CONFIGURED labels against live data
+ * for a single adoption/health gate; this classifies how GitHub's actual runner
+ * registrations relate to forge.json's `runner` block AS A WHOLE — including the
+ * config-disabled case the probe doesn't speak to at all (a runner left
+ * registered after `runner.enabled` was flipped off is an orphan #490 was filed
+ * over). NEVER returns `level:'fail'` (additive to the existing hard-fail paths,
+ * spec's scoping note) — only `warn`, `ok`, or `null` (a deliberate silent skip
+ * for the ordinary "nothing configured, nothing registered" consumer, AC.5).
+ *
+ * `fetched` accepts an already-resolved `fetchRunnersList()` result (e.g. from a
+ * `probeRunnerOnline` call the same run already made) so this never issues a
+ * second, redundant gh call for the same endpoint; omitted, it fetches for
+ * itself. A fetch failure ALWAYS degrades to a warn naming "could not verify" —
+ * regardless of whether the config is enabled or disabled — never a silent
+ * absence and never a fail.
+ */
+export async function reconcileRunnerRegistrations({ gh, owner, name, runner, fetched, checkName = 'runner-reconcile' }) {
+  const api = fetched ?? await fetchRunnersList({ gh, owner, name, runner });
+  if (!api.ok) {
+    return warn(checkName, `could not verify live runner registrations (${api.stderr || 'gh api failed'})`, 'confirm gh is authenticated with repo/admin:org scope, then re-run');
+  }
+  const list = api.list;
+  const cfgEnabled = runner?.enabled === true;
+
+  if (!cfgEnabled) {
+    if (list.length === 0) return null; // AC.5 — ordinary consumer, fully silent
+    return warn(checkName,
+      `registered-but-config-disabled: ${list.length} self-hosted runner registration(s) live on GitHub, but runner.enabled is not true in forge.json`,
+      'enable the runner block if this is intentional, or deregister the orphaned runner(s) if it is not (#490)');
+  }
+
+  const labels = (runner.labels ?? []).map((l) => l.toLowerCase());
+  const matches = list.filter((r) => { const ns = labelNamesOf(r); return labels.every((w) => ns.has(w)); });
+  if (matches.length === 0) {
+    return warn(checkName,
+      `config-enabled-but-none-registered: runner.enabled is true but no live registration matches labels [${runner.labels.join(', ')}]`,
+      'register the local runner (/forge:init --runner), or confirm the configured labels match what is actually registered');
+  }
+  if (!matches.some((r) => r.status === 'online')) {
+    return warn(checkName,
+      `matching registration(s) found but all are offline/stale (labels [${runner.labels.join(', ')}])`,
+      'start the runner service on the host, or deregister the stale entries');
+  }
+  return ok(checkName, `live registrations reconcile cleanly with forge.json (labels [${runner.labels.join(', ')}])`);
 }
 
 /**

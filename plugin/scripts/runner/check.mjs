@@ -36,8 +36,8 @@ import { run, makeGh } from '../lib/exec.mjs';
 import { loadConfig, normalizeRunner, CONFIG_RELPATH } from '../lib/config.mjs';
 import {
   ok, warn, fail,
-  fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion, windowsLabels,
-  detectRunnerServices, serviceTargetResults, checkForkPrExposure,
+  fetchRepoVisibility, fetchRunnersList, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion, windowsLabels,
+  detectRunnerServices, serviceTargetResults, checkForkPrExposure, reconcileRunnerRegistrations,
 } from '../lib/runner-checks.mjs';
 
 const MIN_NODE = [22, 13];
@@ -187,18 +187,32 @@ export async function runCheck(ctx) {
 
   // Check 5 — registration + online for the configured labels (reused). Skipped only
   // when the private-repo guard couldn't resolve owner/name (no repo → can't probe).
+  // The raw runners fetch is done ONCE here and shared with both legs below plus
+  // #490's reconciliation row further down, so a single runCheck pass never issues
+  // more than one gh call to the actions/runners endpoint.
   let online = null;
+  let runnersFetch = null;
   if (vis.ok && vis.owner && vis.name) {
+    runnersFetch = await fetchRunnersList({ gh, owner: vis.owner, name: vis.name, runner });
     // offlineLevel:'fail' — for the adoption gate, no online runner means you can't
     // actually run CI, so it's a blocker (not doctor's advisory warn). A gh-api
     // failure still degrades to a warn inside the probe (graceful degradation).
-    online = await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner-online', legNote: '(linux leg)', offlineLevel: 'fail' });
+    online = await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner-online', legNote: '(linux leg)', offlineLevel: 'fail', fetched: runnersFetch });
     results.push(online);
     // Windows leg: when native, a Windows runner must be online too — probe the
     // windows label set (linux → windows). Hosted needs no self-hosted registration.
     if (runner.windows === 'native') {
-      results.push(await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner-online-windows', labels: windowsLabels(runner.labels), legNote: '(windows leg)', offlineLevel: 'fail' }));
+      results.push(await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner-online-windows', labels: windowsLabels(runner.labels), legNote: '(windows leg)', offlineLevel: 'fail', fetched: runnersFetch }));
     }
+
+    // #490 AC.1/AC.3/AC.5 — live registration reconciliation. Distinct from the
+    // 'runner-online' probe above: that judges THIS command's adoption gate
+    // against the resolved config's labels; this classifies how the LIVE
+    // registrations relate to the config as a whole, including the
+    // config-disabled case runner-online doesn't speak to. Reuses the fetch
+    // above (never a duplicate actions/runners call); never a `fail`.
+    const reconcile = await reconcileRunnerRegistrations({ gh, owner: vis.owner, name: vis.name, runner, fetched: runnersFetch, checkName: 'runner-reconcile' });
+    if (reconcile) results.push(reconcile);
   } else {
     results.push(warn('runner-online', 'skipped the runner registration probe — repo owner/name unresolved', 'confirm gh is authenticated and you are inside the repo'));
   }

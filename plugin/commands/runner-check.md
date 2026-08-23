@@ -17,7 +17,8 @@ What it checks (ADR-0005):
 - PAT store safety: `~/.forge/runner.env` gitignored + untracked, no committed PAT (never prints the token);
 - the runner is registered + online for the configured labels (plus the windows label set when `windows: native`);
 - the `runner/` scaffold is present and a `verify` workflow targets the runner label;
-- the pinned `actions-runner` version is not behind the latest release (deprecation staleness).
+- the pinned `actions-runner` version is not behind the latest release (deprecation staleness);
+- live registration reconciliation against the resolved config (#490): flags registered-but-config-disabled, config-enabled-but-none-registered, and stale/offline registrations as warnings, degrades to a "could not verify" warning if the live lookup fails, and stays silent when config is disabled and nothing is registered.
 
 Relay the results to the user:
 - **NOT READY** (any ✗): list each blocker with its hint. The fixes are usually `/forge:init --runner` (scaffold/guards), the per-OS `~/.forge/runner.env` setup, or starting the runner/Docker service — see `docs/guides/runner-adoption.md`.

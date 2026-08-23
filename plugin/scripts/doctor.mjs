@@ -7,13 +7,13 @@ import { join, resolve } from 'node:path';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { run, makeGh } from './lib/exec.mjs';
-import { loadConfig, CONFIG_RELPATH } from './lib/config.mjs';
+import { loadConfig, normalizeRunner, CONFIG_RELPATH } from './lib/config.mjs';
 import { readJson } from './lib/jsonfile.mjs';
 import { getRepoInfo, getProjectFields } from './lib/board.mjs';
 import {
   ok, warn, fail, skip,
-  fetchRepoVisibility, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion,
-  detectRunnerServices, serviceTargetResults, checkForkPrExposure,
+  fetchRepoVisibility, fetchRunnersList, probeRunnerOnline, checkRunnerSecretStore, checkRunnerVersion,
+  detectRunnerServices, serviceTargetResults, checkForkPrExposure, reconcileRunnerRegistrations,
 } from './lib/runner-checks.mjs';
 import { checkAgyAdapter, checkAgyOffload } from './lib/agy-checks.mjs';
 import { checkDenylistStaleness } from './lib/denylist-checks.mjs';
@@ -33,12 +33,17 @@ async function checkRunner({ gh, cwd, runner, results, exec = run, detect = dete
   // scan below is git-only and always runs (a committed PAT is unsafe on any repo).
   const vis = await fetchRepoVisibility(gh);
   let online = null;
+  let runnersFetch = null;
   if (!vis.ok) {
     results.push(warn('runner', `enabled, but repo visibility could not be determined (${vis.stderr})`, 'run inside the repo with gh authenticated'));
   } else if (!vis.isPrivate) {
     results.push(fail('runner', 'runner.enabled on a PUBLIC repo — forks can run untrusted code on your machine (fork-PR RCE)', 'set runner.enabled=false, or keep the repo private (ADR-0005 decision 3)'));
   } else {
-    online = await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner' });
+    // Fetched once here and returned to the caller so #490's reconciliation row
+    // (wired near the sec/repo block further down) can reuse it instead of
+    // issuing a second, redundant actions/runners call.
+    runnersFetch = await fetchRunnersList({ gh, owner: vis.owner, name: vis.name, runner });
+    online = await probeRunnerOnline({ gh, owner: vis.owner, name: vis.name, runner, checkName: 'runner', fetched: runnersFetch });
     results.push(online);
   }
 
@@ -56,6 +61,8 @@ async function checkRunner({ gh, cwd, runner, results, exec = run, detect = dete
       results.push(r);
     }
   } catch { /* diagnosis is advisory only */ }
+
+  return { vis, runnersFetch };
 }
 
 export async function runDoctor(ctx) {
@@ -220,8 +227,10 @@ export async function runDoctor(ctx) {
   }
 
   // local self-hosted runner (ADR-0005 / #225 AC4) — silent unless runner.enabled
+  let runnerReconcileFetch = null;
   if (cfg.ok && cfg.runner?.enabled === true) {
-    await checkRunner({ gh, cwd, runner: cfg.runner, results, exec, detect: detectServices });
+    const { runnersFetch } = await checkRunner({ gh, cwd, runner: cfg.runner, results, exec, detect: detectServices });
+    runnerReconcileFetch = runnersFetch;
   }
 
   // agy adapter health (#431 AC.1/AC.2) — silent unless an emitted package is found
@@ -277,6 +286,21 @@ export async function runDoctor(ctx) {
     } else {
       results.push(warn('fork-pr-exposure', 'could not determine repo visibility (repo API call failed) — cannot verify the fork-PR execution surface', 'confirm gh is authenticated with repo scope, then re-run'));
     }
+
+    // #490 AC.1/AC.3/AC.5 — live registration reconciliation. Deliberately runs
+    // UNCONDITIONAL on this repo's own `runner.enabled` (unlike the `checkRunner`
+    // block above) — that gate is exactly the blind spot #490 reports: a private
+    // repo with runner.enabled:false but a live orphaned registration otherwise
+    // gets zero rows from doctor. Reuses owner/name already resolved by this
+    // sec/repo block, and reuses checkRunner's already-fetched runners list when
+    // that block ran (never a duplicate actions/runners call).
+    const reconcile = await reconcileRunnerRegistrations({
+      gh, owner: repo.owner, name: repo.name,
+      runner: cfg.runner ?? normalizeRunner(undefined),
+      fetched: runnerReconcileFetch ?? undefined,
+      checkName: 'runner-reconcile',
+    });
+    if (reconcile) results.push(reconcile);
   }
 
   const failed = results.filter((r) => r.level === 'fail');

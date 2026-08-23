@@ -337,7 +337,7 @@ describe('runDoctor — runner health (AC-225.4)', () => {
   });
 });
 
-describe('runDoctor — fork-PR execution-surface check (AC-489.2)', () => {
+describe('runDoctor — fork-PR execution-surface check (AC-489.2) — also the public+registered warn/fail case for AC-490.2/AC-490.4 (#490); do not duplicate here, see the reconciliation describe block below', () => {
   it('private repo → skip (not applicable), never a failure', async () => {
     const cwd = await gitRepo();
     await writeCfg(cwd); // no runner block — this check must fire regardless
@@ -466,6 +466,139 @@ describe('runDoctor — fork-PR execution-surface check (AC-489.2)', () => {
     expect(r.msg).toMatch(/could not determine repo visibility/);
     // exactly one `repo view` call — no second, independent fetchRepoVisibility round trip
     expect(calls.filter((c) => c.startsWith('repo view')).length).toBe(1);
+  });
+});
+
+// #490 AC.1/AC.3/AC.5 — reconcileRunnerRegistrations, wired into runDoctor near the
+// sec/repo block that already drives fork-pr-exposure (reusing owner/name/isPrivate,
+// not a fresh fetchRepoVisibility round trip). Deliberately runs INDEPENDENT of this
+// repo's own `runner.enabled` — that gate is exactly the blind spot #490 reports: a
+// private repo with runner.enabled:false but a live orphaned registration gets ZERO
+// rows from doctor today (the old `checkRunner` block only runs when enabled).
+// Never a `fail` level — additive to the existing hard-fail paths, only warn/ok/absent.
+describe('runDoctor — live registration reconciliation (#490 AC.1/AC.3/AC.5)', () => {
+  it('AC-490.1a: runner.enabled:false + a live registration (any label) -> new row warns "registered-but-config-disabled" (the blind spot #490 reports)', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'orphan', status: 'online', labels: [{ name: 'self-hosted' }] }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    // the OLD runner.enabled-gated check stays silent (as designed, AC-426)…
+    expect(byName(res, 'runner')).toEqual([]);
+    // …but the NEW reconciliation row still fires and catches the live orphan.
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/registered-but-config-disabled/);
+  });
+
+  it('AC-490.5: runner.enabled:false + nothing registered (ordinary consumer) -> silent, no new row at all', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false });
+    const { gh } = fakeGh(runnerRoutes({ runners: runnersResponse([]) }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-reconcile')).toEqual([]);
+  });
+
+  it('AC-490.5: no runner block at all + nothing registered -> silent, no new row', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd); // no runner block
+    const { gh } = fakeGh(runnerRoutes({ runners: runnersResponse([]) }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-reconcile')).toEqual([]);
+  });
+
+  it('AC-490.1b: runner.enabled:true + 0 live registrations matching configured labels -> warn "config-enabled-but-none-registered"', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({ runners: runnersResponse([]) }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/config-enabled-but-none-registered/);
+  });
+
+  it('AC-490.1c: runner.enabled:true + matching registrations all offline -> warn "stale/offline"', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'offline', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/stale|offline/i);
+  });
+
+  it('AC-490.4: runner.enabled:true + matching + an online registration -> ok (clean case); no-duplicate-fetch: reuses checkRunner\'s already-fetched list', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh, calls } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('ok');
+    // the existing runner.enabled-gated check (checkRunner -> probeRunnerOnline)
+    // already queried actions/runners in this scenario — reconciliation must
+    // reuse that result, not issue a second, redundant fetch of the same endpoint.
+    expect(calls.filter((c) => c.includes('actions/runners')).length).toBe(1);
+  });
+
+  it('AC-490.3: live lookup fails (config enabled) -> warn "could not verify", never a fail, never silently absent', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: { ok: false, stderr: 'HTTP 403: Resource not accessible by personal access token' },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not verify/i);
+    expect(res.results.filter((x) => x.level === 'fail').map((x) => x.name)).not.toContain('runner-reconcile');
+  });
+
+  it('AC-490.3: live lookup fails (config disabled) -> still warns "could not verify" — degrades regardless of config state', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: { ok: false, stderr: 'network is unreachable' },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not verify/i);
+  });
+
+  it('AC-490.3: live lookup returns a malformed (non-array) body (config disabled) -> warns "could not verify", never a silent AC.5 skip', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: { stdout: JSON.stringify({ total_count: 0 }) },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not verify/i);
+  });
+
+  it('runner.sharing:"org" -> reconciliation queries the ORG-scoped endpoint, not the repo-scoped one', async () => {
+    const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
+    await writeCfg(cwd, { enabled: true, sharing: 'org' });
+    const { gh, calls } = fakeGh(runnerRoutes({
+      runners: runnersResponse([{ id: 1, name: 'box', status: 'online', labels: FORGE_LABELS }]),
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    expect(byName(res, 'runner-reconcile')[0]).toBeDefined();
+    expect(calls.some((c) => c.includes('api orgs/dngioidev/actions/runners'))).toBe(true);
+    expect(calls.some((c) => c.includes('repos/dngioidev/forge/actions/runners'))).toBe(false);
   });
 });
 
