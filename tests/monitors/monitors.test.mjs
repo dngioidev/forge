@@ -3,7 +3,7 @@ import { readFile, mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rollupState, transition, poll as ciPoll, isNoPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH, allQueued } from '../../plugin/scripts/monitors/ci-watch.mjs';
+import { rollupState, transition, poll as ciPoll, isNoPr, isTerminalPr, writeCiWatchState, loadCiWatchState, CI_WATCH_RELPATH, allQueued } from '../../plugin/scripts/monitors/ci-watch.mjs';
 import { newlyResolved, poll as decisionsPoll } from '../../plugin/scripts/monitors/decisions-watch.mjs';
 import { probeReachable, poll as outboxPoll } from '../../plugin/scripts/monitors/outbox-watch.mjs';
 import {
@@ -49,6 +49,48 @@ describe('CI monitor (#151)', () => {
     expect(second.line).toBe(null);
     expect(second.pr).toBe(42);
     expect(second.sha).toBe('aaa111');
+  });
+
+  // #507 — a merged/closed PR must go quiet exactly like isNoPr(), not keep
+  // emitting rollup transitions for a PR that has already left "open".
+  describe('poll() on a merged/closed PR (#507, epic #503)', () => {
+    it('isTerminalPr: true only for MERGED/CLOSED, false for OPEN or unknown', () => {
+      expect(isTerminalPr('MERGED')).toBe(true);
+      expect(isTerminalPr('CLOSED')).toBe(true);
+      expect(isTerminalPr('OPEN')).toBe(false);
+      expect(isTerminalPr(undefined)).toBe(false);
+    });
+
+    it('AC-507.1: poll() requests state and mergedAt in the --json field list', async () => {
+      let requestedFields = null;
+      const gh = async (args) => {
+        requestedFields = args[args.indexOf('--json') + 1];
+        return { ok: true, json: { number: 1, headRefName: 'x', headRefOid: 'sha1', statusCheckRollup: [], state: 'OPEN' } };
+      };
+      await ciPoll(gh, null);
+      expect(requestedFields).toContain('state');
+      expect(requestedFields).toContain('mergedAt');
+    });
+
+    it('AC-507.2/AC-507.3/AC-507.4: a MERGED PR emits no line, leaves prev unchanged, stays ok, and reports pr:null so no state is persisted', async () => {
+      const gh = async () => ({ ok: true, json: { number: 9, headRefName: 'feat/z', headRefOid: 'bbb222', statusCheckRollup: [{ conclusion: 'SUCCESS' }], state: 'MERGED', mergedAt: '2026-08-20T00:00:00.000Z' } });
+      const first = await ciPoll(gh, 'pass'); // prior observed state was 'pass' from before the merge landed
+      expect(first.line).toBe(null); // AC-507.2: no transition line
+      expect(first.prev).toBe('pass'); // AC-507.2: prev passed through unchanged, not overwritten with the rollup state
+      expect(first.ok).toBe(true); // AC-507.3: not a poll failure — quiet like isNoPr(), must not trip poll-guard.mjs
+      expect(first.pr).toBe(null); // AC-507.4: mirrors the isMain gate `if (r.ok && r.pr != null)` — no stale reading persisted for ciGreen()
+      const second = await ciPoll(gh, first.prev);
+      expect(second.line).toBe(null); // still quiet on a repeat observation
+    });
+
+    it('AC-507.2/AC-507.3/AC-507.4/AC-507.5: a CLOSED PR (no merge) is equally quiet — stubbed gh, no network', async () => {
+      const gh = async () => ({ ok: true, json: { number: 10, headRefName: 'feat/dead', headRefOid: 'ccc333', statusCheckRollup: [{ conclusion: 'FAILURE' }], state: 'CLOSED', mergedAt: null } });
+      const r = await ciPoll(gh, 'fail');
+      expect(r.line).toBe(null); // AC-507.2
+      expect(r.prev).toBe('fail'); // AC-507.2
+      expect(r.ok).toBe(true); // AC-507.3
+      expect(r.pr).toBe(null); // AC-507.4
+    });
   });
 
   // #407 AC.2 — the monitor persists its last observed state so merge.mjs's

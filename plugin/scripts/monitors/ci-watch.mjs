@@ -100,6 +100,16 @@ export function isNoPr(res) {
   return s === '' || s.includes('no pull request') || s.includes('no open pull request') || s.includes('no commits');
 }
 
+/** #507 — a PR that has already left "open" (merged or closed). `merge.mjs`
+ * deletes the branch on merge, which normally moves the checkout off the PR
+ * within one poll interval — but there is a race window between the merge
+ * landing and the branch actually disappearing where `gh pr view` still
+ * resolves the same, now-terminal, PR. Once here, its check rollup is no
+ * longer meaningful: quiet it like `isNoPr()`. */
+export function isTerminalPr(state) {
+  return state === 'MERGED' || state === 'CLOSED';
+}
+
 /**
  * `queuedSince` (#408) tracks — using the watcher's OWN clock, not any GitHub
  * per-job timestamp — how long the rollup has been continuously "every check
@@ -112,11 +122,17 @@ export function isNoPr(res) {
  * specific commit instead of trusting the timestamp alone.
  */
 export async function poll(gh, prev, { queuedSince = null, outageReported = false, now = Date.now, stuckQueuedMs } = {}) {
-  const res = await gh(['pr', 'view', '--json', 'number,headRefName,headRefOid,statusCheckRollup'], { parseJson: true });
+  const res = await gh(['pr', 'view', '--json', 'number,headRefName,headRefOid,statusCheckRollup,state,mergedAt'], { parseJson: true });
   if (!res.ok) {
     // Distinguish "no PR yet" (benign, quiet) from a standing gh failure (#318).
     if (isNoPr(res)) return { prev, pr: null, sha: null, line: null, ok: true, queuedSince: null, outageReported: false };
     return { prev, pr: null, sha: null, line: null, ok: false, reason: String(res?.stderr || 'gh pr view failed'), queuedSince, outageReported };
+  }
+  // #507 AC.2-4: a merged/closed PR's rollup is stale by definition — go quiet
+  // exactly like isNoPr() (ok:true, no line, no state carried) rather than
+  // emitting a transition line or persisting a reading for ciGreen() to reuse.
+  if (isTerminalPr(res.json?.state)) {
+    return { prev, pr: null, sha: null, line: null, ok: true, queuedSince: null, outageReported: false };
   }
   const checks = res.json?.statusCheckRollup;
   const state = rollupState(checks);
