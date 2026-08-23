@@ -281,10 +281,13 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/no PR at all[\s\S]{0,400}escalat/i);
     // the distinction is explicitly keyed on whether a PR already exists
     expect(s).toMatch(/PR already exists|a PR already open|a PR is already open|PR must already exist/i);
-    // the three verbatim #517 returns this ticket pins are named in the prose
-    expect(s).toMatch(/still waiting on the full verify suite to finish/i);
     // the working-tree hazard that motivates escalate over respawn
     expect(s).toMatch(/working[- ]tree/i);
+    // #561: the three verbatim #517 returns this ticket pins moved to the watchdog-history
+    // reference doc (relocated, not deleted) — SKILL.md links to it at the escalate-again bullet
+    expect(s).toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/autopilot\/reference\/watchdog-history\.md/);
+    const watchdogRef = await read('plugin/skills/autopilot/reference/watchdog-history.md');
+    expect(watchdogRef).toMatch(/still waiting on the full verify suite to finish/i);
   });
 
   it('AC-474.4: § Return-then-resume watchdog documents matchHeldVerdicts relaying a held verdict, running before respawn/escalate', async () => {
@@ -293,13 +296,16 @@ describe('forge:autopilot skill (AC-1, AC-4, #126)', () => {
     expect(s).toMatch(/matchHeldVerdicts/);
     // the SendMessage relay + resume mechanism itself, named
     expect(s).toMatch(/SendMessage/);
-    // the two live examples cited by the ticket
-    expect(s).toMatch(/#469/);
-    expect(s).toMatch(/#472/);
     // an unmatched report still falls through to today's unchanged respawn/escalate path
     expect(s).toMatch(/defer/i);
     // no longer phrased as future/out-of-scope work — the #464/#522-era phrasing is retired
     expect(s).not.toMatch(/#474.{0,40}(is the follow-up|out of (this ticket's |)scope|deliberately not built here)/i);
+    // #561: the two live examples (#469/#472) moved to the watchdog-history reference doc
+    // (relocated, not deleted) — SKILL.md links to it right where the examples used to sit
+    expect(s).toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/autopilot\/reference\/watchdog-history\.md/);
+    const watchdogRef = await read('plugin/skills/autopilot/reference/watchdog-history.md');
+    expect(watchdogRef).toMatch(/#469/);
+    expect(watchdogRef).toMatch(/#472/);
   });
 
   it("AC-526.5: § The loop reorders the periodic rate-budget recheck to after selection, threading the selected ticket's kind", async () => {

@@ -14,6 +14,7 @@ Run any script as: `node "${CLAUDE_PLUGIN_ROOT}/scripts/board/<script>.mjs" <arg
 | `create.mjs` | new ticket, fully placed | `--title` `--body` `--type item\|bug\|epic\|test` `--priority p0..p2` `--size xs..xl` `--status backlog` `--parent <epic#>` `--assignee <login>` |
 | `move.mjs` | status transition | `--issue N --status backlog\|ready\|inProgress\|inReview\|blocked\|done` (keys from forge.json) |
 | `comment.mjs` | ticket-trail comment | `--issue N --phase <phase> --body "…"` (or `--body-file <path>` — required whenever the text itself might mention a denylisted command; `--body`/`--body-file` are mutually exclusive) — same phase twice updates in place |
+| `escalate.mjs` | halt on a human decision | `--issue N --reason "…" --options "…" --recommend "…"` (`--reason`/`--context` each also take a `-file` sibling — `--reason-file`/`--context-file` — same denylist literal-string rule as `comment.mjs`'s `--body-file`; each `-file` flag is mutually exclusive with its inline sibling); `--check` polls for the human's answer |
 | `receipt.mjs` | merge receipt | `--issue N --pr N --sha <sha> --title "…"` |
 | `log.mjs` | delivery-log row | `--pr N --sha <sha> --issues "1,2" --title "…"` |
 | `digest.mjs` | refresh epic child table | `--epic N` — rewrites only the managed block in the epic body |

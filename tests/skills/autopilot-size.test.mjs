@@ -112,3 +112,80 @@ describe('forge:autopilot skill size (#467)', () => {
     expect(monitorRef.length).toBeGreaterThan(1000);
   });
 });
+
+// #561: 69,998 bytes measured at filing time — 2 bytes of headroom under the
+// same 70000 ceiling above, so any doc change (a sentence, a table row) failed
+// `pnpm verify`. #557's reviewer had two documentation-discoverability notes
+// left unfixed for exactly this reason. Picked extraction to reference docs
+// (the established #467 pattern) over raising the ceiling, because the
+// ceiling's purpose (#467) is bounding what loads into context on every
+// autopilot invocation, not bounding total documentation — raising the number
+// would have defeated that purpose. Two new reference docs
+// (`reference/watchdog-history.md`, `reference/rate-budget-history.md`) hold
+// the #319/#464/#474/#522 watchdog archaeology and the #407/#517/#526/#530
+// rate-budget history that made up most of the file's growth; the
+// `driver-scripts.md` reference gained the #488 loop-backstop archaeology.
+// Measured: SKILL.md 69,998 -> 61,621 bytes (headroom 2 -> 8,379 under the
+// unchanged 70000 ceiling); mandatory-procedure content (every AC-467.2/.3/.4
+// literal above) is unchanged, only relocatable rationale moved.
+describe('forge:autopilot skill size (#561)', () => {
+  it('AC-561.1: appending a modest, realistic doc paragraph no longer trips the size gate', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // A realistic doc addition an ordinary ticket might make — a new bullet
+    // documenting a follow-up behavior, comparable in size to existing bullets
+    // in the file. Before #561 (69,998 bytes + this paragraph) this failed;
+    // after #561's extraction there is real headroom for it.
+    const realisticAddition =
+      '\n\n## Example follow-up doc addition (regression fixture, not a real section)\n\n' +
+      '- **A new operational note a future ticket might add.** This paragraph stands in for ' +
+      'the kind of ordinary doc maintenance that used to fail `pnpm verify` outright when the ' +
+      'file sat only 2 bytes under its ceiling — a single new bullet documenting a behavior, ' +
+      'a cross-reference, or a clarification, the everyday shape of a doc-touching PR, not a ' +
+      'wholesale rewrite of the skill.\n';
+    expect(Buffer.byteLength(realisticAddition, 'utf8')).toBeGreaterThan(200);
+    const withAddition = Buffer.byteLength(s + realisticAddition, 'utf8');
+    expect(withAddition).toBeLessThan(70000);
+  });
+
+  it('AC-561.2 (AC-2): at least 8,000 bytes of headroom under the 70000-byte ceiling', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    const bytes = Buffer.byteLength(s, 'utf8');
+    const ceiling = 70000;
+    expect(ceiling - bytes).toBeGreaterThanOrEqual(8000);
+  });
+
+  it('AC-561.3 (AC-4): the two new reference docs exist and hold real relocated content, not empty placeholders', async () => {
+    const watchdogRef = await read('plugin/skills/autopilot/reference/watchdog-history.md');
+    const rateBudgetRef = await read('plugin/skills/autopilot/reference/rate-budget-history.md');
+    expect(watchdogRef.length).toBeGreaterThan(1000);
+    expect(rateBudgetRef.length).toBeGreaterThan(1000);
+    // spot-check real relocated content survived the move, not just a heading
+    expect(watchdogRef).toMatch(/2026-08-11\/13 run had the warning in bold/);
+    expect(watchdogRef).toMatch(/#469/);
+    expect(watchdogRef).toMatch(/#472/);
+    expect(rateBudgetRef).toMatch(/UNATTRIBUTED_DRAIN_FLOOR/);
+    expect(rateBudgetRef).toMatch(/hit 2\/8.*hits 8\/8/s);
+  });
+
+  it('AC-561.4 (AC-4): SKILL.md links both new reference docs at the point content was relocated from', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    expect(s).toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/autopilot\/reference\/watchdog-history\.md/);
+    expect(s).toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/autopilot\/reference\/rate-budget-history\.md/);
+    // same hardcoded-path mistake #467 caught (AC-467.2) must not recur for the new links
+    expect(s).not.toMatch(/[`(]plugin\/skills\/autopilot\/reference\/watchdog-history/);
+    expect(s).not.toMatch(/[`(]plugin\/skills\/autopilot\/reference\/rate-budget-history/);
+  });
+
+  it('AC-561.5 (AC-5): the two deferred #557 reviewer notes are addressed', async () => {
+    const s = await read('plugin/skills/autopilot/SKILL.md');
+    // note 1: the literal-string caveat now names the escalate.mjs -file flags
+    // explicitly instead of a generic "--body-file" for that case
+    expect(s).toMatch(/--reason-file/);
+    expect(s).toMatch(/--context-file/);
+    // note 2: board/SKILL.md's table gained the escalate.mjs row it never had
+    const boardSkill = await read('plugin/skills/board/SKILL.md');
+    expect(boardSkill).toMatch(/`escalate\.mjs`/);
+    expect(boardSkill).toMatch(/--reason-file/);
+    expect(boardSkill).toMatch(/--context-file/);
+  });
+});
