@@ -50,15 +50,18 @@ export async function fetchRepoVisibility(gh) {
  * `reconcileRunnerRegistrations` (#490) can share exactly one gh call with it
  * instead of re-querying the same endpoint. per_page=100 so a box with many
  * registrations isn't truncated. Returns `{ ok:false, isOrg, stderr }` on a gh
- * failure, else `{ ok:true, isOrg, list }` (list is always an array, even when
- * the response shape is unexpected).
+ * failure OR an unexpected response shape (mirrors `checkForkPrExposure`'s own
+ * shape guard — a malformed body must never read as "confirmed zero", the same
+ * "could not verify" degrade a hard gh failure gets), else `{ ok:true, isOrg,
+ * list }` with `list` a genuine array from the API.
  */
 export async function fetchRunnersList({ gh, owner, name, runner, legNote = '' }) {
   const isOrg = runner?.sharing === 'org';
   const base = isOrg ? `orgs/${owner}/actions/runners` : `repos/${owner}/${name}/actions/runners`;
   const api = await gh(['api', `${base}?per_page=100`], { parseJson: true });
   if (!api.ok) return { ok: false, isOrg, stderr: firstLine(api.stderr) || 'gh api failed' };
-  return { ok: true, isOrg, list: Array.isArray(api.json?.runners) ? api.json.runners : [] };
+  if (!Array.isArray(api.json?.runners)) return { ok: false, isOrg, stderr: 'unexpected response shape (could not confirm registrations)' };
+  return { ok: true, isOrg, list: api.json.runners };
 }
 
 const labelNamesOf = (r) => new Set((r.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean).map((s) => s.toLowerCase()));

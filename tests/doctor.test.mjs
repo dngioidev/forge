@@ -576,6 +576,19 @@ describe('runDoctor — live registration reconciliation (#490 AC.1/AC.3/AC.5)',
     expect(r.msg).toMatch(/could not verify/i);
   });
 
+  it('AC-490.3: live lookup returns a malformed (non-array) body (config disabled) -> warns "could not verify", never a silent AC.5 skip', async () => {
+    const cwd = await gitRepo();
+    await writeCfg(cwd, { enabled: false });
+    const { gh } = fakeGh(runnerRoutes({
+      runners: { stdout: JSON.stringify({ total_count: 0 }) },
+    }));
+    const res = await runDoctor({ gh, cwd, log: noop });
+    const r = byName(res, 'runner-reconcile')[0];
+    expect(r).toBeDefined();
+    expect(r.level).toBe('warn');
+    expect(r.msg).toMatch(/could not verify/i);
+  });
+
   it('runner.sharing:"org" -> reconciliation queries the ORG-scoped endpoint, not the repo-scoped one', async () => {
     const cwd = await gitRepo({ gitignore: '.forge/\nrunner.env\n' });
     await writeCfg(cwd, { enabled: true, sharing: 'org' });
