@@ -125,7 +125,7 @@ describe('forge:autopilot skill size (#467)', () => {
 // the #319/#464/#474/#522 watchdog archaeology and the #407/#517/#526/#530
 // rate-budget history that made up most of the file's growth; the
 // `driver-scripts.md` reference gained the #488 loop-backstop archaeology.
-// Measured: SKILL.md 69,998 -> 61,621 bytes (headroom 2 -> 8,379 under the
+// Measured: SKILL.md 69,998 -> 61,662 bytes (headroom 2 -> 8,338 under the
 // unchanged 70000 ceiling); mandatory-procedure content (every AC-467.2/.3/.4
 // literal above) is unchanged, only relocatable rationale moved.
 describe('forge:autopilot skill size (#561)', () => {
