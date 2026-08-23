@@ -38,6 +38,13 @@ export function freshRun(startedAt = null) {
     // #488 AC.4: the board size the run started at (or was first observed at, for a ledger
     // upgraded mid-run). null until `startRun` is given a `boardSize` opt — see § startRun.
     boardSizeAtStart: null,
+    // #506 AC.2: the open-ticket count at run start, same persist-once/never-recompute-on-
+    // resume contract as `boardSizeAtStart` above (§ startRun). Feeds `convergence`'s
+    // open-now-vs-open-at-start report line (§ renderReport).
+    startingOpen: null,
+    // #506 AC.4: consecutive DIVERGING convergence waves. A diverging wave increments it; any
+    // other verdict resets it to 0 — only two in a row trips the guard (§ convergenceGuard).
+    divergingStreak: 0,
     // #517: rolling log of `remaining` readings taken at every rate-budget check — feeds
     // `recentBudgetDeltas`/`estimateTicketCost` so the low-water threshold reflects this
     // run's own observed per-ticket cost instead of a flat constant.
@@ -87,8 +94,24 @@ export function applyOutcome(run, { issue, outcome, ref = null, stage = null }) 
   return { ...run, iterations: run.iterations + 1, outcomes };
 }
 
-/** Record a ticket the run filed mid-delivery (bug/spike/follow-up). */
+/**
+ * Record a ticket the run filed mid-delivery (bug/spike/follow-up).
+ *
+ * #506 AC.6 security-adjacent hardening: `issue` is validated as a positive integer
+ * BEFORE anything else. Trap found live (#506): `recordFiled(cwd, 556)` — a bare
+ * number instead of `{issue,kind,from}` — destructures to `issue: undefined`, and the
+ * OLD unvalidated code silently wrote `{ issue: undefined, ... }` into `run.filed`.
+ * Dedup below (`f.issue === issue`) then matched `undefined === undefined` against
+ * that phantom entry, so EVERY later legitimate `applyFiled` call for a real issue
+ * silently no-op'd forever — the exact "run.filed reads permanently wrong" failure
+ * this ticket exists to catch, just moved one level down. Failing loud here (throw)
+ * turns a silent, permanent data-loss bug into an immediate, obvious one at the call
+ * site instead.
+ */
 export function applyFiled(run, { issue, kind, from }) {
+  if (!Number.isInteger(issue) || issue <= 0) {
+    throw new Error(`applyFiled: issue must be a positive integer, got ${JSON.stringify(issue)}`);
+  }
   if (run.filed.some((f) => f.issue === issue)) return run;
   return { ...run, filed: [...run.filed, { issue, kind, from }] };
 }
@@ -264,13 +287,82 @@ export function nextIteration(run, boardSize, factor = DEFAULT_RUNAWAY_FACTOR) {
 }
 
 /**
+ * #506 AC.1: pure per-wave convergence verdict — no IO, no board access (AC.5). A
+ * "wave" is one convergence check (the caller decides cadence, mirroring the
+ * rate-budget check). `closed` counts THIS RUN's own `merged` outcomes (the only
+ * outcome that actually closes a GitHub issue — `escalated`/`skipped`/`awaiting-
+ * human`/`ready`/`stalled-before-pr` never do) and `filed` is `run.filed.length` —
+ * both scoped to what this run itself did, immune to unrelated board churn (a human
+ * closing something, another run filing something) that `startingOpen`/`currentOpen`
+ * alone can't distinguish. `netDelta = closed - filed`: positive is healthy (this run
+ * is shrinking the backlog it touches), negative is the #506 problem (`verdict:
+ * 'diverging'`) — a run that files more than it closes reading as a good run. Zero is
+ * `'flat'`. `startingOpen`/`currentOpen` are threaded straight through on the returned
+ * object (not folded into the verdict) purely so `renderReport` can show "open-now vs
+ * open-at-start" (AC.3) from the same call, without a second board read.
+ */
+export function convergence(run, { startingOpen, currentOpen }) {
+  const closed = (run.outcomes ?? []).filter((o) => o.outcome === 'merged').length;
+  const filed = (run.filed ?? []).length;
+  const netDelta = closed - filed;
+  const verdict = netDelta > 0 ? 'converging' : netDelta < 0 ? 'diverging' : 'flat';
+  return { closed, filed, netDelta, verdict, startingOpen, currentOpen };
+}
+
+/** #506 AC.4: disk-sourced streak — fails closed to 0 (not "trust it"), mirroring this
+ * file's other disk-state sanitizers (`sanitizePositiveInt`/`sanitizeIterations`) —
+ * never lets a corrupted/non-integer streak silently jam above or below the trip line. */
+function sanitizeDivergingStreak(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * #506 AC.4: two CONSECUTIVE diverging waves — not one — stop the loop and escalate.
+ * Pure (AC.5): folds this wave's `convergence()` verdict into `run.divergingStreak`
+ * (a diverging wave increments it; `converging`/`flat` resets it to 0) and returns a
+ * `{stop, escalate, reason}` decision shaped exactly like `nextIteration`'s, so the
+ * orchestrator treats every loop backstop the same way. One diverging wave alone
+ * never trips it (`divergingStreak` reaches 1, `stop` stays false) — a single wave
+ * that files a batch of follow-ups from one messy ticket is normal and healthy; only
+ * a SECOND consecutive diverging wave (`divergingStreak` reaches 2) trips. Never
+ * mutates `run` — the caller persists the returned `divergingStreak` (see
+ * `recordConvergence`), same split as `applyBudgetReading`/`recordBudgetReading`.
+ * Escalation itself routes through the existing `board/escalate.mjs` path (naming the
+ * filed tickets in `reason`) — this function only decides, it never calls it.
+ */
+export function convergenceGuard(run, { startingOpen, currentOpen }) {
+  const wave = convergence(run, { startingOpen, currentOpen });
+  const priorStreak = sanitizeDivergingStreak(run?.divergingStreak);
+  const divergingStreak = wave.verdict === 'diverging' ? priorStreak + 1 : 0;
+  const stop = divergingStreak >= 2;
+  const filedList = (run.filed ?? []).map((f) => `#${f.issue}`).join(', ') || 'none';
+  return {
+    ...wave,
+    divergingStreak,
+    stop,
+    escalate: stop,
+    reason: stop
+      ? `convergence backstop tripped: 2 consecutive diverging waves — this wave closed ${wave.closed}, ` +
+        `filed ${wave.filed} (net ${wave.netDelta}) — filed this run: ${filedList} — halting the loop and escalating`
+      : null,
+  };
+}
+
+/**
  * `outboxPending` (#414, spike §4) is an optional, purely additive line: how
  * many deferred board writes (`.forge/autopilot/outbox.json`) are still
  * queued at report time. Read-only — never changes the outcome tallies above,
  * never manufactures a `blocked` ticket. Defaults to 0 so an omitted arg is
  * silent (no behavior change for a caller that hasn't wired the outbox read).
  */
-export function renderReport(run, { outboxPending = 0 } = {}) {
+/**
+ * #506 AC.3: `currentOpen` is optional (mirrors `outboxPending`'s additive-only
+ * shape) — a caller with no live board count in hand (e.g. the bare CLI `report`
+ * subcommand below) still gets the pre-#506 report unchanged. The convergence line
+ * only appears once BOTH `run.startingOpen` (persisted once by `startRun`, § AC.2)
+ * and a live `currentOpen` are available.
+ */
+export function renderReport(run, { outboxPending = 0, currentOpen = null } = {}) {
   const by = (o) => run.outcomes.filter((x) => x.outcome === o);
   const line = (o) => {
     const items = by(o);
@@ -282,6 +374,14 @@ export function renderReport(run, { outboxPending = 0 } = {}) {
     run.filed.length ? `  filed: ${run.filed.map((f) => `#${f.issue} (${f.kind})`).join(', ')}` : null,
   ].filter(Boolean);
   if (parts.length === 1) parts.push('  (nothing actionable — board was already clear)');
+  if (run.startingOpen != null && currentOpen != null) {
+    const wave = convergence(run, { startingOpen: run.startingOpen, currentOpen });
+    const sign = wave.netDelta > 0 ? '+' : '';
+    parts.push(
+      `  convergence: closed ${wave.closed}, filed ${wave.filed}, net ${sign}${wave.netDelta} (${wave.verdict}) ` +
+      `— open now ${currentOpen} vs ${run.startingOpen} at start`,
+    );
+  }
   if (outboxPending > 0) parts.push(`  outbox: ${outboxPending} item(s) still queued (GitHub unreachable for part of this run)`);
   return parts.join('\n');
 }
@@ -350,6 +450,17 @@ export async function recordFiled(cwd, entry) {
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
 }
+/**
+ * #506 AC.4 IO wrapper: computes this wave's `convergenceGuard` decision AND persists
+ * the resulting `divergingStreak` — same pure/IO split as `applyBudgetReading`/
+ * `recordBudgetReading`, so the streak survives a resume (mirrors `boardSizeAtStart`).
+ */
+export async function recordConvergence(cwd, { startingOpen, currentOpen }) {
+  const run = await loadRun(cwd);
+  const decision = convergenceGuard(run, { startingOpen, currentOpen });
+  await writeJson(join(cwd, RUN_RELPATH), { ...run, divergingStreak: decision.divergingStreak });
+  return decision;
+}
 export async function recordBudgetReading(cwd, remaining) {
   const run = applyBudgetReading(await loadRun(cwd), remaining);
   await writeJson(join(cwd, RUN_RELPATH), run);
@@ -381,18 +492,28 @@ export async function recordBudgetReading(cwd, remaining) {
 export async function startRun(cwd, opts = {}) {
   const hasAuth = Object.prototype.hasOwnProperty.call(opts, 'authorized');
   const sanitizedBoardSize = sanitizePositiveInt(opts.boardSize); // null if absent or garbage — never persisted either way
+  // #506 AC.2: `startingOpen` follows `boardSizeAtStart`'s exact precedent — sanitized the
+  // same way, persisted once, backfilled on a pre-#506 resume, never recomputed thereafter.
+  const sanitizedStartingOpen = sanitizePositiveInt(opts.startingOpen);
   const preflight = hasAuth ? mergeAuthPreflight(opts) : null;
   const decision = preflight ? { mergeMode: preflight.mode, mergeReason: preflight.reason } : {};
   const existing = await readRun(cwd);
   if (existing?.startedAt) {
     const needsAnchor = existing.boardSizeAtStart == null && sanitizedBoardSize != null;
-    const anchor = needsAnchor ? { boardSizeAtStart: sanitizedBoardSize } : {};
-    if (!preflight && !needsAnchor) return existing; // pure resume — no new decision, nothing to backfill
-    const run = { ...existing, ...decision, ...anchor }; // resume — re-run preflight and/or backfill the anchor
+    const needsOpenAnchor = existing.startingOpen == null && sanitizedStartingOpen != null;
+    const anchor = {
+      ...(needsAnchor ? { boardSizeAtStart: sanitizedBoardSize } : {}),
+      ...(needsOpenAnchor ? { startingOpen: sanitizedStartingOpen } : {}),
+    };
+    if (!preflight && !needsAnchor && !needsOpenAnchor) return existing; // pure resume — no new decision, nothing to backfill
+    const run = { ...existing, ...decision, ...anchor }; // resume — re-run preflight and/or backfill the anchor(s)
     await writeJson(join(cwd, RUN_RELPATH), run);
     return run;
   }
-  const anchor = sanitizedBoardSize != null ? { boardSizeAtStart: sanitizedBoardSize } : {};
+  const anchor = {
+    ...(sanitizedBoardSize != null ? { boardSizeAtStart: sanitizedBoardSize } : {}),
+    ...(sanitizedStartingOpen != null ? { startingOpen: sanitizedStartingOpen } : {}),
+  };
   const run = { ...freshRun(new Date().toISOString()), ...decision, ...anchor };
   await writeJson(join(cwd, RUN_RELPATH), run);
   return run;
