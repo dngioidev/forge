@@ -8,6 +8,7 @@
  */
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { upsertMarkedComment } from '../lib/issues.mjs';
@@ -22,20 +23,47 @@ export const REASONS = {
   duplicate: { ghReason: 'not planned', status: 'wontDo', label: 'duplicate' },
 };
 
+// #562 (AC-4 audit follow-up from #557): --note is the same free-text-flag
+// hazard comment.mjs's --body and escalate.mjs's --reason/--context were —
+// close.mjs gets the same --*-file treatment.
+const KNOWN_FLAGS = '--issue --reason --note --note-file';
+
 export function parseArgs(argv) {
-  const a = { issue: null, reason: null, note: null };
+  const a = { issue: null, reason: null, note: null, noteFile: null, unknownFlags: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--issue') a.issue = Number(argv[++i]);
-    else if (argv[i] === '--reason') a.reason = argv[++i];
-    else if (argv[i] === '--note') a.note = argv[++i];
+    const k = argv[i];
+    if (k === '--issue') a.issue = Number(argv[++i]);
+    else if (k === '--reason') a.reason = argv[++i];
+    else if (k === '--note') a.note = argv[++i];
+    else if (k === '--note-file') a.noteFile = argv[++i];
+    else a.unknownFlags.push(k); // #562 (AC-4): never silently drop — mirrors create.mjs (#104)
   }
   return a;
 }
 
 export async function runClose(ctx, args, log = console.log) {
+  // #562 (AC-4): fail-fast on unrecognized flags rather than dropping them
+  // silently, matching create.mjs (#104) / comment.mjs / escalate.mjs (#557).
+  if (args.unknownFlags?.length) {
+    return { ok: false, error: `unrecognized flag(s): ${args.unknownFlags.join(', ')} — supported: ${KNOWN_FLAGS}` };
+  }
   if (!Number.isInteger(args.issue)) return { ok: false, error: '--issue <number> is required' };
   const spec = REASONS[args.reason];
   if (!spec) return { ok: false, error: `--reason must be one of: ${Object.keys(REASONS).join(', ')}` };
+
+  // #562 (AC-3): --note and --note-file are mutually exclusive, resolved as a
+  // hard error rather than one silently winning — mirrors comment.mjs's
+  // --body/--body-file rule from #557.
+  if (args.note && args.noteFile) {
+    return { ok: false, error: '--note and --note-file are mutually exclusive — pass one, not both' };
+  }
+  // #562 (AC-2): --note-file reads the closing note from a file, same
+  // semantics (and the same read-error message shape) as comment.mjs's
+  // --body-file (#557) / create.mjs's --body-file (#104).
+  if (args.noteFile) {
+    try { args = { ...args, note: await readFile(args.noteFile, 'utf8') }; }
+    catch (e) { return { ok: false, error: `--note-file: cannot read ${args.noteFile}: ${e.message}` }; }
+  }
 
   // the target board status must exist (Won't do needs the option present)
   const opt = ctx.resolveOption('status', spec.status);
@@ -86,8 +114,18 @@ export async function runClose(ctx, args, log = console.log) {
  * failures, and return a `{ ok, closed, failed, results }` summary.
  */
 export async function runCloseBatch(ctx, args, log = console.log) {
+  // #562 (AC-4): fail fast before any GitHub call — same rationale as the
+  // --reason/--issue checks below (a request-level error, not a per-issue one).
+  if (args.unknownFlags?.length) {
+    return { ok: false, error: `unrecognized flag(s): ${args.unknownFlags.join(', ')} — supported: ${KNOWN_FLAGS}` };
+  }
   if (!REASONS[args.reason]) {
     return { ok: false, error: `--reason must be one of: ${Object.keys(REASONS).join(', ')}` };
+  }
+  // #562 (AC-3): --note/--note-file mutual exclusion is also a whole-batch
+  // request error — fail before any GitHub call, mirroring --reason above.
+  if (args.note && args.noteFile) {
+    return { ok: false, error: '--note and --note-file are mutually exclusive — pass one, not both' };
   }
   // strict per-token parsing: split on ',', trim, require positive integers.
   // no silent drops — an empty list or ANY bad token fails before any GitHub call

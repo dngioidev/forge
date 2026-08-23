@@ -710,6 +710,47 @@ describe('close (AC-117)', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/--reason must be one of/);
   });
+
+  it('AC-562.2: --note-file loads the closing note from a file (#562)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-close-notefile-'));
+    const nf = join(dir, 'note.md');
+    await writeFile(nf, 'Note loaded from file, not inline.', 'utf8');
+    const ref = { comments: [] };
+    const { ctx, calls } = await ctxWith([
+      ['issue view', { stdout: JSON.stringify({ state: 'OPEN' }) }],
+      ['issue close', { stdout: '' }],
+      ...statefulItems([{ id: 'ITEM_9', number: 12, status: 'Done' }]),
+      ...commentRoutes(ref),
+    ]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned', '--note-file', nf]), noop);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.includes('Note loaded from file, not inline.'))).toBe(true);
+  });
+
+  it('AC-562.2: a --note-file read error has the same message shape as comment.mjs/create.mjs (#562)', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned', '--note-file', 'C:/definitely/not/a/real/path.md']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/^--note-file: cannot read/);
+    expect(calls.some((c) => c.startsWith('issue'))).toBe(false); // nothing closed
+  });
+
+  it('AC-562.3: --note and --note-file together fail fast — never a silent winner (#562)', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned', '--note', 'inline', '--note-file', 'C:/whatever.md']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('mutually exclusive');
+    expect(calls.some((c) => c.startsWith('issue'))).toBe(false);
+  });
+
+  it('AC-562.4: unrecognized flags fail fast on close.mjs, matching create.mjs (#104)', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runClose(ctx, closeArgs(['--issue', '12', '--reason', 'not-planned', '--bogus']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unrecognized flag/);
+    expect(res.error).toContain('--bogus');
+    expect(calls.some((c) => c.startsWith('issue'))).toBe(false);
+  });
 });
 
 describe('batch close (AC-123)', () => {
@@ -816,6 +857,27 @@ describe('batch close (AC-123)', () => {
     expect(calls.some((c) => c.startsWith('issue view'))).toBe(false);
     expect(calls.some((c) => c.startsWith('issue close'))).toBe(false);
     expect(calls.some((c) => c.startsWith('project item-edit'))).toBe(false);
+  });
+
+  it('AC-562.4: unrecognized flags fail fast on batch close too — no GitHub call is made', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runCloseBatch(ctx, closeArgs(['--issue', '12,13', '--reason', 'not-planned', '--bogus']), noop);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unrecognized flag/);
+    expect(res.error).toContain('--bogus');
+    expect(calls.some((c) => c.startsWith('issue view'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('issue close'))).toBe(false);
+  });
+
+  it('AC-562.3: --note and --note-file together fail fast on batch close — no GitHub call is made', async () => {
+    const { ctx, calls } = await ctxWith([]);
+    const res = await runCloseBatch(ctx, { issue: '12,13', reason: 'not-planned', note: 'inline', noteFile: 'C:/whatever.md' }, noop);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('mutually exclusive');
+    expect(calls.some((c) => c.startsWith('issue view'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('issue close'))).toBe(false);
   });
 });
 
