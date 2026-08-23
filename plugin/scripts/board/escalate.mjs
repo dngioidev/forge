@@ -6,7 +6,7 @@
  */
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 import { run, makeGh } from '../lib/exec.mjs';
 import { makeBoardCtx } from '../lib/boardctx.mjs';
 import { upsertMarkedComment, listComments } from '../lib/issues.mjs';
@@ -15,17 +15,52 @@ import { pendingDecisions } from '../lib/situation.mjs';
 import { runMove } from './move.mjs';
 import { writeJson } from '../lib/jsonfile.mjs';
 
+// #557 (AC-5 audit): --reason/--context are exactly the "escalation reason"
+// free text the denylist literal-string caveat names (autopilot/SKILL.md
+// § Literal-string caveat already instructs subagents to pass these via a
+// file — a mechanism that didn't exist until this fix) — so escalate.mjs
+// gets the same --*-file treatment as comment.mjs, not just an audit note.
+const KNOWN_FLAGS = '--issue --reason --reason-file --options --recommend --context --context-file --check';
+
 export function parseArgs(argv) {
-  const a = { issue: null, reason: null, options: null, recommend: null, context: '', check: false };
+  const a = { issue: null, reason: null, reasonFile: null, options: null, recommend: null, context: '', contextFile: null, check: false, unknownFlags: [] };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--issue') a.issue = Number(argv[++i]);
-    else if (argv[i] === '--reason') a.reason = argv[++i];
-    else if (argv[i] === '--options') a.options = argv[++i];
-    else if (argv[i] === '--recommend') a.recommend = argv[++i];
-    else if (argv[i] === '--context') a.context = argv[++i];
-    else if (argv[i] === '--check') a.check = true;
+    const k = argv[i];
+    if (k === '--issue') a.issue = Number(argv[++i]);
+    else if (k === '--reason') a.reason = argv[++i];
+    else if (k === '--reason-file') a.reasonFile = argv[++i];
+    else if (k === '--options') a.options = argv[++i];
+    else if (k === '--recommend') a.recommend = argv[++i];
+    else if (k === '--context') a.context = argv[++i];
+    else if (k === '--context-file') a.contextFile = argv[++i];
+    else if (k === '--check') a.check = true;
+    else a.unknownFlags.push(k); // #557 (AC-4-style): never silently drop, matching create.mjs (#104)
   }
   return a;
+}
+
+/** Shared fail-fast guard for both entry points (escalate + check) — same parseArgs feeds both. */
+function rejectUnknownFlags(args) {
+  if (args.unknownFlags?.length) {
+    return { ok: false, error: `unrecognized flag(s): ${args.unknownFlags.join(', ')} — supported: ${KNOWN_FLAGS}` };
+  }
+  return null;
+}
+
+/**
+ * #557: --reason/--context-file read the same way as comment.mjs's
+ * --body-file (same error-message shape); --*-file and its inline sibling are
+ * mutually exclusive (never a silent winner, mirrors comment.mjs AC-3).
+ */
+async function resolveFileArg(args, inlineKey, fileKey, flagName) {
+  if (args[inlineKey] && args[fileKey]) {
+    return { ok: false, error: `--${flagName} and --${flagName}-file are mutually exclusive — pass one, not both` };
+  }
+  if (args[fileKey]) {
+    try { return { ok: true, value: await readFile(args[fileKey], 'utf8') }; }
+    catch (e) { return { ok: false, error: `--${flagName}-file: cannot read ${args[fileKey]}: ${e.message}` }; }
+  }
+  return { ok: true, value: args[inlineKey] };
 }
 
 /**
@@ -54,8 +89,15 @@ export function escapeMd(s) {
 }
 
 export async function runEscalate(ctx, args, log = console.log) {
+  const unknown = rejectUnknownFlags(args);
+  if (unknown) return unknown;
   if (!Number.isInteger(args.issue)) return { ok: false, error: '--issue <number> is required' };
-  if (!args.reason) return { ok: false, error: '--reason is required' };
+  const reasonResolved = await resolveFileArg(args, 'reason', 'reasonFile', 'reason');
+  if (!reasonResolved.ok) return reasonResolved;
+  const contextResolved = await resolveFileArg(args, 'context', 'contextFile', 'context');
+  if (!contextResolved.ok) return contextResolved;
+  args = { ...args, reason: reasonResolved.value, context: contextResolved.value ?? '' };
+  if (!args.reason) return { ok: false, error: '--reason or --reason-file is required' };
   const options = normalizeOptions(args.options);
   if (options.length < 2) return { ok: false, error: '--options "a|b[|c…]" needs at least two options' };
 
@@ -115,6 +157,8 @@ const TRUSTED_REPLY_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /** Scan pending decisions for a TRUSTED human reply (a later, non-forge-marked comment from someone with write access). */
 export async function runCheck(ctx, args, log = console.log) {
+  const unknown = rejectUnknownFlags(args);
+  if (unknown) return unknown;
   const pending = await pendingDecisions(ctx.cwd);
   const targets = args.issue ? pending.filter((d) => d.issue === args.issue) : pending;
   if (targets.length === 0) {

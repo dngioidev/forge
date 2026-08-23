@@ -84,6 +84,61 @@ describe('escalate (AC-3.2)', () => {
     expect(res.error).toContain('two options');
   });
 
+  it('AC-557.5: --reason-file/--context-file load their text from a file (same literal-string hazard as comment.mjs)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-esc-file-'));
+    const reasonFile = join(dir, 'reason.txt');
+    const contextFile = join(dir, 'context.txt');
+    await writeFile(reasonFile, 'the same gate failed twice', 'utf8');
+    await writeFile(contextFile, 'extra context loaded from a file', 'utf8');
+    let status = 'In progress';
+    const f = fakeGh([
+      ['repo view', REPO_VIEW],
+      [(j) => j.startsWith('project item-list'), () => ({ stdout: JSON.stringify({ items: [{ id: 'IT3', content: { number: 3 }, status }] }) })],
+      [(j) => j.startsWith('project item-edit'), () => { status = 'Blocked / Needs decision'; return { stdout: '' }; }],
+      [(j) => j.includes('/comments?'), { stdout: '[]' }],
+      [(j) => j.includes('/issues/3/comments'), { stdout: JSON.stringify({ id: 501 }) }],
+    ]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
+    const res = await runEscalate(ctx, parseArgs(['--issue', '3', '--reason-file', reasonFile, '--context-file', contextFile, '--options', 'a|b']), noop);
+    expect(res.ok).toBe(true);
+    expect(f.calls.some((c) => c.includes('the same gate failed twice'))).toBe(true);
+    expect(f.calls.some((c) => c.includes('extra context loaded from a file'))).toBe(true);
+  });
+
+  it('AC-557.5: --reason and --reason-file together fail fast — never a silent winner', async () => {
+    const f = fakeGh([['repo view', REPO_VIEW]]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
+    const res = await runEscalate(ctx, parseArgs(['--issue', '3', '--reason', 'inline', '--reason-file', 'C:/whatever.txt', '--options', 'a|b']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('mutually exclusive');
+  });
+
+  it('AC-557.5: a --reason-file read error has the same message shape as comment.mjs/create.mjs', async () => {
+    const f = fakeGh([['repo view', REPO_VIEW]]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
+    const res = await runEscalate(ctx, parseArgs(['--issue', '3', '--reason-file', 'C:/definitely/not/a/real/path.txt', '--options', 'a|b']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/^--reason-file: cannot read/);
+  });
+
+  it('AC-557.5: unrecognized flags fail fast on escalate.mjs, matching create.mjs (#104)', async () => {
+    const f = fakeGh([['repo view', REPO_VIEW]]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
+    const res = await runEscalate(ctx, parseArgs(['--issue', '3', '--reason', 'x', '--options', 'a|b', '--bogus']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unrecognized flag/);
+    expect(res.error).toContain('--bogus');
+    expect(f.calls.some((c) => c.includes('/comments'))).toBe(false); // nothing posted
+  });
+
+  it('AC-557.5: unrecognized flags fail fast on --check too', async () => {
+    const f = fakeGh([['repo view', REPO_VIEW]]);
+    const ctx = await makeBoardCtx({ gh: f.gh, cwd: await cwdWithConfig() });
+    const res = await runCheck(ctx, parseArgs(['--check', '--bogus']), noop);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unrecognized flag/);
+  });
+
   it('check: resolves on the first human (marker-free) reply after the decision comment', async () => {
     const cwd = await cwdWithConfig();
     await mkdir(join(cwd, '.forge', 'decisions'), { recursive: true });
