@@ -253,6 +253,17 @@ describe('#556: a triage outcome:"ready" verdict must promote board status, or t
     expect(selectNext([t(490, status, 'p2')]).action).toBe('deliver'); // the loop this ticket fixes
   });
 
+  it('security fix-wave: a non-integer/zero/negative entry.issue is rejected before it ever reaches the board mutation', async () => {
+    const { cwd, ctx } = await ctxAt(490, 'sb');
+    for (const bad of [NaN, 1.5, 0, -1, '490', null, undefined]) {
+      await expect(
+        recordOutcome(cwd, { issue: bad, outcome: 'ready', stage: 'triage' }, { ctx, log: () => {} }),
+        `issue=${bad}`,
+      ).rejects.toThrow(/positive integer/);
+    }
+    expect(await liveStatus(ctx)).toBe('backlog'); // no partial/rejected mutation ever reached the board
+  });
+
   it('AC-3: recording the same ready outcome twice is idempotent — still ready, never throws', async () => {
     const { cwd, ctx } = await ctxAt(550, 'sb');
     await recordOutcome(cwd, { issue: 550, outcome: 'ready', stage: 'triage' }, { ctx, log: () => {} });

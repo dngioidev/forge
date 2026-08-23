@@ -329,6 +329,17 @@ export async function recordOutcome(cwd, entry, { ctx = null, log = console.log 
   const run = applyOutcome(await loadRun(cwd), entry);
   await writeJson(join(cwd, RUN_RELPATH), run);
   if (ctx && entry.stage === 'triage' && entry.outcome === 'ready') {
+    // #556 security pass (forge:security round 1): `entry.issue` is a triage subagent's
+    // self-reported field, now one hop from a live board mutation (`runMove` below) — validate
+    // it as a positive integer here rather than trusting it verbatim, mirroring
+    // `lib/dependencies.mjs`'s `fileFor` guard for the same class of untrusted-issue-number
+    // input (#487 security fix-wave). Closes the type-confusion shape of the finding;
+    // `runMove`/`findItemByIssue` already fail closed on a well-typed but off-board issue
+    // number, so together neither a malformed nor a not-on-this-board issue number ever
+    // reaches the mutation.
+    if (!Number.isInteger(entry.issue) || entry.issue <= 0) {
+      throw new Error(`recordOutcome: triage ready promotion needs a positive integer issue, got ${JSON.stringify(entry.issue)}`);
+    }
     const moved = await runMove(ctx, { issue: entry.issue, status: 'ready' }, log);
     if (!moved.ok) throw new Error(`recordOutcome: triage ready → board promotion failed for #${entry.issue} — ${moved.error}`);
   }
