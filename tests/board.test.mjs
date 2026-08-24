@@ -81,8 +81,12 @@ describe('boardctx', () => {
     expect(r.error).toContain('done');
   });
 
-  it('AC-114.1: findItemByIssue falls back to the issue side when item-list lags (#114)', async () => {
-    // item-list index lag: empty, but the issue is attached on the project
+  it('AC-114.1/AC-528.1: findItemByIssue finds the item via the issue side even when item-list lags (#114)', async () => {
+    // item-list index lag: empty, but the issue is attached on the project.
+    // #528 flipped the primary/fallback roles (the scoped issue-side query is
+    // now tried FIRST — see the next test), so this no longer exercises the
+    // fallback path; it's kept because the scoped-first path must still
+    // handle #114's original scenario (item-list would have been empty too).
     const { ctx } = await ctxWith([
       [(j) => j.startsWith('project item-list'), itemList([])],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
@@ -90,13 +94,47 @@ describe('boardctx', () => {
     ]);
     expect(await ctx.findItemByIssue(5)).toMatchObject({ ok: true, item: { id: 'ITEM_X', viaFallback: true } });
 
-    // genuinely absent → null (not on this project)
+    // genuinely absent from both sources → null (not on this project)
     const { ctx: ctx2 } = await ctxWith([
       [(j) => j.startsWith('project item-list'), itemList([])],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
         { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
     ]);
     expect((await ctx2.findItemByIssue(9)).item).toBe(null);
+  });
+
+  it('AC-528.1/AC-528.2: findItemByIssue is satisfied by the scoped issue-side query alone — no full board scan when it finds the item', async () => {
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), {
+        stdout: JSON.stringify({ data: { repository: { issue: {
+          assignees: { nodes: [{ login: 'dngioidev' }] },
+          projectItems: { nodes: [{
+            id: 'ITEM_X',
+            project: { number: 8 },
+            fieldValues: { nodes: [
+              { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'In progress', field: { id: 'PVTSSF_s' } },
+              { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'P1', field: { id: 'PVTSSF_p' } },
+            ] },
+          }] },
+        } } } }),
+      }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'SHOULD_NOT_BE_READ', content: { number: 528 } }])],
+    ]);
+    const res = await ctx.findItemByIssue(528);
+    expect(res).toMatchObject({ ok: true, item: { id: 'ITEM_X', status: 'In progress', priority: 'P1', assignees: ['dngioidev'] } });
+    expect(ctx.itemFieldKey(res.item, 'status')).toBe('inProgress');
+    // the point of AC-1/AC-2: a single-item lookup that the scoped query can
+    // answer must never fall through to the full 500-item board scan.
+    expect(calls.some((c) => c.startsWith('project item-list'))).toBe(false);
+  });
+
+  it('AC-528.1: CORRECTNESS OVER SAVINGS — a scoped-lookup gh failure falls back to the full board scan, never reporting not-found on its own say-so', async () => {
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { ok: false, stderr: 'transient network error' }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_1', content: { number: 42 }, status: 'Ready' }])],
+    ]);
+    const res = await ctx.findItemByIssue(42);
+    expect(res).toMatchObject({ ok: true, item: { id: 'ITEM_1' } });
   });
 
   it('AC-360.3: listItems is memoized per ctx — repeated reads hit gh once', async () => {
