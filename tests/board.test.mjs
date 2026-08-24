@@ -81,22 +81,60 @@ describe('boardctx', () => {
     expect(r.error).toContain('done');
   });
 
-  it('AC-114.1: findItemByIssue falls back to the issue side when item-list lags (#114)', async () => {
-    // item-list index lag: empty, but the issue is attached on the project
+  it('AC-114.1/AC-528.1: findItemByIssue finds the item via the issue side even when item-list lags (#114)', async () => {
+    // item-list index lag: empty, but the issue is attached on the project.
+    // #528 flipped the primary/fallback roles (the scoped issue-side query is
+    // now tried FIRST — see the next test), so this no longer exercises the
+    // fallback path; it's kept because the scoped-first path must still
+    // handle #114's original scenario (item-list would have been empty too).
     const { ctx } = await ctxWith([
       [(j) => j.startsWith('project item-list'), itemList([])],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
         { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [{ id: 'ITEM_X', project: { number: 8 } }] } } } } }) }],
     ]);
-    expect(await ctx.findItemByIssue(5)).toMatchObject({ ok: true, item: { id: 'ITEM_X', viaFallback: true } });
+    expect(await ctx.findItemByIssue(5)).toMatchObject({ ok: true, item: { id: 'ITEM_X', viaScopedLookup: true } });
 
-    // genuinely absent → null (not on this project)
+    // genuinely absent from both sources → null (not on this project)
     const { ctx: ctx2 } = await ctxWith([
       [(j) => j.startsWith('project item-list'), itemList([])],
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
         { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } }) }],
     ]);
     expect((await ctx2.findItemByIssue(9)).item).toBe(null);
+  });
+
+  it('AC-528.1/AC-528.2: findItemByIssue is satisfied by the scoped issue-side query alone — no full board scan when it finds the item', async () => {
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), {
+        stdout: JSON.stringify({ data: { repository: { issue: {
+          assignees: { nodes: [{ login: 'dngioidev' }] },
+          projectItems: { nodes: [{
+            id: 'ITEM_X',
+            project: { number: 8 },
+            fieldValues: { nodes: [
+              { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'In progress', field: { id: 'PVTSSF_s' } },
+              { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'P1', field: { id: 'PVTSSF_p' } },
+            ] },
+          }] },
+        } } } }),
+      }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'SHOULD_NOT_BE_READ', content: { number: 528 } }])],
+    ]);
+    const res = await ctx.findItemByIssue(528);
+    expect(res).toMatchObject({ ok: true, item: { id: 'ITEM_X', status: 'In progress', priority: 'P1', assignees: ['dngioidev'] } });
+    expect(ctx.itemFieldKey(res.item, 'status')).toBe('inProgress');
+    // the point of AC-1/AC-2: a single-item lookup that the scoped query can
+    // answer must never fall through to the full 500-item board scan.
+    expect(calls.some((c) => c.startsWith('project item-list'))).toBe(false);
+  });
+
+  it('AC-528.1: CORRECTNESS OVER SAVINGS — a scoped-lookup gh failure falls back to the full board scan, never reporting not-found on its own say-so', async () => {
+    const { ctx } = await ctxWith([
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), { ok: false, stderr: 'transient network error' }],
+      [(j) => j.startsWith('project item-list'), itemList([{ id: 'ITEM_1', content: { number: 42 }, status: 'Ready' }])],
+    ]);
+    const res = await ctx.findItemByIssue(42);
+    expect(res).toMatchObject({ ok: true, item: { id: 'ITEM_1' } });
   });
 
   it('AC-360.3: listItems is memoized per ctx — repeated reads hit gh once', async () => {
@@ -499,6 +537,39 @@ describe('move (AC-2.2)', () => {
     const same = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
     expect(same).toMatchObject({ ok: true, changed: false });
     expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(1);
+  });
+
+  it('AC-528.2: the initial find is satisfied by the scoped lookup alone; the #178 verify re-read always uses the full board scan, never the scoped path', async () => {
+    // #528 reviewer fix-wave: a same-process re-read via the scoped
+    // (api graphql projectItems) query was measured LIVE to NOT reflect a
+    // field mutation immediately — so verifyStatusMoved (#178) must keep
+    // using the full scan for its post-mutation re-read (findItemFresh),
+    // while the INITIAL find (before any mutation this call makes) is still
+    // satisfied by the scoped path alone. Both routes are stateful on the
+    // same `status`, so a bug that routed the verify re-read through the
+    // (here artificially-fresh) scoped mock would still coincidentally pass —
+    // the call-count assertion below is what actually pins the routing.
+    let status = 'In progress';
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), () => ({
+        stdout: JSON.stringify({ data: { repository: { issue: {
+          assignees: { nodes: [] },
+          projectItems: { nodes: [{ id: 'ITEM_2', project: { number: 8 }, fieldValues: { nodes: [{ name: status, field: { id: 'PVTSSF_s' } }] } }] },
+        } } } }),
+      })],
+      [(j) => j.startsWith('project item-list'), () => itemList([{ id: 'ITEM_2', content: { number: 5 }, status }])],
+      [(j) => j.startsWith('project item-edit'), (j, args) => {
+        const id = args[args.indexOf('--single-select-option-id') + 1];
+        if (OPT_TO_NAME[id]) status = OPT_TO_NAME[id];
+        return { stdout: '' };
+      }],
+    ]);
+    const moved = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
+    expect(moved).toMatchObject({ ok: true, changed: true, verified: true });
+    // AC-2's measured claim: the fix removes ONE full-board-scan's worth of
+    // GraphQL cost per move.mjs call (the initial find) — exactly one
+    // project item-list call remains, for the #178 verify re-read only.
+    expect(calls.filter((c) => c.startsWith('project item-list')).length).toBe(1);
   });
 
   it('AC-178.1/AC-178.2: a silently-dropped move (re-read still shows the OLD status) fails loudly (#178)', async () => {
@@ -947,6 +1018,25 @@ describe('digest (AC-2.5)', () => {
   it('renderChildTable is stable for empty epics', () => {
     const out = renderChildTable([]);
     expect(out).toContain('0 children');
+  });
+
+  // #528 AC-3: evaluated for the same scoped-per-issue fix as findItemByIssue
+  // (AC-1) and left AS-IS — real numbers on this repo (#182: 92 children,
+  // #183: 50 children) show N scoped calls costing fewer raw GraphQL points
+  // than one full-board listItems() scan, but a per-child loop would trade
+  // away this fail-loud guarantee (a systemic failure would silently render
+  // as "no data" per child instead of failing the digest). Pinned here so a
+  // future change that drops fail-loud silently regresses a test, not just a
+  // decision recorded in a comment.
+  it('AC-528.3: a listItems() failure still fails the whole digest (evaluated for the scoped-lookup fix in #528 and deliberately left as-is to keep this fail-loud)', async () => {
+    const { ctx } = await ctxWith([
+      [(j) => j.includes('subIssues'), { stdout: JSON.stringify({ data: { repository: { issue: { subIssues: { nodes: [
+        { number: 21, title: 'Child A', state: 'OPEN' },
+      ] } } } } }) }],
+      [(j) => j.startsWith('project item-list'), { ok: false, stderr: 'boom' }],
+    ]);
+    const res = await runDigest(ctx, { epic: 2 }, noop);
+    expect(res.ok).toBe(false);
   });
 });
 
