@@ -31,11 +31,19 @@ export function normalizeStatusKey(s) {
  * status (item-list index lag returning a fallback item with no field, #114)
  * can be neither confirmed nor disproved — we WARN and proceed unverified so
  * lag alone never manufactures a false failure.
+ *
+ * #528 (reviewer fix-wave): this re-read MUST go through `ctx.findItemFresh`
+ * (the full `listItems()` scan), never `ctx.findItemByIssue`'s scoped-primary
+ * path — measured live, the scoped issue-side query is NOT immediately
+ * consistent for a field value THIS SAME PROCESS just mutated (a same-
+ * process, zero-delay re-read via the scoped query still returned the
+ * pre-mutation value). Using it here would turn this exact safety net into a
+ * source of false "did NOT persist" failures.
  */
 export async function verifyStatusMoved(ctx, issue, itemId, status, log = console.log) {
   let current = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const re = await ctx.findItemByIssue(issue);
+    const re = await ctx.findItemFresh(issue);
     if (!re.ok) return { ok: false, error: `verify move failed: ${re.error}` };
     current = re.item ? ctx.itemFieldKey(re.item, 'status') : null;
     if (current === status) return { ok: true, verified: true };

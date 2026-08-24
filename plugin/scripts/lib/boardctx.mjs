@@ -69,17 +69,43 @@ export async function makeBoardCtx({ gh, cwd, now = Date.now, itemsTtlMs = 15000
 
     /**
      * #528 AC-1 — a single-item lookup no longer defaults to a full-board
-     * `listItems()` scan. `findItemViaIssue` (scoped, issue-side, immediately
-     * consistent per #114's own finding) is now the PRIMARY path; the full
-     * scan is only the fallback, and only when the scoped path comes back
-     * empty/unusable — never the other way round. Correctness over savings:
-     * a scoped miss or a transient `gh api graphql` failure both fall through
-     * to the full scan rather than ever reporting "not found" on their say-so
-     * alone (pinned by AC-114.1-fallback in tests/board.test.mjs).
+     * `listItems()` scan. `findItemViaIssue` (scoped, issue-side — #114
+     * established this is consistent for ITEM MEMBERSHIP specifically) is now
+     * the PRIMARY path; the full scan is only the fallback, and only when the
+     * scoped path comes back empty/unusable — never the other way round.
+     * Correctness over savings: a scoped miss or a transient `gh api graphql`
+     * failure both fall through to the full scan rather than ever reporting
+     * "not found" on their say-so alone (pinned by AC-114.1-fallback in
+     * tests/board.test.mjs).
+     *
+     * NOT used for a read that must see a field value THIS SAME PROCESS just
+     * mutated — see `findItemFresh` below.
      */
     async findItemByIssue(issueNumber) {
+      // findItemViaIssue always resolves ok:true (best-effort — see its own
+      // docblock), so the only branch that matters is whether it found an item.
       const viaIssue = await this.findItemViaIssue(issueNumber);
-      if (viaIssue.ok && viaIssue.item) return viaIssue;
+      if (viaIssue.item) return viaIssue;
+      return this.findItemFresh(issueNumber);
+    },
+
+    /**
+     * #528 (reviewer fix-wave) — a read-after-write-GUARANTEED lookup, always
+     * via the full `listItems()` scan, never the scoped issue-side query.
+     * `findItemByIssue`'s fallback uses this; `verifyStatusMoved` (move.mjs)
+     * calls it directly for its #178 post-mutation re-read, which must see a
+     * field value THIS SAME PROCESS just changed. Measured live against the
+     * real board while delivering #528: the scoped query
+     * (`findItemViaIssue`) is NOT immediately consistent for FIELD VALUES
+     * after a `project item-edit` mutation — a same-process, zero-delay
+     * re-read via the scoped query still returned the pre-mutation value,
+     * even though #114 already established issue-side membership itself
+     * (whether the item is on the project at all) IS immediate. The full
+     * scan already is immediately consistent for field values — #178's own
+     * "did NOT persist" detection has depended on that since it shipped; a
+     * stale scan would have made it misfire constantly.
+     */
+    async findItemFresh(issueNumber) {
       const list = await this.listItems();
       if (!list.ok) return list;
       const fromList = list.items.find((i) => i.content?.number === issueNumber);
@@ -108,7 +134,9 @@ export async function makeBoardCtx({ gh, cwd, now = Date.now, itemsTtlMs = 15000
       const nodes = issueNode?.projectItems?.nodes ?? [];
       const node = nodes.find((n) => n.project?.number === board.projectNumber);
       if (!node) return { ok: true, item: null };
-      const item = { id: node.id, content: { number: issueNumber }, viaFallback: true };
+      // #528: renamed from `viaFallback` — this is the PRIMARY path now, not
+      // a fallback (the name predates the flip; kept as a flag, just retitled).
+      const item = { id: node.id, content: { number: issueNumber }, viaScopedLookup: true };
       for (const fv of node.fieldValues?.nodes ?? []) {
         const key = fieldIdToKey.get(fv.field?.id);
         if (key && typeof fv.name === 'string') item[key] = fv.name;

@@ -29,6 +29,16 @@ production — not spent here.
   outright. Correctness over savings (spec's own bar): a scoped miss/failure
   must never surface as "not found" on its own say-so — it always falls
   through to the full scan, pinned by a dedicated test.
+- Add `findItemFresh` — always the full `listItems()` scan, never the scoped
+  path — and route `move.mjs`'s `verifyStatusMoved` (#178's post-mutation
+  re-read) through it instead of `findItemByIssue`. Reviewer fix-wave finding,
+  confirmed by a live measurement against the real board: the scoped
+  issue-side query is NOT immediately consistent for a field value the SAME
+  PROCESS just mutated (a zero-delay re-read still returned the pre-mutation
+  value), even though #114 already established issue-side ITEM MEMBERSHIP
+  is immediate. Using the scoped path for the verify re-read would have
+  turned #178's own safety net into a source of false "did NOT persist"
+  failures — a real regression, not a hypothetical one.
 - `digest.mjs`'s own unscoped `ctx.listItems()` read (AC-3) is evaluated
   against real child counts from #182 (92) and #183 (50) but left
   UNCHANGED: real measurement (see ticket #528 for the method and numbers)

@@ -92,7 +92,7 @@ describe('boardctx', () => {
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'),
         { stdout: JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [{ id: 'ITEM_X', project: { number: 8 } }] } } } } }) }],
     ]);
-    expect(await ctx.findItemByIssue(5)).toMatchObject({ ok: true, item: { id: 'ITEM_X', viaFallback: true } });
+    expect(await ctx.findItemByIssue(5)).toMatchObject({ ok: true, item: { id: 'ITEM_X', viaScopedLookup: true } });
 
     // genuinely absent from both sources → null (not on this project)
     const { ctx: ctx2 } = await ctxWith([
@@ -539,18 +539,25 @@ describe('move (AC-2.2)', () => {
     expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(1);
   });
 
-  it('AC-528.2: a full move+verify cycle never falls back to the full board scan when the scoped lookup succeeds both times', async () => {
-    // Backed by the SCOPED (api graphql projectItems) route only, not
-    // project item-list — stateful the same way statefulItem() is, so the
-    // #178 verify-after-move re-read sees the mutation too.
+  it('AC-528.2: the initial find is satisfied by the scoped lookup alone; the #178 verify re-read always uses the full board scan, never the scoped path', async () => {
+    // #528 reviewer fix-wave: a same-process re-read via the scoped
+    // (api graphql projectItems) query was measured LIVE to NOT reflect a
+    // field mutation immediately — so verifyStatusMoved (#178) must keep
+    // using the full scan for its post-mutation re-read (findItemFresh),
+    // while the INITIAL find (before any mutation this call makes) is still
+    // satisfied by the scoped path alone. Both routes are stateful on the
+    // same `status`, so a bug that routed the verify re-read through the
+    // (here artificially-fresh) scoped mock would still coincidentally pass —
+    // the call-count assertion below is what actually pins the routing.
     let status = 'In progress';
     const { ctx, calls } = await ctxWith([
       [(j) => j.startsWith('api graphql') && j.includes('projectItems'), () => ({
         stdout: JSON.stringify({ data: { repository: { issue: {
           assignees: { nodes: [] },
-          projectItems: { nodes: [{ id: 'ITEM_2', project: { number: 8 }, fieldValues: { nodes: status ? [{ name: status, field: { id: 'PVTSSF_s' } }] : [] } }] },
+          projectItems: { nodes: [{ id: 'ITEM_2', project: { number: 8 }, fieldValues: { nodes: [{ name: status, field: { id: 'PVTSSF_s' } }] } }] },
         } } } }),
       })],
+      [(j) => j.startsWith('project item-list'), () => itemList([{ id: 'ITEM_2', content: { number: 5 }, status }])],
       [(j) => j.startsWith('project item-edit'), (j, args) => {
         const id = args[args.indexOf('--single-select-option-id') + 1];
         if (OPT_TO_NAME[id]) status = OPT_TO_NAME[id];
@@ -559,10 +566,10 @@ describe('move (AC-2.2)', () => {
     ]);
     const moved = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
     expect(moved).toMatchObject({ ok: true, changed: true, verified: true });
-    // AC-2's measured claim (move.mjs drops from ~608pt to ~2pt on this repo's
-    // live board) rests on this: neither the initial find nor the #178
-    // verify-after-move re-read may fall through to a full board scan.
-    expect(calls.some((c) => c.startsWith('project item-list'))).toBe(false);
+    // AC-2's measured claim: the fix removes ONE full-board-scan's worth of
+    // GraphQL cost per move.mjs call (the initial find) — exactly one
+    // project item-list call remains, for the #178 verify re-read only.
+    expect(calls.filter((c) => c.startsWith('project item-list')).length).toBe(1);
   });
 
   it('AC-178.1/AC-178.2: a silently-dropped move (re-read still shows the OLD status) fails loudly (#178)', async () => {
