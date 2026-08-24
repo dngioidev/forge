@@ -539,6 +539,32 @@ describe('move (AC-2.2)', () => {
     expect(calls.filter((c) => c.startsWith('project item-edit')).length).toBe(1);
   });
 
+  it('AC-528.2: a full move+verify cycle never falls back to the full board scan when the scoped lookup succeeds both times', async () => {
+    // Backed by the SCOPED (api graphql projectItems) route only, not
+    // project item-list — stateful the same way statefulItem() is, so the
+    // #178 verify-after-move re-read sees the mutation too.
+    let status = 'In progress';
+    const { ctx, calls } = await ctxWith([
+      [(j) => j.startsWith('api graphql') && j.includes('projectItems'), () => ({
+        stdout: JSON.stringify({ data: { repository: { issue: {
+          assignees: { nodes: [] },
+          projectItems: { nodes: [{ id: 'ITEM_2', project: { number: 8 }, fieldValues: { nodes: status ? [{ name: status, field: { id: 'PVTSSF_s' } }] : [] } }] },
+        } } } }),
+      })],
+      [(j) => j.startsWith('project item-edit'), (j, args) => {
+        const id = args[args.indexOf('--single-select-option-id') + 1];
+        if (OPT_TO_NAME[id]) status = OPT_TO_NAME[id];
+        return { stdout: '' };
+      }],
+    ]);
+    const moved = await runMove(ctx, moveArgs(['--issue', '5', '--status', 'done']), noop);
+    expect(moved).toMatchObject({ ok: true, changed: true, verified: true });
+    // AC-2's measured claim (move.mjs drops from ~608pt to ~2pt on this repo's
+    // live board) rests on this: neither the initial find nor the #178
+    // verify-after-move re-read may fall through to a full board scan.
+    expect(calls.some((c) => c.startsWith('project item-list'))).toBe(false);
+  });
+
   it('AC-178.1/AC-178.2: a silently-dropped move (re-read still shows the OLD status) fails loudly (#178)', async () => {
     // item-list ALWAYS reports the old status; item-edit "succeeds" but never persists.
     const { ctx, calls } = await ctxWith([
@@ -985,6 +1011,25 @@ describe('digest (AC-2.5)', () => {
   it('renderChildTable is stable for empty epics', () => {
     const out = renderChildTable([]);
     expect(out).toContain('0 children');
+  });
+
+  // #528 AC-3: evaluated for the same scoped-per-issue fix as findItemByIssue
+  // (AC-1) and left AS-IS — real numbers on this repo (#182: 92 children,
+  // #183: 50 children) show N scoped calls costing fewer raw GraphQL points
+  // than one full-board listItems() scan, but a per-child loop would trade
+  // away this fail-loud guarantee (a systemic failure would silently render
+  // as "no data" per child instead of failing the digest). Pinned here so a
+  // future change that drops fail-loud silently regresses a test, not just a
+  // decision recorded in a comment.
+  it('AC-528.3: a listItems() failure still fails the whole digest (evaluated for the scoped-lookup fix in #528 and deliberately left as-is to keep this fail-loud)', async () => {
+    const { ctx } = await ctxWith([
+      [(j) => j.includes('subIssues'), { stdout: JSON.stringify({ data: { repository: { issue: { subIssues: { nodes: [
+        { number: 21, title: 'Child A', state: 'OPEN' },
+      ] } } } } }) }],
+      [(j) => j.startsWith('project item-list'), { ok: false, stderr: 'boom' }],
+    ]);
+    const res = await runDigest(ctx, { epic: 2 }, noop);
+    expect(res.ok).toBe(false);
   });
 });
 

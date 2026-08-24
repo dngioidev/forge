@@ -2496,7 +2496,17 @@ describe('autopilot rate-budget preflight (AC-407.1/AC-407.4) — the dead rateB
   // UNATTRIBUTED_DRAIN_FLOOR, ignoring recentDeltas/fallback entirely. An unknown kind falls
   // through to the byte-identical #517 MAX-of-plausible-deltas-or-fallback path.
   describe('AC-526.1: estimateTicketCost — a known kind (docs/spike) short-circuits to its per-kind estimate, ignoring recentDeltas/fallback entirely', () => {
-    it('KIND_COST_ESTIMATES / UNATTRIBUTED_DRAIN_FLOOR carry the measured/derived values (#462 docs ~975, #448 spike ~3457, #526 drain floor 1500)', () => {
+    // #528 AC-4: checked against boardctx.mjs's findItemByIssue fix (a scoped
+    // ~1pt call replacing a ~304pt full-board scan, measured live) and left
+    // UNCHANGED — these are #462/#448's historical, ticket-specific total
+    // GraphQL spend, captured against whatever board size existed AT THAT
+    // TIME (unknown/unreconstructable from persisted state; the board holds
+    // 292 items today, not what it held then). Re-deriving a post-fix figure
+    // honestly needs a real docs/spike-kind delivery re-measured end-to-end,
+    // which is exactly the "burn the bucket proving it" #528's own delivery
+    // brief warns against — and is sibling #531's job (per-kind cost
+    // evidence), not this ticket's. Recorded on #528, not guessed here.
+    it('AC-528.4: KIND_COST_ESTIMATES / UNATTRIBUTED_DRAIN_FLOOR carry the measured/derived values (#462 docs ~975, #448 spike ~3457, #526 drain floor 1500)', () => {
       expect(KIND_COST_ESTIMATES).toEqual({ docs: 975, spike: 3457 });
       expect(UNATTRIBUTED_DRAIN_FLOOR).toBe(1500);
     });
