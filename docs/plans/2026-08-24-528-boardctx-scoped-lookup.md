@@ -78,12 +78,16 @@ production — not spent here.
 Extend `findItemViaIssue`'s GraphQL query (issue `assignees` + per-project-item
 `fieldValues`, mapped to forge field keys via a `fieldIdToKey` map built from
 `board.fields`); flip `findItemByIssue` to try it first, falling back to
-`listItems()` only on a miss/failure. Add `AC-528.1`/`AC-528.2`-labelled
-tests to `tests/board.test.mjs`: the scoped path alone satisfies a lookup
-(zero `project item-list` calls) with correctly-mapped field values; a
-scoped-lookup `gh` failure still falls back to the full scan (never a false
-"not found"); a full `runMove` find+setSelect+verify cycle makes zero full
-board scans when the scoped path succeeds both times.
+`findItemFresh` (always the full `listItems()` scan) only on a miss/failure.
+`move.mjs`'s `verifyStatusMoved` (#178's post-mutation re-read) calls
+`findItemFresh` directly rather than `findItemByIssue`, deliberately never
+going through the scoped path — see the Design section's read-after-write
+note. Add `AC-528.1`/`AC-528.2`-labelled tests to `tests/board.test.mjs`: the
+scoped path alone satisfies the INITIAL lookup (zero `project item-list`
+calls) with correctly-mapped field values; a scoped-lookup `gh` failure still
+falls back to the full scan (never a false "not found"); a full `runMove`
+find+setSelect+verify cycle makes exactly ONE full board scan (the #178
+verify re-read) — not zero, and not two.
 
 **Files:** plugin/scripts/lib/boardctx.mjs, tests/board.test.mjs
 **AC map:** AC-528.1, AC-528.2
