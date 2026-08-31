@@ -1,6 +1,6 @@
 # ADR-0009 — The forge harness web system: a standalone repo, observing the Claude Code transcript tree, driving by process ownership
 
-**Date:** 2026-08-31 — **Status:** **Proposed** (owner decides) — **Ticket:** #574 (spike; parent epic #573) — **Route:** spike (deliverable = [findings doc](../spikes/2026-08-31-harness-web-system.md) + this ADR). **Partially supersedes:** ADR-0003 (see § The ADR-0003 relationship). **Does not supersede:** ADR-0008 / the cockpit.
+**Date:** 2026-08-31 — **Status:** **Accepted** (owner-signed 2026-09-01, decision `esc-574-mtharb9s`) — **Ticket:** #574 (spike; parent epic #573) — **Route:** spike (deliverable = [findings doc](../spikes/2026-08-31-harness-web-system.md) + this ADR). **Partially supersedes:** ADR-0003 (see § The ADR-0003 relationship). **Does not supersede:** ADR-0008 / the cockpit.
 
 ## Context
 
@@ -14,7 +14,7 @@ That immediately collides with three pieces of existing, load-bearing history:
 
 The spike investigated all three plus the mechanics of what "drive" can mean. See the findings doc for measurements and grounding.
 
-## Decision (proposed)
+## Decision
 
 ### 1. The reversal condition ADR-0003 wrote for itself has arrived
 
@@ -67,6 +67,6 @@ The harness proxies the cockpit's loopback API for fleet/machine/usage/terminal 
 - **Single-machine only.** `~/.claude/projects` is local; the "fleet" ambition needs its own spike.
 - **Open detail carried into build:** subagent *role* labelling (`forge:implementer` vs `forge:reviewer`) — no `subagent_type` was found in any of the 1,275 files; inference from briefing text is plausible but untested.
 
-## If rejected
+## The fallback that was not taken (recorded)
 
-The legitimate fallback is **observe-only in the existing cockpit**: add an agent-tree panel to `tools/runner-ui/` reading the same transcript tree, no new repo, no drive half, no ADR-0003 reversal. That captures the strongest finding of the spike (§2 of the findings doc) at a fraction of the scope, and forfeits launch/stop/answer.
+Had this been rejected, the fallback was **observe-only in the existing cockpit**: add an agent-tree panel to `tools/runner-ui/` reading the same transcript tree, no new repo, no drive half, no ADR-0003 reversal. That captures the strongest finding of the spike (§2 of the findings doc) at a fraction of the scope, and forfeits launch/stop/answer.
